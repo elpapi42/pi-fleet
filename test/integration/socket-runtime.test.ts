@@ -70,7 +70,7 @@ const signal = new AbortController().signal;
 const operation = { operationId: "operation-1", createdAt: "2026-01-01T00:00:00.000Z" };
 
 describe("private socket runtime", () => {
-  it("creates, lists, and destroys one Fleet entry across the real protocol", async () => {
+  it("creates, lists, and destroys one pi-fleet entry across the real protocol", async () => {
     const { client } = await harness();
 
     const created = await client.create(

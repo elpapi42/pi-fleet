@@ -1,30 +1,30 @@
-# Pi Fleet Implementation Plan
+# pi-fleet Implementation Plan
 
 ## Outcome
 
-Build Pi Fleet as a small TypeScript CLI and one local runtime that runs Pi beyond one terminal while leaving native Pi sessions entirely under user control.
+Build pi-fleet as a small TypeScript CLI and one local runtime that runs Pi beyond one terminal while leaving native Pi sessions entirely under user control.
 
 ```text
-create Fleet entry → resident Pi process → send normal Pi input
+create pi-fleet entry → resident Pi process → send normal Pi input
 → receive latest assistant text after idle → restore same observed session when absent
 ```
 
-Fleet owns names, process lifecycle, ordered prompt delivery, latest observed text, and restoration references. Pi and the user own session paths, IDs, creation, migration, configuration, extensions, and deletion.
+pi-fleet owns names, process lifecycle, ordered prompt delivery, latest observed text, and restoration references. Pi and the user own session paths, IDs, creation, migration, configuration, extensions, and deletion.
 
 ## Non-negotiable product rules
 
 - Native Pi arguments belong after the first literal `--` and retain their exact order.
-- `--session`, `--session-id`, `--session-dir`, `--fork`, and `--continue` remain native Pi controls. Fleet neither copies nor deletes sessions.
-- Fleet owns `--cwd` because Pi has no native cwd option.
+- `--session`, `--session-id`, `--session-dir`, `--fork`, and `--continue` remain native Pi controls. pi-fleet neither copies nor deletes sessions.
+- pi-fleet owns `--cwd` because Pi has no native cwd option.
 - `send` uses RPC `prompt` with `streamingBehavior: "steer"` and returns after Pi acknowledgement.
 - `receive` waits for idle and returns Pi's latest assistant text; it is not tied to one `send`.
-- `watch` emits raw complete records from the selected Pi session JSONL, without Fleet wrappers.
-- `destroy` stops Fleet management and its process, but never deletes Pi session files or user configuration.
+- `watch` emits raw complete records from the selected Pi session JSONL, without pi-fleet wrappers.
+- `destroy` stops pi-fleet management and its process, but never deletes Pi session files or user configuration.
 
 ## Architecture
 
 ```text
-CLI → FleetClient → private Unix socket → Fleet runtime
+CLI → FleetClient → private Unix socket → pi-fleet runtime
                                          ├── FleetStore
                                          ├── PiAdapter
                                          ├── AgentCoordinator
@@ -37,7 +37,7 @@ The CLI never starts Pi directly or accesses durable state. The runtime is the o
 
 ### 1. Tooling and architecture foundation — complete
 
-Create a strict TypeScript ESM package with separate CLI/runtime bundles, test/lint/format/build scripts, Node `^22.19.0 || ^24.0.0` gating, and a small shared utility layer. `pifleet --version` works; other invocations clearly report that Fleet is not implemented. No runtime, socket, Pi, SQLite, or service behavior is added.
+Create a strict TypeScript ESM package with separate CLI/runtime bundles, test/lint/format/build scripts, Node `^22.19.0 || ^24.0.0` gating, and a small shared utility layer. `pifleet --version` works; other invocations clearly report that pi-fleet is not implemented. No runtime, socket, Pi, SQLite, or service behavior is added.
 
 **Exit gate:** clean install, typecheck, lint, format check, tests, and build pass; the CLI bundle has no runtime/store/Pi imports.
 
@@ -83,21 +83,21 @@ Complete selector-specific restoration behavior and tail the exact selected sess
 
 ### 7. SQLite durability and recovery — complete
 
-Replace the memory store behind the same async interface. Persist agents, ordered send certainty, process-incarnation evidence, operation results, observed session references, and latest assistant text. Never add work-cycle, per-message-response, or Fleet session ownership tables.
+Replace the memory store behind the same async interface. Persist agents, ordered send certainty, process-incarnation evidence, operation results, observed session references, and latest assistant text. Never add work-cycle, per-message-response, or pi-fleet session ownership tables.
 
-**Exit gate:** runtime restart preserves names/latest text, never replays ambiguous sends, and prevents a second Fleet writer before old-process absence is proven.
+**Exit gate:** runtime restart preserves names/latest text, never replays ambiguous sends, and prevents a second pi-fleet writer before old-process absence is proven.
 
 **Evidence:** shared memory/SQLite store contract tests cover agents, operations, sends, incarnations, clean and unclean reopen, persistent operation replay, pending-versus-dispatching reconciliation, pending create/destroy resumption, migration checksum verification, and newer-schema refusal. Repeated sends are accepted in durable per-agent order and queue behind singular restoration. Receive waiter registration is serialized with idle observation to prevent missed settlement. The real-Pi restart test proves latest-response polling stays passive and restore-on-send reopens the same conversation. A 1,000-operation worker-store benchmark selected one SQLite worker for the runtime; performance remains an operational measurement rather than a public latency guarantee.
 
 ### 8. Packaging and native supervision — Linux implementation complete; macOS release gate open
 
-The runtime resolves the pinned `@earendil-works/pi-coding-agent@0.80.10` RPC entrypoint by default, while retaining an explicit development-target override. Builds produce separate CLI, runtime, SQLite-worker, and installer ESM artifacts plus source maps and metafiles. The runtime manifest hashes Fleet artifacts and recursively hashes every copied production dependency package; materialization copies only those declared dependency trees into a private staged release and verifies the complete closure before atomic activation.
+The runtime resolves the pinned `@earendil-works/pi-coding-agent@0.80.10` RPC entrypoint by default, while retaining an explicit development-target override. Builds produce separate CLI, runtime, SQLite-worker, and installer ESM artifacts plus source maps and metafiles. The runtime manifest hashes pi-fleet artifacts and recursively hashes every copied production dependency package; materialization copies only those declared dependency trees into a private staged release and verifies the complete closure before atomic activation.
 
-Linux process groups receive bounded stdin close, SIGTERM, and SIGKILL escalation. systemd user-service and launchd LaunchAgent definitions are implemented; the internal installer supports idempotent install, repair, and uninstall, detects changed/missing recorded Node or runtime targets, and never removes Pi sessions or Fleet state. Runtime startup prefers a registered native service and uses detached startup only as the development fallback.
+Linux process groups receive bounded stdin close, SIGTERM, and SIGKILL escalation. systemd user-service and launchd LaunchAgent definitions are implemented; the internal installer supports idempotent install, repair, and uninstall, detects changed/missing recorded Node or runtime targets, and never removes Pi sessions or pi-fleet state. Runtime startup prefers a registered native service and uses detached startup only as the development fallback.
 
 Concrete configurable defaults bound admission and streams: 32 resident/starting processes, 128 watchers, 512 KiB messages, 1 MiB private protocol frames, and 8 MiB Pi/session records. Process-slot reservation occurs before spawn, duplicate restoration attempts cannot start a second process, each watch observes the record bound, and private socket backpressure prevents an unbounded per-client queue.
 
-**Local evidence:** package tests execute a materialized runtime from an unrelated directory, run the full seven-command flow against an exact user session, prove that destroy leaves the session intact, and detect both Fleet-artifact and nested dependency corruption. Linux cleanup now verifies the entire dedicated process group—not only its leader—before releasing an agent. Installer repair preserves an existing custom state root when the invoking environment omits it. Watch tests cover bounded incremental reads, oversized complete records, transport backpressure, and unexpected runtime EOF. Orderly shutdown distinguishes idle release from interrupted active work. An actual systemd crash test proved: one resident Pi child before failure, no Pi child after automatic runtime restart, `idle + absent` state, and exactly one restored child only after a later `send` using the same existing session ID. A deliberately broken absolute Node path prevented stable service startup and `installer repair` restored a healthy service and preserved Fleet state.
+**Local evidence:** package tests execute a materialized runtime from an unrelated directory, run the full seven-command flow against an exact user session, prove that destroy leaves the session intact, and detect both pi-fleet-artifact and nested dependency corruption. Linux cleanup now verifies the entire dedicated process group—not only its leader—before releasing an agent. Installer repair preserves an existing custom state root when the invoking environment omits it. Watch tests cover bounded incremental reads, oversized complete records, transport backpressure, and unexpected runtime EOF. Orderly shutdown distinguishes idle release from interrupted active work. An actual systemd crash test proved: one resident Pi child before failure, no Pi child after automatic runtime restart, `idle + absent` state, and exactly one restored child only after a later `send` using the same existing session ID. A deliberately broken absolute Node path prevented stable service startup and `installer repair` restored a healthy service and preserved pi-fleet state.
 
 **Remaining release gate:** actual login-session logout and host reboot recovery have not been executed. macOS arm64 launchd execution, logout/reboot behavior, and descendant containment have not been runtime-tested on macOS; its definition is generated and unit/integration-tested only. The `0.1.0-beta.0` public package metadata, npm-installed full-flow test, immutable first-use runtime bootstrap, and OIDC/provenance workflow are implemented. Registry publication and installation from the live npm registry remain blocked only on npm authentication/trusted-publisher setup.
 
@@ -107,7 +107,7 @@ Milestones 2 and 3 can proceed in parallel after Milestone 1. Then execute 4 →
 
 ## Explicit exclusions
 
-No copied/Fleet-owned sessions, session deletion, one-response-per-send semantics, work-cycle/disposition schemas, Pi protocol patch, workflow engine, terminal parsing, remote transport, public daemon controls, idle eviction, telemetry, self-update, or npm lifecycle service registration.
+No copied/pi-fleet-owned sessions, session deletion, one-response-per-send semantics, work-cycle/disposition schemas, Pi protocol patch, workflow engine, terminal parsing, remote transport, public daemon controls, idle eviction, telemetry, self-update, or npm lifecycle service registration.
 
 ## Evidence-gated decisions
 

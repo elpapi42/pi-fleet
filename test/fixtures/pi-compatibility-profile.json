@@ -37,6 +37,6 @@
   "limitations": [
     "Interactive --resume does not establish RPC mode during headless stdin and is unsupported in v1.",
     "The probe isolates PI_CODING_AGENT_DIR and uses a local deterministic OpenAI-compatible server; it does not validate external providers or credentials.",
-    "Concurrent external writers and arbitrary session-file rewrites remain outside Fleet's correctness guarantee."
+    "Concurrent external writers and arbitrary session-file rewrites remain outside pi-fleet's correctness guarantee."
   ]
 }

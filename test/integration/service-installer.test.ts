@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe("service installer", () => {
-  it("installs and removes Linux supervision without touching Fleet or Pi state", async () => {
+  it("installs and removes Linux supervision without touching pi-fleet or Pi state", async () => {
     const home = await mkdtemp(join(tmpdir(), "pifleet-service-"));
     roots.push(home);
     const commands: Array<readonly string[]> = [];

@@ -1,6 +1,6 @@
-# Releasing Pi Fleet
+# Releasing pi-fleet
 
-Pi Fleet publishes scoped public prereleases as `@elpapi42/pi-fleet` under the npm `beta` dist-tag.
+pi-fleet publishes scoped public prereleases as `@elpapi42/pi-fleet` under the npm `beta` dist-tag.
 
 ## Trusted publisher setup
 
@@ -69,4 +69,4 @@ npm versions cannot be overwritten or unpublished as a routine rollback. If a be
 2. Publish a fixed incremented beta.
 3. Move only the `beta` dist-tag.
 
-Do not recommend downgrading a Fleet database after a newer runtime applies an incompatible migration. npm uninstall and `pifleet destroy` never delete Pi sessions.
+Do not recommend downgrading a pi-fleet database after a newer runtime applies an incompatible migration. npm uninstall and `pifleet destroy` never delete Pi sessions.

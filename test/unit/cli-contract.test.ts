@@ -148,7 +148,7 @@ describe("public CLI contract", () => {
     expect(harness.output()).toEqual({ stderr: "", stdout: "latest response\n" });
   });
 
-  it("writes watch bytes without a Fleet wrapper", async () => {
+  it("writes watch bytes without a pi-fleet wrapper", async () => {
     const client = fakeClient({
       watchSession: async function* () {
         yield ok({ bytes: new TextEncoder().encode('{"type":"session"}\n') });

@@ -1,8 +1,8 @@
-# Pi Fleet Edge-Case Reliability Test Plan
+# pi-fleet Edge-Case Reliability Test Plan
 
 ## Objective
 
-Prove that Pi Fleet remains safe and predictable under timeouts, crashes, malformed input, storage failures, concurrency, process loss, and recovery—not merely that the happy path works.
+Prove that pi-fleet remains safe and predictable under timeouts, crashes, malformed input, storage failures, concurrency, process loss, and recovery—not merely that the happy path works.
 
 ## Implementation status
 
@@ -12,24 +12,24 @@ The deterministic Linux x64 reliability pass is complete for `0.1.0-beta.9`:
 - Reusable scripted-Pi, fault-barrier, isolated-environment, and side-effect-ledger fixtures are available under `test/fixtures` and `test/helpers`.
 - Production fixes distinguish receive timeout from connection cancellation, reject current and future store calls after SQLite-worker failure, clean pending Pi requests after write failures, reject invalid UTF-8 at stdin and Pi RPC boundaries, redact unexpected public errors and Pi stderr, serialize create/send/destroy per agent, safely resume send operations when no send row was committed, return stable receive errors when destroy/interruption wins, and contain asynchronous coordinator/store failures by stopping Pi and rejecting waiters.
 - Runtime protocol-major validation, strict manifest/path checks, concurrent immutable materialization, released beta.0/beta.1 CLI-runtime compatibility, unclean-database `PRAGMA quick_check`, deterministic randomized lifecycle races, and bounded resource-stability soak coverage are complete.
-- Schema-3 materialization now keeps exact Fleet-owned artifact hashes while validating direct dependency identities and deriving a closure-specific immutable release from the installed global npm dependency tree. Package tests prove an installed-tree difference, operational startup, npm-install removal, and materialized-release restart.
+- Schema-3 materialization now keeps exact pi-fleet-owned artifact hashes while validating direct dependency identities and deriving a closure-specific immutable release from the installed global npm dependency tree. Package tests prove an installed-tree difference, operational startup, npm-install removal, and materialized-release restart.
 - The tag publishing workflow runs deterministic tests plus the released-version matrix and soak; nightly Linux runs faults, process, compatibility, version matrix, resource soak, and the store benchmark.
 
 The beta.8 tag workflow passed its fresh-registry operational smoke. Direct isolated registry testing also passed lifecycle/output/input/timeout behavior, repeated non-consuming receive, raw-watch byte boundaries and session mutation failures, native session selectors, concurrent startup/create/send behavior, Pi/runtime crash recovery without replay or duplicate writers, capacity recovery, and user-session preservation. Manual active-Pi crash testing proved that `receive` must return the agent's stored interruption error instead of an older settled response. Continued manual testing also proved that downstream `watch` EPIPE is a normal client disconnect and that a restoration failure before spawn or prompt dispatch must return `pi_start_failed`, release capacity, and leave the agent failed/absent rather than claiming delivery uncertainty; beta.8 includes these regression fixes. The immutable beta.7 tag failed before publication because the process-tree fixture announced its child before both SIGTERM handlers were ready; the fixture now performs an IPC readiness handshake and passed ten repeated process runs.
 
-Post-beta.8 product validation reused one real Pi session through the same Fleet entry across a service restart and a related second assignment with materially less re-explanation. A disposable privileged Debian/systemd container then proved user lingering with no login session, clean native-service startup, idle PID-1 restart to `idle + absent` without eager Pi restoration, one later restoration of the same session, active restart to `failed/runtime_interrupted`, no provider replay, no duplicate writer, successful explicit recovery, and user-session preservation. This is strong systemd/PID-1 restart evidence but not a host-kernel reboot. The test also exposed and locally fixed idle orderly-shutdown classification and default service socket/state-root divergence.
+Post-beta.8 product validation reused one real Pi session through the same pi-fleet entry across a service restart and a related second assignment with materially less re-explanation. A disposable privileged Debian/systemd container then proved user lingering with no login session, clean native-service startup, idle PID-1 restart to `idle + absent` without eager Pi restoration, one later restoration of the same session, active restart to `failed/runtime_interrupted`, no provider replay, no duplicate writer, successful explicit recovery, and user-session preservation. This is strong systemd/PID-1 restart evidence but not a host-kernel reboot. The test also exposed and locally fixed idle orderly-shutdown classification and default service socket/state-root divergence.
 
 The remaining evidence gates are real disk exhaustion, a full host-kernel reboot, macOS launchd/containment, released-version matrices beyond the currently tested beta.0/beta.1 pair, and multi-hour platform resource-growth testing. Managed Pi `0.80.10` pins newly disclosed `GHSA-3jxr-9vmj-r5cp` in `brace-expansion@5.0.6`; beta.9 records a deliberate narrow audit exception for only that exact package, version, installed path, and advisory while upstream issue #6882 remains open. Any changed dependency identity or additional production advisory fails closed.
 
 ## Required invariants
 
-1. At most one Fleet-owned Pi process group exists per agent.
+1. At most one pi-fleet-owned Pi process group exists per agent.
 2. Ambiguously delivered input is never replayed automatically.
 3. Input proven unwritten may be dispatched after recovery.
 4. Client timeout, cancellation, or disconnection never cancels or corrupts Pi work.
 5. Runtime, Pi, and SQLite failures produce honest failed, uncertain, or recoverable states.
 6. No durable operation remains permanently stuck.
-7. Fleet never deletes or silently substitutes a user-owned Pi session.
+7. pi-fleet never deletes or silently substitutes a user-owned Pi session.
 8. Slow receivers and watchers cannot block Pi or cause unbounded memory growth.
 9. Public errors never expose prompts, credentials, session content, Pi stderr, database rows, or stack traces.
 10. Every finite command preserves its JSON/stdout/stderr/exit-code contract; `watch` emits only raw Pi session bytes.
@@ -68,7 +68,7 @@ test/helpers/
 
 The scripted Pi fixture must support barriers and faults at startup, prompt read/write/acknowledgement, state inspection, settlement, stdout framing, and shutdown. A side-effect ledger records every handled instruction so crash tests can prove delivery count is never greater than one.
 
-Every process test uses temporary `HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `PIFLEET_STATE_ROOT`, and `PIFLEET_APPLICATION_ROOT`. Tests must never touch the developer's normal Fleet service, database, sessions, or Pi configuration.
+Every process test uses temporary `HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `PIFLEET_STATE_ROOT`, and `PIFLEET_APPLICATION_ROOT`. Tests must never touch the developer's normal pi-fleet service, database, sessions, or Pi configuration.
 
 Use semantic barriers rather than arbitrary sleeps at these boundaries:
 
@@ -139,7 +139,7 @@ Use process trees with normal, SIGTERM-ignoring, and recursively forking childre
 
 Compare bytes for thinking/text/tool records, large signatures, split multibyte UTF-8, multiple records per append, partial final records, exact/oversized limits, invalid external lines, disappearance, truncation, replacement, permissions, restoration, buffered destroy, slow consumers, watcher limits, EPIPE, and runtime loss.
 
-One stalled watcher never blocks Pi or healthy watchers. Queue bytes remain bounded. Unexpected EOF is an error. Fleet emits no wrapper records.
+One stalled watcher never blocks Pi or healthy watchers. Queue bytes remain bounded. Unexpected EOF is an error. pi-fleet emits no wrapper records.
 
 ### Socket/protocol resilience
 

@@ -13,7 +13,7 @@ export function systemdUserUnit(options: ServiceDefinitionOptions): string {
       ? ""
       : `Environment=PIFLEET_STATE_ROOT=${systemdEscape(options.stateRoot)}\n`;
   return `[Unit]
-Description=Pi Fleet user runtime
+Description=pi-fleet user runtime
 After=default.target
 
 [Service]

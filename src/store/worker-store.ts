@@ -113,7 +113,7 @@ export class WorkerFleetStore implements FleetStore {
   }
 
   #call<T>(method: string, args: readonly unknown[]): Promise<T> {
-    if (this.#closed) return Promise.reject(new Error("Fleet store is closed"));
+    if (this.#closed) return Promise.reject(new Error("pi-fleet store is closed"));
     if (this.#failure !== null) return Promise.reject(this.#failure);
     const id = randomUUID();
     const result = new Promise<T>((resolveCall, rejectCall) => {

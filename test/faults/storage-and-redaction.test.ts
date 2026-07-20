@@ -215,7 +215,7 @@ describe("public error redaction", () => {
       ok: false,
       error: {
         code: "internal_error",
-        message: "Pi Fleet encountered an internal error.",
+        message: "pi-fleet encountered an internal error.",
       },
     });
     expect(JSON.stringify(result)).not.toContain(canary);

@@ -50,7 +50,7 @@ export async function installUserService(options: {
     await options.executor.run("launchctl", ["kickstart", `${domain}/works.elpapi.pifleet`]);
     return path;
   }
-  throw new Error(`Native Pi Fleet supervision is unsupported on ${options.platform}`);
+  throw new Error(`Native pi-fleet supervision is unsupported on ${options.platform}`);
 }
 
 export async function uninstallUserService(options: {
@@ -74,7 +74,7 @@ export async function uninstallUserService(options: {
     await rm(path, { force: true });
     return;
   }
-  throw new Error(`Native Pi Fleet supervision is unsupported on ${options.platform}`);
+  throw new Error(`Native pi-fleet supervision is unsupported on ${options.platform}`);
 }
 
 export async function serviceDefinitionNeedsRepair(

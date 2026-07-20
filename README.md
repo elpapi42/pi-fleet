@@ -1,14 +1,14 @@
-# Pi Fleet
+# pi-fleet
 
 **Run Pi in the background. Come back to the same session.**
 
-Pi Fleet is a small local CLI for work that outlives one terminal. Send instructions from any shell or script, collect Pi's latest settled response later, and continue through the same native session when its process is gone.
+pi-fleet is a small local CLI for work that outlives one terminal. Send instructions from any shell or script, collect Pi's latest settled response later, and continue through the same native session when its process is gone.
 
-**Your Pi sessions stay yours.** Fleet handles local process lifecycle and communication without copying sessions, replacing Pi's tools or models, inventing a workflow, or claiming an uninterrupted mind.
+**Your Pi sessions stay yours.** pi-fleet handles local process lifecycle and communication without copying sessions, replacing Pi's tools or models, inventing a workflow, or claiming an uninterrupted mind.
 
 ## Quick start
 
-Pi Fleet currently supports Linux x64 with Node.js `^22.19.0 || ^24.0.0` and normal Pi provider credentials/configuration.
+pi-fleet currently supports Linux x64 with Node.js `^22.19.0 || ^24.0.0` and normal Pi provider credentials/configuration.
 
 ```bash
 npm install --global @elpapi42/pi-fleet@beta
@@ -23,39 +23,37 @@ pifleet send reviewer "Turn the important findings into an acceptance checklist"
 pifleet receive reviewer --timeout 10m --human
 ```
 
-Configure provider credentials before the first operational Fleet command. `list`, `create`, and other operations start or reuse a persistent runtime; a variable added only to a later invocation, such as `ANTHROPIC_API_KEY=… pifleet create …`, does not change that runtime's environment. Use normal Pi credential configuration or the persistent runtime/service environment.
+Configure provider credentials before the first operational pi-fleet command. `list`, `create`, and other operations start or reuse a persistent runtime; a variable added only to a later invocation, such as `ANTHROPIC_API_KEY=… pifleet create …`, does not change that runtime's environment. Use normal Pi credential configuration or the persistent runtime/service environment.
 
 `receive` returns Pi's latest assistant message once the session is idle. It is intentionally not a one-send/one-response protocol: several sends can steer the same settled result. Finite commands emit one compact JSON object by default; use `--human` only when printing directly for a person.
 
-## Why Pi Fleet?
+## Why pi-fleet?
 
-Pi already makes an excellent interactive coding agent. Fleet covers the gap between invocations: reaching the same work from another terminal or script, leaving while Pi works, and continuing after the original process is gone.
+Pi already makes an excellent interactive coding agent. pi-fleet covers the gap between invocations: reaching the same work from another terminal or script, leaving while Pi works, and continuing after the original process is gone.
 
-```text
-Without Fleet                          With Fleet
-───────────────────────────────────    ──────────────────────────────────────
-keep the original terminal around      address the session by one Fleet name
-remember how Pi and its session ran     Fleet restores the selected session
-wire process control into each script  use one JSON-first CLI
-infer completion from terminal output  receive settled text or tail session JSONL
-```
+| Without pi-fleet                       | With pi-fleet                              |
+| -------------------------------------- | ------------------------------------------ |
+| Keep the original terminal around      | Address the session by one local name      |
+| Remember how Pi and its session ran    | Restore the selected session               |
+| Wire process control into every script | Use one JSON-first CLI                     |
+| Infer completion from terminal output  | Receive settled text or tail session JSONL |
 
-A Fleet name is a local address, not a new persona or a second source of truth. The native Pi session remains the conversation record.
+A pi-fleet name is a local address, not a new persona or a second source of truth. The native Pi session remains the conversation record.
 
-## What Fleet manages—and what stays yours
+## What pi-fleet manages—and what stays yours
 
-| Fleet manages                         | Pi and you keep                       |
+| pi-fleet manages                      | Pi and you keep                       |
 | ------------------------------------- | ------------------------------------- |
 | A stable local address                | Native session files and history      |
 | Process availability and restoration  | Models, tools, extensions, and skills |
 | Ordered input and settled-result wait | Prompts, workflow, and autonomy       |
 | Honest failure and cleanup state      | Retry decisions and project files     |
 
-This boundary is deliberate. Fleet keeps Pi available and controllable; it does not turn Pi into a managed-team product or decide what work it should do.
+This boundary is deliberate. pi-fleet keeps Pi available and controllable; it does not turn Pi into a managed-team product or decide what work it should do.
 
 ## Use your native Pi session
 
-Pass compatible Pi selectors after the first literal `--`. Fleet records the concrete session Pi selected solely so a later restoration can reopen it; it never copies, relocates, or deletes session data.
+Pass compatible Pi selectors after the first literal `--`. pi-fleet records the concrete session Pi selected solely so a later restoration can reopen it; it never copies, relocates, or deletes session data.
 
 ```bash
 # Existing session file
@@ -69,7 +67,7 @@ pifleet create reviewer -- --fork /absolute/source.jsonl
 pifleet create reviewer -- --continue
 ```
 
-`--cwd` is a Fleet option and belongs before `--`; all native Pi options belong after it and preserve their token order:
+`--cwd` is a pi-fleet option and belongs before `--`; all native Pi options belong after it and preserve their token order:
 
 ```bash
 pifleet create reviewer \
@@ -80,11 +78,11 @@ pifleet create reviewer \
   --thinking high
 ```
 
-Headless `--resume` is not supported because it requires interactive selection before RPC mode. Positional Pi prompts and `@file` inputs after `--` are rejected; use optional create instructions or `send` so Fleet can preserve ordered input.
+Headless `--resume` is not supported because it requires interactive selection before RPC mode. Positional Pi prompts and `@file` inputs after `--` are rejected; use optional create instructions or `send` so pi-fleet can preserve ordered input.
 
 ## Observe the real session
 
-`watch` emits a live, byte-faithful tail of complete records from the selected Pi session JSONL. It adds no Fleet wrappers, history, or transient RPC events, and it never wakes or steers Pi.
+`watch` emits a live, byte-faithful tail of complete records from the selected Pi session JSONL. It adds no pi-fleet wrappers, history, or transient RPC events, and it never wakes or steers Pi.
 
 ```bash
 pifleet watch reviewer > live-session.jsonl
@@ -104,7 +102,7 @@ pifleet watch NAME
 pifleet destroy NAME [--human]
 ```
 
-Names are 1–63 lowercase letters, digits, or interior hyphens. `status` and `list` are passive: they do not restore a Pi process. An idle Fleet entry may be `resident` or `absent`; the next `send` restores an absent session when safe.
+Names are 1–63 lowercase letters, digits, or interior hyphens. `status` and `list` are passive: they do not restore a Pi process. An idle pi-fleet entry may be `resident` or `absent`; the next `send` restores an absent session when safe.
 
 ### Send and receive
 
@@ -117,7 +115,7 @@ Names are 1–63 lowercase letters, digits, or interior hyphens. `status` and `l
 
 `receive` waits for idle and returns the latest assistant text. `--timeout 0` polls immediately; explicit durations such as `30s`, `5m`, or `1h` are recommended because a unitless value is milliseconds. Timeout exits `124` and never cancels work. A canceled `receive` affects only that client.
 
-Pass large or shell-sensitive content through explicit stdin. Fleet never consumes piped stdin implicitly. Input is valid UTF-8, nonempty, and limited to 512 KiB by default.
+Pass large or shell-sensitive content through explicit stdin. pi-fleet never consumes piped stdin implicitly. Input is valid UTF-8, nonempty, and limited to 512 KiB by default.
 
 ```bash
 git diff | pifleet send reviewer -
@@ -132,29 +130,29 @@ pifleet list
 pifleet destroy reviewer
 ```
 
-Inspect a `failed` state before acting. `runtime_interrupted` means active work stopped without silent replay. `delivery_uncertain` means Pi may have received the input, so do not blindly resend work that could have caused side effects. `incarnation_cleanup_uncertain` means Fleet cannot prove an old process writer is gone. A new explicit send is new work, not proof an uncertain earlier instruction did nothing.
+Inspect a `failed` state before acting. `runtime_interrupted` means active work stopped without silent replay. `delivery_uncertain` means Pi may have received the input, so do not blindly resend work that could have caused side effects. `incarnation_cleanup_uncertain` means pi-fleet cannot prove an old process writer is gone. A new explicit send is new work, not proof an uncertain earlier instruction did nothing.
 
-`destroy` stops Fleet management and releases the local name. It never deletes Pi sessions, credentials, configuration, extensions, skills, prompts, or project files.
+`destroy` stops pi-fleet management and releases the local name. It never deletes Pi sessions, credentials, configuration, extensions, skills, prompts, or project files.
 
 ## Runtime, data, and maintenance
 
-The short-lived CLI connects to one private per-user runtime. On first operational use, Fleet verifies and materializes an immutable runtime release, then starts it in the background. A registered native service is preferred when present; service management is experimental and not part of the seven-command beta interface.
+The short-lived CLI connects to one private per-user runtime. On first operational use, pi-fleet verifies and materializes an immutable runtime release, then starts it in the background. A registered native service is preferred when present; service management is experimental and not part of the seven-command beta interface.
 
 Linux defaults:
 
 ```text
-Fleet state:       ~/.local/state/pi-fleet/
+pi-fleet state:       ~/.local/state/pi-fleet/
 Materialized code: ~/.local/share/pi-fleet/releases/
 Runtime socket:    $XDG_RUNTIME_DIR/pifleet-$UID/control.sock
                    (or the system temporary directory when XDG_RUNTIME_DIR is absent)
 Pi sessions:       Pi's normal ~/.pi storage or the exact path you selected
 ```
 
-`PIFLEET_STATE_ROOT` and `PIFLEET_APPLICATION_ROOT` can override Fleet-owned locations. A CLI invocation whose state root differs from an installed service fails with repair guidance instead of connecting to the wrong database.
+`PIFLEET_STATE_ROOT` and `PIFLEET_APPLICATION_ROOT` can override pi-fleet-owned locations. A CLI invocation whose state root differs from an installed service fails with repair guidance instead of connecting to the wrong database.
 
-`npx @elpapi42/pi-fleet@beta` is appropriate for evaluation, but global installation is recommended for continued use. Fleet materializes a verified runtime independently of the npm cache or installation; evaluation can intentionally leave runtime and Fleet state behind.
+`npx @elpapi42/pi-fleet@beta` is appropriate for evaluation, but global installation is recommended for continued use. pi-fleet materializes a verified runtime independently of the npm cache or installation; evaluation can intentionally leave runtime and pi-fleet state behind.
 
-Before uninstalling, destroy entries you no longer want Fleet to manage:
+Before uninstalling, destroy entries you no longer want pi-fleet to manage:
 
 ```bash
 pifleet list --human
@@ -162,7 +160,7 @@ pifleet destroy NAME
 npm uninstall --global @elpapi42/pi-fleet
 ```
 
-Removing the npm package does not delete Pi sessions, Fleet SQLite state, materialized releases, or an already-running runtime/service. Reinstalling the same or compatible version reconnects to preserved state. There is no automatic self-update, telemetry, remote transport, or npm `postinstall` service registration. Database migrations are forward-only; installing an older binary after a newer schema migration is not rollback.
+Removing the npm package does not delete Pi sessions, pi-fleet SQLite state, materialized releases, or an already-running runtime/service. Reinstalling the same or compatible version reconnects to preserved state. There is no automatic self-update, telemetry, remote transport, or npm `postinstall` service registration. Database migrations are forward-only; installing an older binary after a newer schema migration is not rollback.
 
 ## Beta status
 

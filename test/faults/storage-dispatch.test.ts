@@ -104,7 +104,7 @@ describe("fail-closed dispatch on storage errors", () => {
       ok: false,
       error: {
         code: "delivery_uncertain",
-        message: "Pi may have accepted the message; Fleet will not replay it automatically.",
+        message: "Pi may have accepted the message; pi-fleet will not replay it automatically.",
       },
     });
     expect(pi.prompts()).toBe(1);

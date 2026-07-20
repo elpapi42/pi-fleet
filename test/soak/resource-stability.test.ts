@@ -79,7 +79,7 @@ function stableLauncher() {
 }
 
 describe("resource stability soak", () => {
-  it("returns in-process Fleet resources to a stable post-cleanup baseline", async () => {
+  it("returns in-process pi-fleet resources to a stable post-cleanup baseline", async () => {
     const store = new MemoryFleetStore();
     const pi = stableLauncher();
     const service = new FleetService(store, { launcher: pi.launcher });

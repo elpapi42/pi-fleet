@@ -132,7 +132,7 @@ export class FleetService {
       await this.store.deleteAgent(input.name);
       const result = err<FleetClientError>({
         code: "capacity_exceeded",
-        message: `Pi Fleet has reached its ${String(this.#limits.maxResidentProcesses)} process limit.`,
+        message: `pi-fleet has reached its ${String(this.#limits.maxResidentProcesses)} process limit.`,
       });
       await this.#remember(operationId, "create", input, result);
       return result;
@@ -297,9 +297,9 @@ export class FleetService {
         code,
         message:
           code === "delivery_uncertain"
-            ? "Pi may have accepted the initial instructions; Fleet will not replay them automatically."
+            ? "Pi may have accepted the initial instructions; pi-fleet will not replay them automatically."
             : code === "incarnation_cleanup_uncertain"
-              ? "Fleet could not prove the Pi process group was removed."
+              ? "pi-fleet could not prove the Pi process group was removed."
               : "Pi failed to start.",
       });
       await this.#remember(operationId, "create", input, result);
@@ -332,7 +332,7 @@ export class FleetService {
     if (agent.summary.process.state === "cleanup_uncertain") {
       const result = err<FleetClientError>({
         code: "incarnation_cleanup_uncertain",
-        message: `Fleet cannot prove the previous process for ${input.name} is gone.`,
+        message: `pi-fleet cannot prove the previous process for ${input.name} is gone.`,
       });
       await this.#remember(operationId, "send", input, result);
       return result;
@@ -398,7 +398,7 @@ export class FleetService {
           message:
             agent === null
               ? `Agent ${send.agentName} was not found.`
-              : `Fleet cannot prove the previous process for ${send.agentName} is gone.`,
+              : `pi-fleet cannot prove the previous process for ${send.agentName} is gone.`,
         });
         await this.store.putSend({ ...send, state: "failed" });
         await this.#remember(send.sendId, "send", input, result);
@@ -500,7 +500,7 @@ export class FleetService {
     if (this.#watcherCount() >= this.#limits.maxWatchers) {
       return err({
         code: "capacity_exceeded",
-        message: `Pi Fleet has reached its ${String(this.#limits.maxWatchers)} watcher limit.`,
+        message: `pi-fleet has reached its ${String(this.#limits.maxWatchers)} watcher limit.`,
       });
     }
 
@@ -541,7 +541,7 @@ export class FleetService {
     if (stored?.summary.process.state === "cleanup_uncertain") {
       const result = err<FleetClientError>({
         code: "destroy_incomplete",
-        message: `Fleet cannot destroy ${input.name} until its previous process is proven gone.`,
+        message: `pi-fleet cannot destroy ${input.name} until its previous process is proven gone.`,
       });
       await this.#remember(operationId, "destroy", input, result);
       return result;
@@ -613,7 +613,7 @@ export class FleetService {
           });
           return err({
             code: "capacity_exceeded",
-            message: `Pi Fleet has reached its ${String(this.#limits.maxResidentProcesses)} process limit.`,
+            message: `pi-fleet has reached its ${String(this.#limits.maxResidentProcesses)} process limit.`,
           });
         } else {
           restoring = true;
@@ -734,7 +734,7 @@ export class FleetService {
         return err({
           code,
           message: cleanupUncertain
-            ? `Fleet could not prove the failed Pi restoration for ${input.name} was removed.`
+            ? `pi-fleet could not prove the failed Pi restoration for ${input.name} was removed.`
             : `Pi failed to restore for ${input.name}; the message was not dispatched.`,
         });
       }
@@ -758,7 +758,7 @@ export class FleetService {
       });
       return err({
         code: "delivery_uncertain",
-        message: "Pi may have accepted the message; Fleet will not replay it automatically.",
+        message: "Pi may have accepted the message; pi-fleet will not replay it automatically.",
       });
     }
   }

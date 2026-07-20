@@ -12,7 +12,7 @@ export function resolveApplicationRoot(env: NodeJS.ProcessEnv = process.env): st
   return (
     env.PIFLEET_APPLICATION_ROOT ??
     (process.platform === "darwin"
-      ? join(homedir(), "Library", "Application Support", "Pi Fleet", "runtime")
+      ? join(homedir(), "Library", "Application Support", "pi-fleet", "runtime")
       : join(env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "pi-fleet"))
   );
 }
@@ -35,7 +35,7 @@ export function resolveFleetPaths(env: NodeJS.ProcessEnv = process.env): FleetPa
   );
   const stateRoot =
     process.platform === "darwin"
-      ? join(homedir(), "Library", "Application Support", "Pi Fleet")
+      ? join(homedir(), "Library", "Application Support", "pi-fleet")
       : join(env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "pi-fleet");
   return {
     runtimeRoot,

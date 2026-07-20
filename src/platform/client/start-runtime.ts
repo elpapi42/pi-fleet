@@ -50,7 +50,7 @@ export async function ensureRuntime(options: {
     if (await canConnect(options.socketPath)) return;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
   }
-  throw new Error(`Pi Fleet runtime did not become ready at ${options.socketPath}`);
+  throw new Error(`pi-fleet runtime did not become ready at ${options.socketPath}`);
 }
 
 async function startRegisteredRuntime(options: {
@@ -104,12 +104,12 @@ async function assertRegisteredStateRoot(
   if (installed === undefined) {
     if (env.PIFLEET_STATE_ROOT === undefined) return;
     throw new Error(
-      `Registered Pi Fleet service uses the default state root, but this command requested ${requested}. Run the Pi Fleet installer with PIFLEET_STATE_ROOT=${requested} to repair the service, or omit the override.`,
+      `Registered pi-fleet service uses the default state root, but this command requested ${requested}. Run the pi-fleet installer with PIFLEET_STATE_ROOT=${requested} to repair the service, or omit the override.`,
     );
   }
   if (resolve(installed) !== requested) {
     throw new Error(
-      `Registered Pi Fleet service uses state root ${installed}, but this command requested ${requested}. Repair the service with the intended PIFLEET_STATE_ROOT before retrying.`,
+      `Registered pi-fleet service uses state root ${installed}, but this command requested ${requested}. Repair the service with the intended PIFLEET_STATE_ROOT before retrying.`,
     );
   }
 }
@@ -122,7 +122,7 @@ async function findPackageRoot(modulePath: string): Promise<string> {
     if (parent === candidate) break;
     candidate = parent;
   }
-  throw new Error("Unable to locate the Pi Fleet package runtime manifest.");
+  throw new Error("Unable to locate the pi-fleet package runtime manifest.");
 }
 
 async function exists(path: string): Promise<boolean> {

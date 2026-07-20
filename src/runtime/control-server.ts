@@ -78,7 +78,7 @@ function handleConnection(
             ok: false,
             error: invalidRequest
               ? { code: "invalid_request", message: error.message }
-              : { code: "internal_error", message: "Pi Fleet encountered an internal error." },
+              : { code: "internal_error", message: "pi-fleet encountered an internal error." },
           });
           socket.end();
         });
@@ -291,7 +291,7 @@ async function prepareSocketPath(socketPath: string): Promise<void> {
   if (stats === null) return;
   if (!stats.isSocket()) throw new Error(`Refusing to replace non-socket path ${socketPath}`);
   if (await canConnect(socketPath))
-    throw new Error(`A Pi Fleet runtime already owns ${socketPath}`);
+    throw new Error(`A pi-fleet runtime already owns ${socketPath}`);
   await unlink(socketPath);
 }
 

@@ -281,7 +281,7 @@ export class SqliteFleetStore implements FleetStore {
       Object.values(rows[0] ?? {}).length !== 1 ||
       Object.values(rows[0] ?? {})[0] !== "ok"
     ) {
-      throw new Error("Fleet database integrity check failed after an unclean shutdown");
+      throw new Error("pi-fleet database integrity check failed after an unclean shutdown");
     }
   }
 
@@ -302,13 +302,15 @@ export class SqliteFleetStore implements FleetStore {
       const newer = applied.find((migration) => migration.version > latestSupported);
       if (newer !== undefined) {
         throw new Error(
-          `Fleet database schema ${String(newer.version)} is newer than this runtime`,
+          `pi-fleet database schema ${String(newer.version)} is newer than this runtime`,
         );
       }
       for (const existing of applied) {
         const expected = MIGRATIONS.find((migration) => migration.version === existing.version);
         if (expected === undefined || expected.checksum !== existing.checksum) {
-          throw new Error(`Fleet database migration ${String(existing.version)} checksum mismatch`);
+          throw new Error(
+            `pi-fleet database migration ${String(existing.version)} checksum mismatch`,
+          );
         }
       }
       for (const migration of MIGRATIONS) {

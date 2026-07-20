@@ -3,7 +3,7 @@ import { err } from "../shared/result.js";
 
 const unavailable = (): FleetClientError => ({
   code: "runtime_unavailable",
-  message: "Pi Fleet runtime is not implemented yet.",
+  message: "pi-fleet runtime is not implemented yet.",
 });
 
 export const unavailableFleetClient: FleetClient = {

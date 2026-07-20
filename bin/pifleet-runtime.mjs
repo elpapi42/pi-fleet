@@ -6,7 +6,7 @@ const isSupported = (major === 22 && minor >= minimumNode22Minor) || major === 2
 
 if (!isSupported) {
   process.stderr.write(
-    `Pi Fleet runtime requires Node ^22.19.0 or ^24.0.0; found ${process.versions.node}. Run the installer repair operation with a supported Node executable.\n`,
+    `pi-fleet runtime requires Node ^22.19.0 or ^24.0.0; found ${process.versions.node}. Run the installer repair operation with a supported Node executable.\n`,
   );
   process.exitCode = 1;
 } else {

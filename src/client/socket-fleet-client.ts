@@ -306,6 +306,6 @@ function isErrorRecord(value: unknown): value is FleetClientError {
 function connectionError(error: unknown): FleetClientError {
   return {
     code: "runtime_unavailable",
-    message: error instanceof Error ? error.message : "Unable to connect to Pi Fleet runtime.",
+    message: error instanceof Error ? error.message : "Unable to connect to pi-fleet runtime.",
   };
 }

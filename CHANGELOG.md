@@ -11,7 +11,7 @@
 - Contained asynchronous coordinator event/store failures by stopping the affected Pi process and rejecting waiters instead of producing unhandled promise rejections.
 - Added a nightly reliability workflow and an isolated soak suite covering 500 concurrent ordered sends and 100 name lifecycle cycles.
 - Reject invalid UTF-8 in stdin and Pi RPC stdout instead of silently replacing bytes at either protocol boundary.
-- Keep idle agents `idle + absent` after Fleet-initiated orderly shutdown even when Pi reports a nonzero exit; active work remains `failed/runtime_interrupted`.
+- Keep idle agents `idle + absent` after pi-fleet-initiated orderly shutdown even when Pi reports a nonzero exit; active work remains `failed/runtime_interrupted`.
 - Align explicit stdin input with the runtime's 512 KiB message limit and document credential-environment and receive-timeout behavior before the quick start.
 - Install native services without forcing the default persistent state directory into `PIFLEET_STATE_ROOT`, preserving the default split between durable SQLite state and the private runtime socket.
 - Validated systemd user lingering, idle reboot restoration, active reboot interruption without replay, single-writer restoration, and session preservation in a disposable privileged systemd container.
@@ -23,14 +23,14 @@ Core product and Linux supervision validation after beta.8.
 
 ### Fixed
 
-- An orderly Fleet shutdown now leaves idle agents `idle + absent` even if Pi reports a nonzero exit; active interrupted work still becomes `failed/runtime_interrupted` without replay.
+- An orderly pi-fleet shutdown now leaves idle agents `idle + absent` even if Pi reports a nonzero exit; active interrupted work still becomes `failed/runtime_interrupted` without replay.
 - A clean native-service install no longer forces the default persistent state directory into `PIFLEET_STATE_ROOT`, so the service and ordinary CLI agree on the private runtime socket while SQLite remains in durable state storage.
 - Explicit stdin now uses the runtime's default 512 KiB message boundary instead of accepting a larger payload that the runtime later rejects.
 - Onboarding now explains persistent credential environments before the first operational command and uses explicit receive timeout units.
 
 ### Validated
 
-- Reused one real Pi session through the same Fleet entry across a service restart and related follow-up assignment with less re-explanation.
+- Reused one real Pi session through the same pi-fleet entry across a service restart and related follow-up assignment with less re-explanation.
 - Proved user lingering, idle PID-1 restart without eager restoration, single-writer session restoration, active restart interruption without replay, explicit recovery, and session preservation in a disposable systemd container.
 
 ### Security
@@ -54,7 +54,7 @@ Continued direct CLI edge-case testing. No intentional command-surface change.
 
 - `watch` now treats downstream `EPIPE` as normal client disconnection, exiting successfully without misreporting a closed output pipe as `invalid_arguments`.
 - A restoration failure proven to occur before prompt dispatch now returns `pi_start_failed`, marks the send definitively failed, leaves the agent `failed + absent`, and releases process capacity instead of claiming `delivery_uncertain` and leaving `restoring + starting` state.
-- Restoration cleanup uncertainty remains fail-closed as `incarnation_cleanup_uncertain` with its process slot retained when Fleet cannot prove the spawned process is gone.
+- Restoration cleanup uncertainty remains fail-closed as `incarnation_cleanup_uncertain` with its process slot retained when pi-fleet cannot prove the spawned process is gone.
 
 ### Manual validation
 
@@ -101,7 +101,7 @@ Reliability fix for fresh global npm installations. No intentional CLI or agent-
 
 ### Fixed
 
-- Replaced the invalid assumption that npm recreates CI's byte-identical `node_modules` tree. Schema-3 runtime manifests retain exact hashes for Fleet-owned files, validate direct dependency name/version, derive the observed dependency-closure hash at materialization, and prove source-before, staged, and source-after closure equality before activation.
+- Replaced the invalid assumption that npm recreates CI's byte-identical `node_modules` tree. Schema-3 runtime manifests retain exact hashes for pi-fleet-owned files, validate direct dependency name/version, derive the observed dependency-closure hash at materialization, and prove source-before, staged, and source-after closure equality before activation.
 - Made immutable runtime release paths closure-specific, so different legitimate npm dependency layouts do not collide.
 - Strengthened package testing to mutate a fresh installed dependency tree, require an operational `list`, remove the npm installation, stop the runtime, and restart through the materialized release.
 
@@ -136,13 +136,13 @@ Release-pipeline validation beta. No product-contract changes from `0.1.0-beta.0
 
 ## 0.1.0-beta.0 — 2026-07-20
 
-First public beta of Pi Fleet.
+First public beta of pi-fleet.
 
 ### Included
 
 - Seven-command JSON-first CLI: `create`, `send`, `receive`, `status`, `list`, `watch`, and `destroy`.
-- Resident Pi processes with stable Fleet addresses and restore-on-address from native Pi sessions.
-- Exact compatible Pi argument passthrough after `--` and Fleet-owned `--cwd`.
+- Resident Pi processes with stable pi-fleet addresses and restore-on-address from native Pi sessions.
+- Exact compatible Pi argument passthrough after `--` and pi-fleet-owned `--cwd`.
 - Ordered repeated steering input and idle-based latest-assistant response retrieval.
 - Raw live Pi session JSONL watching.
 - SQLite-backed names, latest responses, operation idempotency, and conservative crash recovery.

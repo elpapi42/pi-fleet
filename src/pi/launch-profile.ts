@@ -90,15 +90,15 @@ export function validatePersistentRpcArgv(piArgv: readonly string[]): void {
   for (let index = 0; index < piArgv.length; index += 1) {
     const token = piArgv[index]!;
     if (["--mode", "--print", "-p", "--no-session", "--resume", "-r"].includes(token)) {
-      throw new Error(`${token} is incompatible with persistent headless Pi Fleet control`);
+      throw new Error(`${token} is incompatible with persistent headless pi-fleet control`);
     }
     if (token === "--") {
       throw new Error(
-        "Pi positional prompt delivery after -- is incompatible with Fleet send ordering",
+        "Pi positional prompt delivery after -- is incompatible with pi-fleet send ordering",
       );
     }
     if (token.startsWith("@")) {
-      throw new Error("Pi @file prompt delivery is incompatible with Fleet-managed send ordering");
+      throw new Error("Pi @file prompt delivery is incompatible with pi-fleet-managed send ordering");
     }
     if (PI_VALUE_OPTIONS.has(token)) {
       if (piArgv[index + 1] === undefined) throw new Error(`${token} requires a value`);
@@ -118,7 +118,7 @@ export function validatePersistentRpcArgv(piArgv: readonly string[]): void {
     }
     if (token.startsWith("-")) continue;
     throw new Error(
-      `Pi positional prompt ${JSON.stringify(token)} is incompatible with Fleet send ordering`,
+      `Pi positional prompt ${JSON.stringify(token)} is incompatible with pi-fleet send ordering`,
     );
   }
 }
