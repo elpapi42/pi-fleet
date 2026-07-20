@@ -10,10 +10,26 @@
   "bin": {
     "pifleet": "./bin/pifleet.mjs"
   },
-  "scripts": {},
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test scripts bin --max-warnings=0",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "build": "node scripts/build.mjs"
+  },
   "files": [
     "bin/",
     "dist/",
     "README.md"
-  ]
+  ],
+  "devDependencies": {
+    "@types/node": "22.19.1",
+    "esbuild": "0.25.11",
+    "eslint": "9.39.1",
+    "globals": "16.5.0",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.49.0",
+    "vitest": "4.1.10"
+  }
 }
