@@ -65,53 +65,54 @@ export class SqliteFleetStore implements FleetStore {
     );
     try {
       this.#migrate();
+      const metadata = this.#database
+        .prepare("SELECT clean_shutdown FROM runtime_metadata WHERE singleton_key = 1")
+        .get() as { clean_shutdown: number } | undefined;
+      if (metadata?.clean_shutdown === 0) {
+        this.#verifyIntegrity();
+        this.#database.exec(`
+          UPDATE agents
+          SET state = 'failed', process_state = 'cleanup_uncertain',
+              data_json = json_set(data_json,
+                '$.summary.state', 'failed',
+                '$.summary.process.state', 'cleanup_uncertain',
+                '$.summary.error.code',
+                  CASE WHEN state IN ('working', 'restoring')
+                    THEN 'runtime_interrupted'
+                    ELSE 'incarnation_cleanup_uncertain'
+                  END)
+          WHERE process_state IN ('resident', 'starting');
+          UPDATE incarnations
+          SET state = 'cleanup_uncertain',
+              data_json = json_set(data_json, '$.state', 'cleanup_uncertain')
+          WHERE state IN ('starting', 'live', 'stopping');
+        `);
+      } else if (metadata?.clean_shutdown === 1) {
+        this.#database.exec(`
+          UPDATE agents
+          SET state = CASE WHEN state = 'idle' THEN 'idle' ELSE 'failed' END,
+              process_state = 'absent',
+              data_json = json_set(data_json,
+                '$.summary.state', CASE WHEN state = 'idle' THEN 'idle' ELSE 'failed' END,
+                '$.summary.process.state', 'absent')
+          WHERE process_state IN ('resident', 'starting');
+          UPDATE incarnations
+          SET state = 'gone', data_json = json_set(data_json, '$.state', 'gone')
+          WHERE state IN ('starting', 'live', 'stopping');
+        `);
+      }
+      this.#database
+        .prepare(
+          `INSERT INTO runtime_metadata(singleton_key, clean_shutdown)
+           VALUES(1, 0)
+           ON CONFLICT(singleton_key) DO UPDATE SET clean_shutdown = 0`,
+        )
+        .run();
     } catch (error: unknown) {
       this.#database.close();
       this.#closed = true;
       throw error;
     }
-    const metadata = this.#database
-      .prepare("SELECT clean_shutdown FROM runtime_metadata WHERE singleton_key = 1")
-      .get() as { clean_shutdown: number } | undefined;
-    if (metadata?.clean_shutdown === 0) {
-      this.#database.exec(`
-        UPDATE agents
-        SET state = 'failed', process_state = 'cleanup_uncertain',
-            data_json = json_set(data_json,
-              '$.summary.state', 'failed',
-              '$.summary.process.state', 'cleanup_uncertain',
-              '$.summary.error.code',
-                CASE WHEN state IN ('working', 'restoring')
-                  THEN 'runtime_interrupted'
-                  ELSE 'incarnation_cleanup_uncertain'
-                END)
-        WHERE process_state IN ('resident', 'starting');
-        UPDATE incarnations
-        SET state = 'cleanup_uncertain',
-            data_json = json_set(data_json, '$.state', 'cleanup_uncertain')
-        WHERE state IN ('starting', 'live', 'stopping');
-      `);
-    } else if (metadata?.clean_shutdown === 1) {
-      this.#database.exec(`
-        UPDATE agents
-        SET state = CASE WHEN state = 'idle' THEN 'idle' ELSE 'failed' END,
-            process_state = 'absent',
-            data_json = json_set(data_json,
-              '$.summary.state', CASE WHEN state = 'idle' THEN 'idle' ELSE 'failed' END,
-              '$.summary.process.state', 'absent')
-        WHERE process_state IN ('resident', 'starting');
-        UPDATE incarnations
-        SET state = 'gone', data_json = json_set(data_json, '$.state', 'gone')
-        WHERE state IN ('starting', 'live', 'stopping');
-      `);
-    }
-    this.#database
-      .prepare(
-        `INSERT INTO runtime_metadata(singleton_key, clean_shutdown)
-         VALUES(1, 0)
-         ON CONFLICT(singleton_key) DO UPDATE SET clean_shutdown = 0`,
-      )
-      .run();
   }
 
   async createAgent(agent: StoredAgent): Promise<boolean> {
@@ -269,6 +270,19 @@ export class SqliteFleetStore implements FleetStore {
       .run(cleanShutdown ? 1 : 0);
     this.#database.close();
     this.#closed = true;
+  }
+
+  #verifyIntegrity(): void {
+    const rows = this.#database.prepare("PRAGMA quick_check").all() as unknown as Array<
+      Record<string, unknown>
+    >;
+    if (
+      rows.length !== 1 ||
+      Object.values(rows[0] ?? {}).length !== 1 ||
+      Object.values(rows[0] ?? {})[0] !== "ok"
+    ) {
+      throw new Error("Fleet database integrity check failed after an unclean shutdown");
+    }
   }
 
   #migrate(): void {

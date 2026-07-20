@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -89,6 +89,33 @@ describe("storage failure containment", () => {
       lock.exec("ROLLBACK");
       lock.close();
     }
+  });
+
+  it("runs an integrity check before reconciling an unclean database", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-unclean-integrity-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const path = join(root, "fleet.sqlite");
+    const initial = new SqliteFleetStore(path);
+    await initial.close(false);
+
+    const inspected = new DatabaseSync(path);
+    const pageSize = (inspected.prepare("PRAGMA page_size").get() as { page_size: number })
+      .page_size;
+    const sendRecords = inspected
+      .prepare("SELECT rootpage FROM sqlite_schema WHERE name = 'send_records'")
+      .get() as { rootpage: number };
+    inspected.close();
+
+    const file = await open(path, "r+");
+    try {
+      await file.write(Buffer.from([0xff]), 0, 1, (sendRecords.rootpage - 1) * pageSize);
+    } finally {
+      await file.close();
+    }
+    const corrupted = await readFile(path);
+
+    expect(() => new SqliteFleetStore(path)).toThrow(/integrity|malformed/i);
+    await expect(readFile(path)).resolves.toEqual(corrupted);
   });
 });
 
