@@ -21,7 +21,6 @@ jobs:
         with:
           node-version: 24.16.0
           registry-url: https://registry.npmjs.org
-          cache: npm
 
       - name: Use trusted-publishing-compatible npm
         run: npm install --global npm@11.5.1
