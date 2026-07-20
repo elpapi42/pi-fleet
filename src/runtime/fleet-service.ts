@@ -49,6 +49,7 @@ export class FleetService {
   readonly #coordinators = new Map<string, AgentCoordinator>();
   readonly #watchers = new Map<string, Set<AbortController>>();
   readonly #processSlots = new Set<string>();
+  readonly #agentLanes = new Map<string, Promise<void>>();
   readonly #sendLanes = new Map<string, Promise<void>>();
   readonly #launcher: PiLauncher | undefined;
   readonly #now: () => string;
@@ -69,7 +70,7 @@ export class FleetService {
 
   create(input: CreateInput, operationId: string): Promise<Result<CreateResult, FleetClientError>> {
     return this.#runOperation(operationId, "create", input, () =>
-      this.#createImpl(input, operationId),
+      this.#enqueueAgent(input.name, () => this.#createImpl(input, operationId)),
     );
   }
 
@@ -284,7 +285,12 @@ export class FleetService {
           : "pi_start_failed";
       const result = err<FleetClientError>({
         code,
-        message: error instanceof Error ? error.message : "Pi failed to start.",
+        message:
+          code === "delivery_uncertain"
+            ? "Pi may have accepted the initial instructions; Fleet will not replay them automatically."
+            : code === "incarnation_cleanup_uncertain"
+              ? "Fleet could not prove the Pi process group was removed."
+              : "Pi failed to start.",
       });
       await this.#remember(operationId, "create", input, result);
       return result;
@@ -292,7 +298,9 @@ export class FleetService {
   }
 
   send(input: SendInput, operationId: string): Promise<Result<SendResult, FleetClientError>> {
-    return this.#runOperation(operationId, "send", input, () => this.#sendImpl(input, operationId));
+    return this.#runOperation(operationId, "send", input, () =>
+      this.#enqueueAgent(input.name, () => this.#sendImpl(input, operationId)),
+    );
   }
 
   async #sendImpl(
@@ -409,10 +417,25 @@ export class FleetService {
     signal?: AbortSignal,
   ): Promise<Result<ReceiveResult, FleetClientError>> {
     const coordinator = this.#coordinators.get(input.name);
-    const agent =
-      coordinator === undefined
-        ? await this.store.getAgent(input.name)
-        : await coordinator.waitForIdle(signal);
+    let agent: StoredAgent | null;
+    try {
+      agent =
+        coordinator === undefined
+          ? await this.store.getAgent(input.name)
+          : await coordinator.waitForIdle(signal);
+    } catch (error: unknown) {
+      if (signal?.aborted === true) throw error;
+      if (error instanceof Error && error.message === "Agent destroyed") {
+        return err({ code: "agent_destroyed", message: `Agent ${input.name} was destroyed.` });
+      }
+      if (error instanceof Error && error.message === "Pi work was interrupted") {
+        return err({
+          code: "runtime_interrupted",
+          message: `Agent ${input.name} was interrupted before becoming idle.`,
+        });
+      }
+      throw error;
+    }
     if (agent === null) return this.#notFound(input.name);
     if (agent.latestAssistantText === null || agent.responseObservedAt === null) {
       return err({
@@ -487,7 +510,7 @@ export class FleetService {
     operationId: string,
   ): Promise<Result<DestroyResult, FleetClientError>> {
     return this.#runOperation(operationId, "destroy", input, () =>
-      this.#destroyImpl(input, operationId),
+      this.#enqueueAgent(input.name, () => this.#destroyImpl(input, operationId)),
     );
   }
 
@@ -648,7 +671,7 @@ export class FleetService {
         agent: { id: agent.summary.id, name: agent.summary.name },
         acceptedAt,
       });
-    } catch (error: unknown) {
+    } catch {
       if (!this.#coordinators.has(input.name)) this.#releaseProcessSlot(input.name);
       if (incarnationId !== null && !this.#coordinators.has(input.name)) {
         await this.store.putIncarnation({
@@ -668,7 +691,7 @@ export class FleetService {
       });
       return err({
         code: "delivery_uncertain",
-        message: error instanceof Error ? error.message : "Pi delivery became uncertain.",
+        message: "Pi may have accepted the message; Fleet will not replay it automatically.",
       });
     }
   }
@@ -702,6 +725,10 @@ export class FleetService {
     );
     this.#coordinators.set(agent.summary.name, coordinator);
     return coordinator;
+  }
+
+  #enqueueAgent<T>(name: string, operation: () => Promise<T>): Promise<T> {
+    return enqueueNamed(this.#agentLanes, name, operation);
   }
 
   #enqueueSend<T>(name: string, operation: () => Promise<T>): Promise<T> {
@@ -858,6 +885,20 @@ export class FleetService {
           // Resume the singular destroy operation against the surviving agent.
           return null;
         } else {
+          const send = await this.store.getSend(operationId);
+          if (send === null) {
+            // The operation exists but no send record was committed, so Pi could not have been
+            // dispatched. Retrying from the beginning is safe.
+            await this.store.deleteOperation(operationId);
+            await this.store.putOperation({
+              operationId,
+              method,
+              fingerprint,
+              state: "pending",
+              result: null,
+            });
+            return null;
+          }
           return err({
             code: "operation_in_progress",
             message: `Operation ${operationId} is still pending.`,
@@ -907,6 +948,24 @@ export class FleetService {
       result,
     });
   }
+}
+
+function enqueueNamed<T>(
+  lanes: Map<string, Promise<void>>,
+  name: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = lanes.get(name) ?? Promise.resolve();
+  const result = previous.then(operation, operation);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  lanes.set(name, settled);
+  void settled.finally(() => {
+    if (lanes.get(name) === settled) lanes.delete(name);
+  });
+  return result;
 }
 
 async function* watchWithCleanup(

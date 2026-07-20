@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.pi/
+AGENTS.md
+.codegraph/
+pi/
+herdr/
+research/
+PROPOSAL.md
+PRIOR_ART.md
+DAEMON_CLI_PROPOSAL.md
+TYPESCRIPT_IMPLEMENTATION_PROPOSAL.md

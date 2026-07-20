@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Reliability
+
+- Added deterministic fault-injection coverage for receive timeout/cancellation, delivery recovery, runtime crashes, Pi RPC failures, SQLite worker/storage failures, protocol framing, command races, raw session boundaries, and public-error redaction.
+- Serialized create, send, and destroy transitions per agent so cross-command races cannot orphan or resurrect an agent generation.
+- Made SQLite-worker failures terminal for current and future calls and made send recovery safe when an operation exists but no send record was committed.
+- Redacted Pi stderr and unexpected internal exceptions from public errors while retaining stable typed error codes.
+
 ## 0.1.0-beta.1 — 2026-07-20
 
 Release-pipeline validation beta. No product-contract changes from `0.1.0-beta.0`.

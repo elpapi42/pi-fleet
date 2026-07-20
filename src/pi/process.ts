@@ -138,11 +138,20 @@ export class PiProcess {
     const response = new Promise<PiFrame>((resolveResponse, rejectResponse) => {
       const timer = setTimeout(() => {
         this.#responses.delete(id);
-        rejectResponse(new Error(`Pi RPC request timed out. stderr: ${this.#stderr}`));
+        rejectResponse(new Error("Pi RPC request timed out"));
       }, timeoutMs);
       this.#responses.set(id, { resolve: resolveResponse, reject: rejectResponse, timer });
     });
-    await this.#write({ ...command, id });
+    try {
+      await this.#write({ ...command, id });
+    } catch (error: unknown) {
+      const waiter = this.#responses.get(id);
+      if (waiter !== undefined) {
+        clearTimeout(waiter.timer);
+        this.#responses.delete(id);
+        waiter.reject(error instanceof Error ? error : new Error("Pi RPC write failed"));
+      }
+    }
     const frame = await response;
     if (frame.success !== true)
       throw new Error(frame.error ?? `Pi rejected ${String(command.type)}`);

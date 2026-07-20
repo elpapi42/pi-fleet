@@ -43,6 +43,7 @@
     "pretest": "npm run build",
     "test": "vitest run",
     "test:integration": "vitest run test/integration --maxWorkers=1",
+    "test:faults": "npm run build && vitest run test/faults --maxWorkers=1",
     "test:process": "vitest run test/process --maxWorkers=1",
     "test:package": "npm run build && vitest run test/package --maxWorkers=1",
     "test:platform": "vitest run test/integration/service-installer.test.ts test/process/process-tree.test.ts --maxWorkers=1",

@@ -71,12 +71,14 @@ function handleConnection(
         .then((readyService) => dispatch(value, readyService, socket, abort.signal, maxFrameBytes))
         .catch((error: unknown) => {
           if (socket.destroyed) return;
-          const message = error instanceof Error ? error.message : "Internal runtime error";
+          const invalidRequest = error instanceof InvalidRequestError;
           writeJsonLine(socket, {
             v: PROTOCOL_VERSION,
             requestId: requestIdFrom(value),
             ok: false,
-            error: { code: "invalid_request", message },
+            error: invalidRequest
+              ? { code: "invalid_request", message: error.message }
+              : { code: "internal_error", message: "Pi Fleet encountered an internal error." },
           });
           socket.end();
         });
@@ -101,7 +103,14 @@ async function dispatch(
   connectionSignal: AbortSignal,
   maxFrameBytes: number,
 ): Promise<void> {
-  const request = parseProtocolRequest(value);
+  let request: ReturnType<typeof parseProtocolRequest>;
+  try {
+    request = parseProtocolRequest(value);
+  } catch (error: unknown) {
+    throw new InvalidRequestError(
+      error instanceof Error ? error.message : "Invalid protocol request",
+    );
+  }
   const operationId = request.operation?.operationId;
   let result: Result<unknown, FleetClientError>;
 
@@ -162,7 +171,7 @@ async function dispatch(
           });
           socket.end();
         }
-      } catch (error: unknown) {
+      } catch {
         if (!socket.destroyed) {
           writeJsonLine(socket, {
             v: PROTOCOL_VERSION,
@@ -170,7 +179,7 @@ async function dispatch(
             stream: "error",
             error: {
               code: "session_changed",
-              message: error instanceof Error ? error.message : "Session watch failed.",
+              message: "Pi session changed while watching.",
             },
           });
           socket.end();
@@ -198,10 +207,10 @@ function asCreateInput(params: Record<string, unknown>): CreateInput {
   const instructions = params.instructions;
   const piArgv = params.piArgv;
   if (instructions !== undefined && typeof instructions !== "string") {
-    throw new Error("instructions must be a string");
+    throw new InvalidRequestError("instructions must be a string");
   }
   if (!Array.isArray(piArgv) || !piArgv.every((token) => typeof token === "string")) {
-    throw new Error("piArgv must be an array of strings");
+    throw new InvalidRequestError("piArgv must be an array of strings");
   }
   return { name, cwd, piArgv, ...(instructions === undefined ? {} : { instructions }) };
 }
@@ -221,13 +230,20 @@ async function receiveWithTimeout(
   connectionSignal: AbortSignal,
 ): Promise<Result<unknown, FleetClientError>> {
   const abort = new AbortController();
+  let timedOut = false;
   const onConnectionAbort = () => abort.abort();
   connectionSignal.addEventListener("abort", onConnectionAbort, { once: true });
-  const timer = timeoutMs === undefined ? undefined : setTimeout(() => abort.abort(), timeoutMs);
+  const timer =
+    timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true;
+          abort.abort();
+        }, timeoutMs);
   try {
     return await service.receive(input, abort.signal);
   } catch (error: unknown) {
-    if (abort.signal.aborted) {
+    if (timedOut) {
       return err({ code: "timeout", message: "Agent did not become idle before timeout." });
     }
     throw error;
@@ -241,20 +257,25 @@ function numberParam(params: Record<string, unknown>, key: string): number | und
   const value = params[key];
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new Error(`${key} must be a non-negative number`);
+    throw new InvalidRequestError(`${key} must be a non-negative number`);
   }
   return value;
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string {
   const value = params[key];
-  if (typeof value !== "string") throw new Error(`${key} must be a string`);
+  if (typeof value !== "string") throw new InvalidRequestError(`${key} must be a string`);
   return value;
 }
 
 function requireOperation(operationId: string | undefined): string {
-  if (operationId === undefined) throw new Error("Mutation requires operation identity");
+  if (operationId === undefined)
+    throw new InvalidRequestError("Mutation requires operation identity");
   return operationId;
+}
+
+class InvalidRequestError extends Error {
+  override readonly name = "InvalidRequestError";
 }
 
 function requestIdFrom(value: unknown): string {

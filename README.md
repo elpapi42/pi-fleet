@@ -189,12 +189,13 @@ npm run typecheck
 npm run lint
 npm run format:check
 npm test
+npm run test:faults
 npm run build
 npm run test:package
 npm run test:platform
 ```
 
-See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for architecture, completed evidence, and remaining release gates.
+See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for architecture and release gates, and [`TESTING_PLAN.md`](./TESTING_PLAN.md) for failure injection, crash recovery, concurrency, privacy, and soak testing. Deterministic fault tests run in the full suite; heavier reliability checks run nightly.
 
 ## License
 
