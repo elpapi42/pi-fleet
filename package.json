@@ -15,6 +15,7 @@
     "lint": "eslint src test scripts bin --max-warnings=0",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "test:integration": "vitest run test/integration --maxWorkers=1",
     "test:compat": "vitest run test/compat --maxWorkers=1",
     "probe:pi": "node scripts/pi-compatibility-probe.mts",
     "build": "node scripts/build.mjs"
@@ -35,6 +36,7 @@
     "vitest": "4.1.10"
   },
   "dependencies": {
+    "@sinclair/typebox": "0.34.52",
     "commander": "15.0.0"
   }
 }

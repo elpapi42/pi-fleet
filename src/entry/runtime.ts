@@ -1,10 +1,29 @@
-import { PRODUCT_BINARY } from "../shared/product-identity.js";
+import { pathToFileURL } from "node:url";
 
-export function runRuntime(): number {
-  process.stderr.write(`${PRODUCT_BINARY} runtime is not implemented yet.\n`);
-  return 1;
+import { resolveFleetPaths } from "../platform/shared/paths.js";
+import { startControlServer } from "../runtime/control-server.js";
+import { FleetService } from "../runtime/fleet-service.js";
+import { MemoryFleetStore } from "../store/memory-store.js";
+
+export async function runRuntime(): Promise<void> {
+  const paths = resolveFleetPaths();
+  const server = await startControlServer({
+    socketPath: paths.socketPath,
+    service: new FleetService(new MemoryFleetStore()),
+  });
+
+  await new Promise<void>((resolveShutdown) => {
+    let closing = false;
+    const shutdown = () => {
+      if (closing) return;
+      closing = true;
+      void server.close().finally(resolveShutdown);
+    };
+    process.once("SIGTERM", shutdown);
+    process.once("SIGINT", shutdown);
+  });
 }
 
-if (process.argv[1] !== undefined && import.meta.url.endsWith("/runtime.mjs")) {
-  process.exitCode = runRuntime();
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await runRuntime();
 }

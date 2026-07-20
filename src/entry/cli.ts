@@ -6,14 +6,20 @@ import { splitArgv } from "../cli/argv.js";
 import type { CliDependencies as Dependencies } from "../cli/context.js";
 import { createProgram } from "../cli/program.js";
 import { writeError } from "../cli/output.js";
-import { unavailableFleetClient } from "../client/unavailable-client.js";
+import { SocketFleetClient } from "../client/socket-fleet-client.js";
+import { ensureRuntime } from "../platform/client/start-runtime.js";
+import { resolveFleetPaths } from "../platform/shared/paths.js";
 
 export type CliDependencies = Dependencies;
 
 function defaultDependencies(): CliDependencies {
   const abort = new AbortController();
+  const paths = resolveFleetPaths();
   return {
-    client: unavailableFleetClient,
+    client: new SocketFleetClient({
+      socketPath: paths.socketPath,
+      beforeConnect: () => ensureRuntime({ socketPath: paths.socketPath, env: process.env }),
+    }),
     cwd: process.cwd(),
     stdin: process.stdin,
     stdout: process.stdout,

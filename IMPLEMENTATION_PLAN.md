@@ -57,11 +57,13 @@ Implement all seven command grammars against a fake client. Freeze JSON-first ou
 
 **Evidence:** `test/unit/cli-contract.test.ts` exercises all seven commands, exact first-`--` passthrough, explicit stdin, JSON/human output, raw watch bytes, timeout exit 124, and structured parser errors against a typed fake `FleetClient`.
 
-### 4. Private socket and fake runtime
+### 4. Private socket and fake runtime — complete
 
 Add versioned bounded Unix-socket JSONL, a typed client, a foreground fake runtime, `MemoryFleetStore`, operation identities for mutations, and held `receive`/`watch` connections.
 
 **Exit gate:** built CLI communicates with a separate runtime process and private protocol frames never leak to public output.
+
+**Evidence:** `test/integration/socket-runtime.test.ts` proves real Unix-socket create/list/status/destroy, operation replay/conflict behavior, and typed errors. A built-artifact smoke proves automatic runtime startup and the full fake create/send/receive/watch/destroy path.
 
 ### 5. Real-Pi in-memory vertical slice
 
