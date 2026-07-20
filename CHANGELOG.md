@@ -8,6 +8,7 @@
 - Serialized create, send, and destroy transitions per agent so cross-command races cannot orphan or resurrect an agent generation.
 - Made SQLite-worker failures terminal for current and future calls and made send recovery safe when an operation exists but no send record was committed.
 - Redacted Pi stderr and unexpected internal exceptions from public errors while retaining stable typed error codes.
+- Contained asynchronous coordinator event/store failures by stopping the affected Pi process and rejecting waiters instead of producing unhandled promise rejections.
 
 ## 0.1.0-beta.1 — 2026-07-20
 

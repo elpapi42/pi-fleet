@@ -15,6 +15,7 @@ export class AgentCoordinator {
   readonly #idleWaiters = new Set<IdleWaiter>();
   #lane: Promise<void> = Promise.resolve();
   #stopReason: CoordinatorStopReason | null = null;
+  #handlingFailure = false;
   #unsubscribeFrame: () => void;
   #unsubscribeExit: () => void;
 
@@ -27,11 +28,11 @@ export class AgentCoordinator {
     private readonly onProcessExit: (error: Error | null) => void,
   ) {
     this.#unsubscribeFrame = process.onFrame((frame) => {
-      if (frame.type === "agent_start") void this.#enqueue(() => this.#markWorking());
-      if (frame.type === "agent_settled") void this.#enqueue(() => this.#markIdle());
+      if (frame.type === "agent_start") this.#queueEvent(() => this.#markWorking());
+      if (frame.type === "agent_settled") this.#queueEvent(() => this.#markIdle());
     });
     this.#unsubscribeExit = process.onExit((error) => {
-      void this.#enqueue(() => this.#handleProcessExit(error));
+      this.#queueEvent(() => this.#handleProcessExit(error));
     });
   }
 
@@ -217,6 +218,19 @@ export class AgentCoordinator {
       waiter.reject(error);
     }
     this.#idleWaiters.clear();
+  }
+
+  #queueEvent(operation: () => Promise<void>): void {
+    void this.#enqueue(operation).catch((error: unknown) => this.#handleEventFailure(error));
+  }
+
+  async #handleEventFailure(error: unknown): Promise<void> {
+    if (this.#handlingFailure) return;
+    this.#handlingFailure = true;
+    const failure = error instanceof Error ? error : new Error("Agent coordinator failed");
+    this.#rejectIdleWaiters(failure);
+    await this.process.stop().catch(() => undefined);
+    this.onProcessExit(failure);
   }
 
   #enqueue<T>(operation: () => Promise<T>): Promise<T> {
