@@ -6,7 +6,7 @@ Prove that Pi Fleet remains safe and predictable under timeouts, crashes, malfor
 
 ## Implementation status
 
-The deterministic Linux x64 reliability pass is complete for the pending `0.1.0-beta.5` release:
+The deterministic Linux x64 reliability pass is complete for published `0.1.0-beta.5`:
 
 - `test:faults` covers receive timeout/disconnect/destroy behavior, durable delivery replay boundaries, compiled-runtime `SIGKILL` recovery, cross-command serialization, Pi RPC framing/exit/timeout failures, SQLite worker death/malformed responses/corruption/locking, fail-closed dispatch, protocol malformed/oversized/unterminated input, stdin size/UTF-8 boundaries, raw-watch record boundaries, and public error redaction.
 - Reusable scripted-Pi, fault-barrier, isolated-environment, and side-effect-ledger fixtures are available under `test/fixtures` and `test/helpers`.
@@ -15,7 +15,7 @@ The deterministic Linux x64 reliability pass is complete for the pending `0.1.0-
 - Schema-3 materialization now keeps exact Fleet-owned artifact hashes while validating direct dependency identities and deriving a closure-specific immutable release from the installed global npm dependency tree. Package tests prove an installed-tree difference, operational startup, npm-install removal, and materialized-release restart.
 - The tag publishing workflow runs deterministic tests plus the released-version matrix and soak; nightly Linux runs faults, process, compatibility, version matrix, resource soak, and the store benchmark.
 
-The remaining evidence gates are intentionally outside this local deterministic claim: fresh-registry smoke for the pending beta.3 tag, real disk exhaustion, host logout/reboot, macOS launchd/containment, released-version matrices beyond the currently tested beta.0/beta.1 pair, and multi-hour platform resource-growth testing. These require a published package or disposable platform/filesystem environments and are not inferred from the passing local suites.
+The beta.5 tag workflow passed its fresh-registry operational smoke. Direct isolated registry testing also passed lifecycle/output/input/timeout behavior, repeated non-consuming receive, raw-watch byte boundaries and session mutation failures, native session selectors, concurrent startup/create/send behavior, Pi/runtime crash recovery without replay or duplicate writers, capacity recovery, and user-session preservation. The remaining evidence gates are real disk exhaustion, host logout/reboot, macOS launchd/containment, released-version matrices beyond the currently tested beta.0/beta.1 pair, and multi-hour platform resource-growth testing. These require disposable platform/filesystem environments and are not inferred from the passing Linux suites.
 
 ## Required invariants
 
