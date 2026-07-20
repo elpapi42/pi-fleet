@@ -590,6 +590,8 @@ export class FleetService {
   ): Promise<Result<SendResult, FleetClientError>> {
     let agent = initialAgent;
     let incarnationId: string | null = null;
+    let startingProcess: PiProcess | null = null;
+    let restoring = false;
     try {
       let coordinator = this.#coordinators.get(input.name);
       if (this.#launcher !== undefined && coordinator === undefined) {
@@ -614,6 +616,7 @@ export class FleetService {
             message: `Pi Fleet has reached its ${String(this.#limits.maxResidentProcesses)} process limit.`,
           });
         } else {
+          restoring = true;
           agent = await this.#markRestoring(agent);
           incarnationId = randomUUID();
           await this.store.putIncarnation({
@@ -622,7 +625,7 @@ export class FleetService {
             pid: null,
             state: "starting",
           });
-          const process = await this.#launcher.start(agent.launch, true, async (pid) => {
+          startingProcess = await this.#launcher.start(agent.launch, true, async (pid) => {
             await this.store.putIncarnation({
               incarnationId: incarnationId!,
               agentName: input.name,
@@ -630,6 +633,7 @@ export class FleetService {
               state: "starting",
             });
           });
+          const process = startingProcess;
           await this.store.putIncarnation({
             incarnationId,
             agentName: input.name,
@@ -654,6 +658,7 @@ export class FleetService {
           };
           await this.store.putAgent(agent);
           coordinator = this.#attachCoordinator(agent, process, incarnationId);
+          restoring = false;
         }
       }
 
@@ -688,7 +693,52 @@ export class FleetService {
         agent: { id: agent.summary.id, name: agent.summary.name },
         acceptedAt,
       });
-    } catch {
+    } catch (error: unknown) {
+      if (restoring && incarnationId !== null) {
+        let cleanupUncertain = error instanceof PiCleanupUncertainError;
+        let cleanupPid = error instanceof PiCleanupUncertainError ? error.pid : null;
+        if (startingProcess !== null) {
+          cleanupPid = startingProcess.pid;
+          try {
+            await startingProcess.stop();
+          } catch {
+            cleanupUncertain = true;
+          }
+        }
+        const code = cleanupUncertain ? "incarnation_cleanup_uncertain" : "pi_start_failed";
+        agent = {
+          ...agent,
+          summary: {
+            ...agent.summary,
+            state: "failed",
+            process: { state: cleanupUncertain ? "cleanup_uncertain" : "absent" },
+            error: { code },
+          },
+        };
+        await this.store.putAgent(agent);
+        await this.store.putIncarnation({
+          incarnationId,
+          agentName: input.name,
+          pid: cleanupPid,
+          state: cleanupUncertain ? "cleanup_uncertain" : "gone",
+        });
+        await this.store.putSend({
+          sendId: operationId,
+          agentName: input.name,
+          ordinal,
+          message: input.message,
+          state: "failed",
+          acceptedAt,
+        });
+        if (!cleanupUncertain) this.#releaseProcessSlot(input.name);
+        return err({
+          code,
+          message: cleanupUncertain
+            ? `Fleet could not prove the failed Pi restoration for ${input.name} was removed.`
+            : `Pi failed to restore for ${input.name}; the message was not dispatched.`,
+        });
+      }
+
       if (!this.#coordinators.has(input.name)) this.#releaseProcessSlot(input.name);
       if (incarnationId !== null && !this.#coordinators.has(input.name)) {
         await this.store.putIncarnation({

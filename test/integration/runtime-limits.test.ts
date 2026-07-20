@@ -190,6 +190,76 @@ describe("runtime admission limits", () => {
     await service.close();
   });
 
+  it("reports a proven restoration startup failure without claiming delivery uncertainty", async () => {
+    let starts = 0;
+    const store = new MemoryFleetStore();
+    const service = new FleetService(store, {
+      launcher: {
+        artifactId: "restore-failure-pi",
+        async start() {
+          starts += 1;
+          if (starts === 1) return fakeProcess(24_000);
+          throw new Error("spawn ENOENT");
+        },
+      },
+    });
+    await service.create({ name: "missing-cwd", cwd: "/tmp", piArgv: [] }, "create-one");
+    await service.releaseAgentProcess("missing-cwd");
+
+    expect(await service.send({ name: "missing-cwd", message: "work" }, "send-one")).toMatchObject({
+      ok: false,
+      error: { code: "pi_start_failed" },
+    });
+    expect(await store.getSend("send-one")).toMatchObject({ state: "failed" });
+    expect(await service.status({ name: "missing-cwd" })).toMatchObject({
+      ok: true,
+      value: {
+        agent: {
+          state: "failed",
+          process: { state: "absent" },
+          error: { code: "pi_start_failed" },
+        },
+      },
+    });
+    await service.close();
+  });
+
+  it("retains restoration cleanup uncertainty when the failed process may survive", async () => {
+    let starts = 0;
+    const store = new MemoryFleetStore();
+    const service = new FleetService(store, {
+      launcher: {
+        artifactId: "restore-cleanup-pi",
+        async start() {
+          starts += 1;
+          if (starts === 1) return fakeProcess(24_100);
+          throw new PiCleanupUncertainError(
+            24_101,
+            new Error("readiness failed"),
+            new Error("still alive"),
+          );
+        },
+      },
+    });
+    await service.create({ name: "unclean-restore", cwd: "/tmp", piArgv: [] }, "create-one");
+    await service.releaseAgentProcess("unclean-restore");
+
+    expect(
+      await service.send({ name: "unclean-restore", message: "work" }, "send-one"),
+    ).toMatchObject({ ok: false, error: { code: "incarnation_cleanup_uncertain" } });
+    expect(await store.getSend("send-one")).toMatchObject({ state: "failed" });
+    expect(await service.status({ name: "unclean-restore" })).toMatchObject({
+      ok: true,
+      value: {
+        agent: {
+          state: "failed",
+          process: { state: "cleanup_uncertain" },
+          error: { code: "incarnation_cleanup_uncertain" },
+        },
+      },
+    });
+  });
+
   it("preserves a failed agent when instructed create delivery is ambiguous", async () => {
     const launcher: PiLauncher = {
       artifactId: "ambiguous-pi",

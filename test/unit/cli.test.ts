@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { unavailableFleetClient } from "../../src/client/unavailable-client.js";
 import { runCli, type CliDependencies } from "../../src/entry/cli.js";
 import { PRODUCT_VERSION } from "../../src/shared/product-identity.js";
+import { ok } from "../../src/shared/result.js";
 
 function createHarness() {
   let stdout = "";
@@ -44,5 +45,25 @@ describe("runCli", () => {
       type: "error",
       error: { code: "runtime_unavailable" },
     });
+  });
+
+  it("treats a closed watch output pipe as normal client disconnection", async () => {
+    const harness = createHarness();
+    const error = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    const stdout = new Writable({
+      highWaterMark: 1,
+      write(_chunk, _encoding, callback) {
+        callback(error);
+      },
+    });
+    const client = {
+      ...unavailableFleetClient,
+      watchSession: async function* () {
+        yield ok({ bytes: Buffer.from('{"type":"message"}\n') });
+      },
+    };
+
+    expect(await runCli(["watch", "agent"], { ...harness.dependencies, client, stdout })).toBe(0);
+    expect(harness.read().stderr).toBe("");
   });
 });
