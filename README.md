@@ -1,66 +1,115 @@
 # Pi Fleet
 
-Pi Fleet is a local runtime and machine-first CLI for named, long-lived Pi agents.
+**Keep a Pi session reachable between tasks.**
+
+Pi Fleet is a local CLI that gives a native Pi session a stable handle. Start it once, send work from a terminal or script, retrieve the latest result when it settles, and follow up later from the same session. Fleet keeps the Pi process resident when possible and restores it from the selected session when it is absent.
+
+Pi remains Pi: its sessions, models, tools, extensions, skills, and project resources stay under your control. Fleet adds local process lifecycle and a small machine-readable control surface; it does not copy or delete your sessions, invent a workflow, or claim an uninterrupted mind.
 
 ```text
 create · send · receive · status · list · watch · destroy
 ```
 
-Fleet keeps a Pi process resident when possible, restores it from the same native Pi session when absent, accepts repeated steering input, and returns the latest assistant message after Pi becomes idle. Pi sessions remain under your control: Fleet references them but never copies or deletes them.
+## Why Pi Fleet?
 
-> **Beta:** `0.1.0-beta.9` has passed deterministic Linux x64 fault, recovery, package, compatibility, systemd/PID-1 restart, and resource-stability tests with Pi `0.80.10`. Its tag workflow requires a fresh registry-install operational smoke, and direct isolated testing covers lifecycle, timeout, repeated receive, raw watch and pipe disconnection, session mutation and selectors, concurrency, Pi/runtime crash recovery, capacity, interrupted-work responses, provider failures, extension UI cancellation, and failed restoration. Actual logout/reboot recovery, macOS launchd/containment, automatic upgrades, and public service-management UX are not yet release-validated.
+A normal Pi invocation is excellent for an interactive task. Pi Fleet is for the gap between tasks: you want to return to the same work without reopening a terminal, reselecting a session, or rebuilding the control glue in every script.
 
-## Install
+```text
+Without Fleet                         With Fleet
+──────────────────────────────────    ─────────────────────────────────────
+start Pi for one task                 create reviewer once
+keep the terminal/process around      send reviewer work whenever needed
+manually reopen a session later       receive when it settles; follow up later
+build your own process plumbing       inspect, tail, or destroy with one CLI
+```
 
-Requirements:
+The stable handle is a local control name, not a new persona or a second source of truth. The native Pi session remains the conversation record.
 
-- Linux x64
-- Node.js `^22.19.0 || ^24.0.0`
-- normal Pi provider credentials and configuration
+## Quick start
 
-Install the beta globally:
+### 1. Install
+
+Pi Fleet currently supports Linux x64 with Node.js `^22.19.0 || ^24.0.0` and normal Pi provider credentials/configuration.
 
 ```bash
 npm install --global @elpapi42/pi-fleet@beta
 pifleet --version
 ```
 
-Configure normal Pi provider credentials **before the first operational Fleet command**. `list`, `create`, and the other operational commands start or reuse one persistent runtime; a variable supplied only to a later command, such as `ANTHROPIC_API_KEY=… pifleet create …`, does not replace that runtime's environment. Put provider credentials in Pi's credential configuration or the persistent service/runtime environment, then verify startup:
+Configure provider credentials before the first operational Fleet command. `list`, `create`, and other operations start or reuse a persistent runtime; a variable added only to a later invocation, such as `ANTHROPIC_API_KEY=… pifleet create …`, does not change that runtime's environment. Use normal Pi credential configuration or the persistent runtime/service environment.
 
-```bash
-pifleet list
-```
-
-`npx @elpapi42/pi-fleet@beta` is suitable for evaluation, but a global installation is recommended for continued use. Fleet materializes a verified runtime independently of the npm installation/cache, and evaluation can leave that runtime and Fleet state behind intentionally.
-
-Pi Fleet includes the tested Pi coding-agent package. It uses your normal Pi configuration, provider credentials, extensions, skills, and project resources. **Do not put API keys or other secrets in CLI arguments:** Fleet persists accepted Pi arguments so it can restore the agent.
-
-## Quick start
-
-Create a promptless named agent in the current project:
+### 2. Start a reusable handle
 
 ```bash
 pifleet create reviewer --cwd "$PWD"
 ```
 
-Send work and retrieve the latest assistant message after Pi becomes idle:
+### 3. Send work, then pick up the result
 
 ```bash
 pifleet send reviewer "Review the authentication changes"
 pifleet receive reviewer --timeout 10m --human
 ```
 
-Inspect and remove Fleet management:
+### 4. Continue without starting over
 
 ```bash
-pifleet status reviewer
-pifleet list
-pifleet destroy reviewer
+pifleet send reviewer "Turn the important findings into an acceptance checklist"
+pifleet receive reviewer --timeout 10m --human
 ```
 
-`destroy` stops Fleet's managed process and removes the Fleet name. It **never deletes the Pi session**.
+`receive` returns Pi's latest assistant message once the session is idle. It is intentionally not a one-send/one-response protocol: several sends can steer the same settled result.
 
-## Commands
+For automation, finite commands emit one compact JSON object by default. Use `--human` only when printing a response directly for a person.
+
+## What Fleet handles—and what it does not
+
+| Fleet handles                                                                                                                                                    | Pi and you control                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stable local handles, process residency and restoration, private local control, ordered input delivery, waiting for settlement, raw session tailing, and cleanup | Models, prompts, tools, extensions, skills, project trust, session creation and contents, roles, workflow, approval, scheduling, and autonomy |
+
+This boundary is deliberate. Fleet makes Pi available and controllable; it does not turn Pi into a managed-team product or decide what work it should do.
+
+## Use your native Pi session
+
+Pass compatible Pi selectors after the first literal `--`. Fleet records the concrete session Pi selected solely so a later restoration can reopen it; it never copies, relocates, or deletes session data.
+
+```bash
+# Existing session file
+pifleet create reviewer --cwd /workspace/project -- --session /absolute/session.jsonl
+
+# Exact Pi session ID
+pifleet create reviewer -- --session-id SESSION_ID
+
+# Native first-launch selection
+pifleet create reviewer -- --fork /absolute/source.jsonl
+pifleet create reviewer -- --continue
+```
+
+`--cwd` is a Fleet option and belongs before `--`; all native Pi options belong after it and preserve their token order:
+
+```bash
+pifleet create reviewer \
+  --cwd /workspace/project \
+  -- \
+  --session /absolute/session.jsonl \
+  --model anthropic/claude-sonnet-4 \
+  --thinking high
+```
+
+Headless `--resume` is not supported because it requires interactive selection before RPC mode. Positional Pi prompts and `@file` inputs after `--` are rejected; use optional create instructions or `send` so Fleet can preserve ordered input.
+
+## Observe the real session
+
+`watch` emits a live, byte-faithful tail of complete records from the selected Pi session JSONL. It adds no Fleet wrappers, history, or transient RPC events, and it never wakes or steers Pi.
+
+```bash
+pifleet watch reviewer > live-session.jsonl
+```
+
+For an existing file, watch starts at the current EOF. For a session that has not materialized yet, it waits and begins at byte zero once the file appears. Detectable replacement, truncation, lag, path changes, or runtime loss fail visibly on stderr instead of being guessed or replayed.
+
+## Command reference
 
 ```text
 pifleet create NAME [INITIAL_INSTRUCTIONS] [--cwd PATH] [--human] [-- PI_OPTIONS...]
@@ -72,73 +121,41 @@ pifleet watch NAME
 pifleet destroy NAME [--human]
 ```
 
-Finite commands emit JSON by default. Add `--human` for concise human output. `watch` has no human mode: stdout is only raw, complete records appended to the selected Pi session JSONL.
+Names are 1–63 lowercase letters, digits, or interior hyphens. `status` and `list` are passive: they do not restore a Pi process. An idle handle may be `resident` or `absent`; the next `send` restores an absent session when safe.
 
-Messages can be read explicitly from stdin with `-` and are limited to 512 KiB by default:
+### Send and receive
+
+`send` uses Pi's normal context-sensitive prompt operation:
+
+- while Pi is active, it queues steering for Pi's next decision point;
+- while idle, it starts ordinary work;
+- repeated sends are accepted in order;
+- acknowledgement means Pi accepted or queued input, not that work completed.
+
+`receive` waits for idle and returns the latest assistant text. `--timeout 0` polls immediately; explicit durations such as `30s`, `5m`, or `1h` are recommended because a unitless value is milliseconds. Timeout exits `124` and never cancels work. A canceled `receive` affects only that client.
+
+Pass large or shell-sensitive content through explicit stdin. Fleet never consumes piped stdin implicitly. Input is valid UTF-8, nonempty, and limited to 512 KiB by default.
 
 ```bash
 git diff | pifleet send reviewer -
-pifleet create researcher - < instructions.md
+pifleet create researcher - --cwd "$PWD" < instructions.md
 ```
 
-### Native Pi arguments
-
-Fleet owns only its small command surface. `--cwd` belongs before the first literal `--`; native Pi options belong after it and retain their token order:
+### Inspect, recover, and destroy
 
 ```bash
-pifleet create reviewer \
-  --cwd /workspace/project \
-  -- \
-  --session /absolute/path/to/session.jsonl \
-  --model anthropic/claude-sonnet-4 \
-  --thinking high
+pifleet status reviewer
+pifleet list
+pifleet destroy reviewer
 ```
 
-Supported native session selection includes:
+Inspect a `failed` state before acting. `runtime_interrupted` means active work stopped without silent replay. `delivery_uncertain` means Pi may have received the input, so do not blindly resend work that could have caused side effects. `incarnation_cleanup_uncertain` means Fleet cannot prove an old process writer is gone. A new explicit send is new work, not proof an uncertain earlier instruction did nothing.
 
-```bash
-pifleet create existing -- --session /path/to/session.jsonl
-pifleet create exact-id -- --session-id SESSION_ID
-pifleet create forked -- --fork /path/to/source.jsonl
-pifleet create latest -- --continue
-```
+`destroy` stops Fleet management and releases the local handle. It never deletes Pi sessions, credentials, configuration, extensions, skills, prompts, or project files.
 
-Pi interprets these options directly. An existing or missing `--session` path follows native Pi behavior, and an exact `--session-id` remains exact. Fleet records the concrete selected session only so later process restoration reopens the same conversation. Headless `--resume` is not supported because it requires interactive selection before RPC mode.
+## Runtime, data, and maintenance
 
-Positional Pi prompts and `@file` inputs after `--` are rejected; use Fleet's optional create instructions or `send` so input remains ordered.
-
-## Communication semantics
-
-`send` uses Pi's normal context-sensitive prompt operation with steering behavior:
-
-- while Pi is active, input is queued as steering;
-- while Pi is idle, input begins normal work;
-- repeated sends are accepted in order;
-- acknowledgement means Pi accepted/queued the input, not that it completed or produced a distinct response.
-
-`receive` deliberately has no per-send response correlation:
-
-- while Pi is busy or restoring, it waits for Pi to become idle;
-- once idle, it returns Pi's latest assistant message;
-- when already idle, it returns immediately;
-- with no assistant message, it returns `no_response`;
-- `--timeout 0` performs an immediate poll;
-- use an explicit duration suffix such as `30s`, `5m`, or `1h`; a unitless value is milliseconds;
-- timing out does not cancel or change Pi.
-
-## Sessions and `watch`
-
-Pi and you own session files, IDs, locations, creation, migration, and deletion. Fleet never copies, relocates, or deletes them.
-
-```bash
-pifleet watch reviewer > live-session.jsonl
-```
-
-`watch` is live-only. For an existing file it begins at the current EOF; for a not-yet-materialized file it waits and begins at byte zero. It does not emit Fleet wrappers, history, or transient RPC events. Concurrent external rewrites can invalidate tailing; detectable replacement, truncation, lag, or runtime loss is reported on stderr.
-
-## Runtime and local data
-
-The short-lived CLI connects to one private per-user runtime. On first operational use, Fleet verifies and materializes an immutable runtime release, then starts it in the background. A registered native service is preferred when present; service management is experimental and is not part of the seven-command beta interface.
+The short-lived CLI connects to one private per-user runtime. On first operational use, Fleet verifies and materializes an immutable runtime release, then starts it in the background. A registered native service is preferred when present; service management is experimental and not part of the seven-command beta interface.
 
 Linux defaults:
 
@@ -150,49 +167,41 @@ Runtime socket:    $XDG_RUNTIME_DIR/pifleet-$UID/control.sock
 Pi sessions:       Pi's normal ~/.pi storage or the exact path you selected
 ```
 
-`PIFLEET_STATE_ROOT` and `PIFLEET_APPLICATION_ROOT` can override Fleet-owned locations. A CLI invocation whose state root differs from an installed service fails immediately with repair guidance instead of connecting to the wrong database.
+`PIFLEET_STATE_ROOT` and `PIFLEET_APPLICATION_ROOT` can override Fleet-owned locations. A CLI invocation whose state root differs from an installed service fails with repair guidance instead of connecting to the wrong database.
 
-## Uninstall and recovery
+`npx @elpapi42/pi-fleet@beta` is appropriate for evaluation, but global installation is recommended for continued use. Fleet materializes a verified runtime independently of the npm cache or installation; evaluation can intentionally leave runtime and Fleet state behind.
 
-Before uninstalling, destroy agents you no longer want Fleet to manage:
+Before uninstalling, destroy handles you no longer want Fleet to manage:
 
 ```bash
 pifleet list --human
-pifleet destroy AGENT_NAME
+pifleet destroy HANDLE
 npm uninstall --global @elpapi42/pi-fleet
 ```
 
-Removing the npm package does not delete Pi sessions, Fleet's SQLite state, materialized runtime releases, or an already-running runtime/service. This protects durable agents from package-manager changes. Reinstalling the same or a compatible version reconnects to the preserved state.
+Removing the npm package does not delete Pi sessions, Fleet SQLite state, materialized releases, or an already-running runtime/service. Reinstalling the same or compatible version reconnects to preserved state. There is no automatic self-update, telemetry, remote transport, or npm `postinstall` service registration. Database migrations are forward-only; installing an older binary after a newer schema migration is not rollback.
 
-There is intentionally no automatic self-update, telemetry, remote transport, or npm `postinstall` service registration. Database migrations are forward-only; installing an older binary after a newer schema migration is not a supported rollback strategy.
+## Beta status
 
-For support, include:
+Beta.9 has passed deterministic Linux x64 fault, recovery, package, compatibility, systemd/PID-1 restart, and resource-stability tests with Pi `0.80.10`. Its tag workflow verifies the exact registry artifact, provenance, and a fresh global-install operational smoke.
 
-```bash
-node --version
-pifleet --version
-pifleet list
-pifleet status AGENT_NAME
-```
+Known limits:
 
-Do not include API keys, message contents, session contents, or private paths unnecessarily. Report reproducible issues at <https://github.com/elpapi42/pi-fleet/issues>.
+- Linux x64 is the only validated support target. Arbitrarily hoisted local-prefix, pnpm, and unusual `npx` dependency layouts are not supported.
+- Disposable systemd/PID-1 restart and user-lingering recovery are validated; a full host logout and kernel reboot are not.
+- macOS launchd and descendant containment, real disk exhaustion, and multi-hour resource growth remain unvalidated.
+- Runtime upgrades are not automatic, and active runtimes are not silently replaced.
+- Session tails cannot promise exactly-once delivery under arbitrary external mutation.
+- A promptless missing session path can remain physically unmaterialized until Pi writes conversation content, following native Pi behavior.
+- Managed Pi `0.80.10` pins `brace-expansion@5.0.6`, affected by local glob-input denial-of-service advisory `GHSA-3jxr-9vmj-r5cp`. Beta.9 permits only that exact package/version/path/advisory in the production-audit gate; every additional or changed production vulnerability fails release. Tracking: [earendil-works/pi#6882](https://github.com/earendil-works/pi/issues/6882).
 
-## Beta limitations
-
-- Current deterministic reliability and documented global-install package validation cover Linux x64 only. Arbitrarily hoisted local-prefix, pnpm, and unusual `npx` dependency layouts are not yet supported.
-- Disposable systemd/PID-1 restart and user-lingering recovery are validated; a full host logout and kernel reboot remain unvalidated.
-- launchd and macOS descendant containment remain unvalidated.
-- Real disk-exhaustion behavior and multi-hour resource growth remain unvalidated; bounded SQLite and in-process resource tests are covered.
-- Native service install/repair/uninstall exists internally but has no supported public UX yet.
-- Managed Pi `0.80.10` pins `brace-expansion@5.0.6`, which has the local glob-input denial-of-service advisory `GHSA-3jxr-9vmj-r5cp`. Beta.9 carries a narrow, visible audit exception for only that exact package, version, path, and advisory; any other production vulnerability still fails the release gate. Upstream tracking: [earendil-works/pi#6882](https://github.com/earendil-works/pi/issues/6882).
-- Runtime upgrades are not automatic; active runtimes are not silently replaced.
-- Session tails cannot promise exactly-once behavior under arbitrary external mutation.
-- A promptless missing session path may remain physically unmaterialized until Pi writes conversation content, following native Pi behavior.
+For support, include `node --version`, `pifleet --version`, `pifleet list`, and `pifleet status HANDLE`. Do not include API keys, message contents, session contents, or private paths unnecessarily. Report reproducible issues at <https://github.com/elpapi42/pi-fleet/issues>.
 
 ## Development
 
 ```bash
 npm ci
+npm run audit:production
 npm run typecheck
 npm run lint
 npm run format:check
@@ -204,7 +213,7 @@ npm run test:platform
 npm run test:soak
 ```
 
-See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for architecture and release gates, and [`TESTING_PLAN.md`](./TESTING_PLAN.md) for failure injection, crash recovery, concurrency, privacy, and soak testing. Deterministic fault tests run in the full suite; heavier reliability checks run nightly.
+See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for architecture and release gates, and [`TESTING_PLAN.md`](./TESTING_PLAN.md) for fault injection, crash recovery, concurrency, privacy, and soak testing.
 
 ## License
 

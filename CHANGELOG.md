@@ -30,7 +30,7 @@ Core product and Linux supervision validation after beta.8.
 
 ### Validated
 
-- Reused one real named agent across a service restart and related follow-up assignment with the same native Pi session and less re-explanation.
+- Reused one real Pi session through the same handle across a service restart and related follow-up assignment with less re-explanation.
 - Proved user lingering, idle PID-1 restart without eager restoration, single-writer session restoration, active restart interruption without replay, explicit recovery, and session preservation in a disposable systemd container.
 
 ### Security
@@ -141,7 +141,7 @@ First public beta of Pi Fleet.
 ### Included
 
 - Seven-command JSON-first CLI: `create`, `send`, `receive`, `status`, `list`, `watch`, and `destroy`.
-- Named resident Pi processes with restore-on-address from native Pi sessions.
+- Resident Pi processes with stable handles and restore-on-address from native Pi sessions.
 - Exact compatible Pi argument passthrough after `--` and Fleet-owned `--cwd`.
 - Ordered repeated steering input and idle-based latest-assistant response retrieval.
 - Raw live Pi session JSONL watching.

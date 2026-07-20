@@ -1,7 +1,7 @@
 {
   "name": "@elpapi42/pi-fleet",
   "version": "0.1.0-beta.9",
-  "description": "A local runtime and machine-first CLI for named Pi agents",
+  "description": "Keep Pi sessions reachable between tasks from a local CLI",
   "license": "MIT",
   "author": "elpapi42",
   "keywords": [

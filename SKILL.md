@@ -1,6 +1,6 @@
 ---
 name: pi-fleet-operator
-description: Operate the `pifleet` CLI for durable named Pi agents. Use this skill whenever the user asks to create or reuse a named agent, delegate or steer work through Pi Fleet, wait for or retrieve an agent response, inspect agent state, tail a Pi session, manage an existing Pi session through Fleet, or destroy a Fleet agent. Also use it for Pi Fleet CLI troubleshooting and automation, even when the user says only “the fleet,” “my named agent,” or “send this to the specialist.”
+description: Operate the `pifleet` CLI for durable Pi session handles. Use this skill whenever the user asks to create or reuse a Pi handle, delegate or steer work through Pi Fleet, wait for or retrieve a Pi response, inspect handle state, tail a Pi session, manage an existing Pi session through Fleet, or destroy a Fleet handle. Also use it for Pi Fleet CLI troubleshooting and automation, even when the user says only “the fleet,” “my reviewer,” or “send this to the specialist.”
 compatibility: Requires the `pifleet` executable on PATH and a supported Pi Fleet installation.
 ---
 
@@ -144,7 +144,7 @@ Keep watching decoupled from sending. Starting or canceling a watcher must not w
 
 ## Destroy deliberately
 
-Destroy only when the user wants Fleet to stop managing the named agent:
+Destroy only when the user wants Fleet to stop managing the handle:
 
 ```bash
 pifleet destroy NAME

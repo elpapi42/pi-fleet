@@ -16,7 +16,7 @@ export function createProgram(
 ): Command {
   const program = new Command()
     .name(PRODUCT_BINARY)
-    .description("Manage named Pi agents")
+    .description("Keep Pi sessions reachable between tasks")
     .version(PRODUCT_VERSION)
     .exitOverride()
     .showHelpAfterError(false)
@@ -28,7 +28,7 @@ export function createProgram(
 
   program
     .command("create")
-    .description("Create a named Pi agent")
+    .description("Create a reusable Pi handle")
     .argument("<name>")
     .argument("[instructions]")
     .option("--cwd <path>")
@@ -49,7 +49,7 @@ export function createProgram(
 
   program
     .command("send")
-    .description("Send ordinary Pi input")
+    .description("Send Pi input")
     .argument("<name>")
     .argument("<message>")
     .option("--human")
@@ -59,7 +59,7 @@ export function createProgram(
 
   program
     .command("receive")
-    .description("Wait for idle and return the latest assistant message")
+    .description("Wait for idle and return the latest Pi response")
     .argument("<name>")
     .option("--timeout <duration>")
     .option("--human")
@@ -78,7 +78,7 @@ export function createProgram(
 
   program
     .command("status")
-    .description("Inspect one agent without waking it")
+    .description("Inspect a Pi handle without waking it")
     .argument("<name>")
     .option("--human")
     .action(async (name: string, options: HumanOptions) => {
@@ -87,7 +87,7 @@ export function createProgram(
 
   program
     .command("list")
-    .description("List named agents without waking them")
+    .description("List Pi handles without waking them")
     .option("--human")
     .action(async (options: HumanOptions) => {
       setExitCode(await runList({ human: options.human ?? false }, context));
@@ -103,7 +103,7 @@ export function createProgram(
 
   program
     .command("destroy")
-    .description("Stop managing an agent without deleting its Pi session")
+    .description("Stop managing a Pi handle without deleting its session")
     .argument("<name>")
     .option("--human")
     .action(async (name: string, options: HumanOptions) => {
