@@ -12,6 +12,20 @@
 - Added a nightly reliability workflow and an isolated soak suite covering 500 concurrent ordered sends and 100 name lifecycle cycles.
 - Reject invalid UTF-8 in stdin and Pi RPC stdout instead of silently replacing bytes at either protocol boundary.
 
+## 0.1.0-beta.7 — 2026-07-20
+
+Continued direct CLI edge-case testing. No intentional command-surface change.
+
+### Fixed
+
+- `watch` now treats downstream `EPIPE` as normal client disconnection, exiting successfully without misreporting a closed output pipe as `invalid_arguments`.
+- A restoration failure proven to occur before prompt dispatch now returns `pi_start_failed`, marks the send definitively failed, leaves the agent `failed + absent`, and releases process capacity instead of claiming `delivery_uncertain` and leaving `restoring + starting` state.
+- Restoration cleanup uncertainty remains fail-closed as `incarnation_cleanup_uncertain` with its process slot retained when Fleet cannot prove the spawned process is gone.
+
+### Manual validation
+
+- Exercised active runtime death with held clients, hanging/HTTP-error/malformed providers, 19 MB watch backpressure, stdin limits, Unicode paths, extension UI cancellation, oversized session records, watch pipe closure, and missing-cwd restoration in isolated environments.
+
 ## 0.1.0-beta.6 — 2026-07-20
 
 Manual interruption-semantics correction. No intentional command-surface change.
