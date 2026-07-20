@@ -49,3 +49,62 @@ jobs:
 
       - name: Publish beta with provenance
         run: npm publish --access public --tag beta --provenance
+
+      - name: Smoke the published registry package
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="${GITHUB_REF_NAME#v}"
+          package_name="@elpapi42/pi-fleet"
+          root="$(mktemp -d)"
+          cleanup() {
+            local pid
+            while IFS= read -r pid; do
+              kill -TERM "$pid" 2>/dev/null || true
+            done < <(pgrep -f -- "$root/application/releases" || true)
+            rm -rf "$root"
+          }
+          trap cleanup EXIT
+
+          metadata="$root/package.json"
+          for attempt in $(seq 1 30); do
+            if npm view "$package_name@$package_version" version dist --json >"$metadata" 2>/dev/null &&
+              node -e '
+                const metadata = require(process.argv[1]);
+                if (
+                  metadata.version !== process.argv[2] ||
+                  metadata.dist?.attestations?.provenance?.predicateType !== "https://slsa.dev/provenance/v1"
+                ) process.exit(1);
+              ' "$metadata" "$package_version"; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "Published package or provenance was not available after 30 attempts" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          mkdir -p "$root"/{home,runtime,state,application,pi-agent}
+          npm install --global --prefix "$root/npm" --ignore-scripts "$package_name@$package_version"
+          cli="$root/npm/bin/pifleet"
+          test "$("$cli" --version)" = "$package_version"
+
+          env \
+            HOME="$root/home" \
+            XDG_RUNTIME_DIR="$root/runtime" \
+            PIFLEET_STATE_ROOT="$root/state" \
+            PIFLEET_APPLICATION_ROOT="$root/application" \
+            PIFLEET_DISABLE_REGISTERED_SERVICE=1 \
+            PI_CODING_AGENT_DIR="$root/pi-agent" \
+            "$cli" list >"$root/list.json" 2>"$root/list.stderr"
+          test ! -s "$root/list.stderr"
+          node -e '
+            const value = require(process.argv[1]);
+            if (
+              value.schemaVersion !== 1 ||
+              value.type !== "agent.list" ||
+              !Array.isArray(value.agents) ||
+              value.agents.length !== 0
+            ) process.exit(1);
+          ' "$root/list.json"

@@ -12,6 +12,21 @@
 - Added a nightly reliability workflow and an isolated soak suite covering 500 concurrent ordered sends and 100 name lifecycle cycles.
 - Reject invalid UTF-8 in stdin and Pi RPC stdout instead of silently replacing bytes at either protocol boundary.
 
+## 0.1.0-beta.3 — 2026-07-20
+
+Reliability fix for fresh global npm installations. No intentional CLI or agent-lifecycle contract change.
+
+### Fixed
+
+- Replaced the invalid assumption that npm recreates CI's byte-identical `node_modules` tree. Schema-3 runtime manifests retain exact hashes for Fleet-owned files, validate direct dependency name/version, derive the observed dependency-closure hash at materialization, and prove source-before, staged, and source-after closure equality before activation.
+- Made immutable runtime release paths closure-specific, so different legitimate npm dependency layouts do not collide.
+- Strengthened package testing to mutate a fresh installed dependency tree, require an operational `list`, remove the npm installation, stop the runtime, and restart through the materialized release.
+
+### Installation scope
+
+- The documented global npm installation layout, where dependencies are package-local, is supported. Arbitrarily hoisted local-prefix, pnpm, and unusual `npx` dependency layouts are not yet supported.
+- The tag workflow now performs a fresh registry-install operational `list` smoke after publishing. That smoke is a release gate and has not yet run for beta.3.
+
 ## 0.1.0-beta.2 — 2026-07-20
 
 Reliability-focused beta maintenance release. No intentional product-contract changes.

@@ -6,15 +6,16 @@ Prove that Pi Fleet remains safe and predictable under timeouts, crashes, malfor
 
 ## Implementation status
 
-The deterministic Linux x64 reliability pass is complete for `0.1.0-beta.2`:
+The deterministic Linux x64 reliability pass is complete for the pending `0.1.0-beta.3` release:
 
 - `test:faults` covers receive timeout/disconnect/destroy behavior, durable delivery replay boundaries, compiled-runtime `SIGKILL` recovery, cross-command serialization, Pi RPC framing/exit/timeout failures, SQLite worker death/malformed responses/corruption/locking, fail-closed dispatch, protocol malformed/oversized/unterminated input, stdin size/UTF-8 boundaries, raw-watch record boundaries, and public error redaction.
 - Reusable scripted-Pi, fault-barrier, isolated-environment, and side-effect-ledger fixtures are available under `test/fixtures` and `test/helpers`.
 - Production fixes distinguish receive timeout from connection cancellation, reject current and future store calls after SQLite-worker failure, clean pending Pi requests after write failures, reject invalid UTF-8 at stdin and Pi RPC boundaries, redact unexpected public errors and Pi stderr, serialize create/send/destroy per agent, safely resume send operations when no send row was committed, return stable receive errors when destroy/interruption wins, and contain asynchronous coordinator/store failures by stopping Pi and rejecting waiters.
 - Runtime protocol-major validation, strict manifest/path checks, concurrent immutable materialization, released beta.0/beta.1 CLI-runtime compatibility, unclean-database `PRAGMA quick_check`, deterministic randomized lifecycle races, and bounded resource-stability soak coverage are complete.
+- Schema-3 materialization now keeps exact Fleet-owned artifact hashes while validating direct dependency identities and deriving a closure-specific immutable release from the installed global npm dependency tree. Package tests prove an installed-tree difference, operational startup, npm-install removal, and materialized-release restart.
 - The tag publishing workflow runs deterministic tests plus the released-version matrix and soak; nightly Linux runs faults, process, compatibility, version matrix, resource soak, and the store benchmark.
 
-The remaining evidence gates are intentionally outside this local deterministic claim: real disk exhaustion, host logout/reboot, macOS launchd/containment, released-version matrices beyond the currently tested beta.0/beta.1 pair, and multi-hour platform resource-growth testing. These require disposable platform or filesystem environments and are not inferred from the passing local suites.
+The remaining evidence gates are intentionally outside this local deterministic claim: fresh-registry smoke for the pending beta.3 tag, real disk exhaustion, host logout/reboot, macOS launchd/containment, released-version matrices beyond the currently tested beta.0/beta.1 pair, and multi-hour platform resource-growth testing. These require a published package or disposable platform/filesystem environments and are not inferred from the passing local suites.
 
 ## Required invariants
 
