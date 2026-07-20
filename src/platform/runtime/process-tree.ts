@@ -1,3 +1,12 @@
+export function signalProcessTree(pid: number, signal: NodeJS.Signals): void {
+  try {
+    if (process.platform === "win32") process.kill(pid, signal);
+    else process.kill(-pid, signal);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);

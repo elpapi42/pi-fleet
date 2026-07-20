@@ -14,9 +14,12 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src test scripts bin --max-warnings=0",
     "format:check": "prettier --check .",
+    "pretest": "npm run build",
     "test": "vitest run",
     "test:integration": "vitest run test/integration --maxWorkers=1",
     "test:process": "vitest run test/process --maxWorkers=1",
+    "test:package": "npm run build && vitest run test/package --maxWorkers=1",
+    "test:platform": "vitest run test/integration/service-installer.test.ts test/process/process-tree.test.ts --maxWorkers=1",
     "test:compat": "vitest run test/compat --maxWorkers=1",
     "probe:pi": "node scripts/pi-compatibility-probe.mts",
     "benchmark:store": "npm run build && vitest run --config vitest.benchmark.config.ts",
@@ -38,6 +41,7 @@
     "vitest": "4.1.10"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.10",
     "@sinclair/typebox": "0.34.52",
     "commander": "15.0.0"
   }

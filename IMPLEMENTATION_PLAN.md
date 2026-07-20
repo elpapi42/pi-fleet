@@ -89,11 +89,15 @@ Replace the memory store behind the same async interface. Persist agents, ordere
 
 **Evidence:** shared memory/SQLite store contract tests cover agents, operations, sends, incarnations, clean and unclean reopen, persistent operation replay, and pending-versus-dispatching reconciliation. The real-Pi restart test proves latest-response polling stays passive and restore-on-send reopens the same conversation. A 1,000-operation worker-store benchmark measured about 1.4 ms p99 event-loop delay versus about 68 ms on the main thread, selecting one SQLite worker for the runtime.
 
-### 8. Packaging and native supervision
+### 8. Packaging and native supervision — Linux implementation complete; macOS release gate open
 
-Close CLI/runtime/Pi artifacts, test `npm pack` and materialized runtime behavior, then add systemd user-service and launchd support. Service removal must leave Pi sessions untouched.
+The runtime now resolves the pinned `@earendil-works/pi-coding-agent@0.80.10` RPC entrypoint by default, while retaining an explicit development-target override. Builds produce separate CLI, runtime, SQLite-worker, and installer ESM artifacts plus source maps, metafiles, and a SHA-256 runtime manifest. A private atomic release materializer copies the executable/runtime/dependency closure away from the npm or source location and verifies built artifacts before use.
 
-**Exit gate:** supported packaged Linux x64 and macOS arm64 installations create, send, receive, watch, restore, and destroy agents under supervision.
+Linux process groups receive bounded stdin close, SIGTERM, and SIGKILL escalation. systemd user-service and launchd LaunchAgent definitions plus install/uninstall foundations are implemented; service removal touches only supervision files and never Pi sessions or Fleet state. Runtime startup prefers a registered native service and uses detached startup only as the development fallback.
+
+**Local evidence:** package tests execute a materialized runtime from an unrelated directory, run create/destroy against an exact user session, prove that destroy leaves that session intact, detect artifact corruption, and inspect `npm pack`. Linux process tests prove process-group escalation, and installer integration tests prove service lifecycle commands and non-destructive removal. The full unit/integration/process/package suite passes on Linux x64.
+
+**Remaining release gate:** macOS arm64 launchd execution, logout/reboot behavior, and descendant containment have not been runtime-tested on macOS. The launchd definition is generated and unit/integration-tested only. Public release readiness also requires running the complete packaged create/send/receive/watch/restore/destroy smoke under native supervision on each claimed platform.
 
 ## Sequencing
 
@@ -105,4 +109,4 @@ No copied/Fleet-owned sessions, session deletion, one-response-per-send semantic
 
 ## Evidence-gated decisions
 
-Do not guess: resolved session observation, selector restoration argv, headless `--resume`, stable Pi idle signal, SQLite thread placement, resident capacity, stream/record limits, and Linux/macOS descendant cleanup.
+Resolved session observation, selector restoration argv, headless `--resume`, stable Pi idle signaling, and SQLite worker placement are now decided by tracked Linux/Pi 0.80.10 evidence. Production resident-capacity and stream/record limits still require representative load data. Linux process-group behavior is locally tested, while systemd logout/reboot behavior and all macOS launchd/descendant-cleanup claims remain platform release gates.

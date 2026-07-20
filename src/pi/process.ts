@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
+import { signalProcessTree } from "../platform/runtime/process-tree.js";
+
+const MAX_STDOUT_FRAME_BYTES = 8 * 1024 * 1024;
+
 export interface PiState {
   readonly isStreaming: boolean;
   readonly isCompacting: boolean;
@@ -50,6 +54,7 @@ export class PiProcess {
       {
         cwd: options.cwd,
         env: { ...process.env, ...options.env },
+        detached: process.platform !== "win32",
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
@@ -128,10 +133,13 @@ export class PiProcess {
     if (this.#stopping || this.#child.exitCode !== null) return;
     this.#stopping = true;
     this.#child.stdin.end();
-    const graceful = once(this.#child, "exit");
-    const timeout = setTimeout(() => this.#child.kill("SIGTERM"), 1_000);
-    await graceful;
-    clearTimeout(timeout);
+    if (await this.#waitForExit(500)) return;
+    signalProcessTree(this.pid, "SIGTERM");
+    if (await this.#waitForExit(1_000)) return;
+    signalProcessTree(this.pid, "SIGKILL");
+    if (!(await this.#waitForExit(1_000))) {
+      throw new Error(`Pi process group ${String(this.pid)} did not exit after SIGKILL`);
+    }
   }
 
   async #write(frame: PiFrame): Promise<void> {
@@ -143,7 +151,16 @@ export class PiProcess {
     this.#stdoutBuffer += chunk;
     while (true) {
       const newline = this.#stdoutBuffer.indexOf("\n");
-      if (newline < 0) return;
+      if (newline < 0) {
+        if (Buffer.byteLength(this.#stdoutBuffer) > MAX_STDOUT_FRAME_BYTES) {
+          signalProcessTree(this.pid, "SIGTERM");
+        }
+        return;
+      }
+      if (Buffer.byteLength(this.#stdoutBuffer.slice(0, newline)) > MAX_STDOUT_FRAME_BYTES) {
+        signalProcessTree(this.pid, "SIGTERM");
+        return;
+      }
       const line = this.#stdoutBuffer.slice(0, newline).replace(/\r$/, "");
       this.#stdoutBuffer = this.#stdoutBuffer.slice(newline + 1);
       if (line.length === 0) continue;
@@ -153,6 +170,15 @@ export class PiProcess {
       } catch {
         this.#child.kill("SIGTERM");
         return;
+      }
+      if (
+        frame.type === "extension_ui_request" &&
+        typeof frame.id === "string" &&
+        ["select", "confirm", "input", "editor"].includes(String(frame.method))
+      ) {
+        void this.#write({ type: "extension_ui_response", id: frame.id, cancelled: true }).catch(
+          () => undefined,
+        );
       }
       if (frame.type === "response" && frame.id !== undefined) {
         const waiter = this.#responses.get(frame.id);
@@ -164,6 +190,14 @@ export class PiProcess {
       }
       for (const listener of this.#listeners) listener(frame);
     }
+  }
+
+  async #waitForExit(timeoutMs: number): Promise<boolean> {
+    if (this.#child.exitCode !== null) return true;
+    return Promise.race([
+      once(this.#child, "exit").then(() => true),
+      new Promise<boolean>((resolveTimeout) => setTimeout(() => resolveTimeout(false), timeoutMs)),
+    ]);
   }
 
   #handleExit(code: number | null, signal: NodeJS.Signals | null, cause?: Error): void {

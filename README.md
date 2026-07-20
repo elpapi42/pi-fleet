@@ -10,17 +10,19 @@ Pi sessions remain under user control. Native Pi arguments pass through after `-
 
 ## Development status
 
-Milestone 1 is complete: the repository has a strict TypeScript/ESM foundation, test and build tooling, and separate CLI/runtime bundles. Product behavior is not implemented yet.
+Milestones 1–7 are complete on Linux x64 with Pi 0.80.10. The CLI/runtime protocol, seven commands, native Pi session restoration, resident process reuse, raw session watching, and SQLite-backed recovery are implemented. Milestone 8 adds a pinned managed Pi target, verified materialized runtime releases, Linux process-group cleanup, and systemd/launchd service-definition foundations.
 
 ```bash
 npm ci
 npm run typecheck
 npm run lint
+npm run format:check
 npm test
 npm run build
-node bin/pifleet.mjs --version
+npm run test:package
+npm run test:platform
 ```
 
-The built CLI currently supports only `--version`. Other invocations deliberately exit nonzero with `pifleet is not implemented yet.`
+Linux x64 package and user-service behavior is locally validated. macOS arm64 launchd behavior, logout/reboot recovery, and process-group containment remain release gates and are not claimed as complete.
 
-See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for the implementation sequence and evidence gates.
+Pi sessions remain user-owned: service removal and `pifleet destroy` never delete them. See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for completed evidence and remaining platform gates.

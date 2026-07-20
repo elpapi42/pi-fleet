@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 
 import { RealPiLauncher } from "../pi/adapter.js";
+import { resolveManagedPiTarget } from "../pi/managed-target.js";
 import { resolveFleetPaths } from "../platform/shared/paths.js";
 import { startControlServer } from "../runtime/control-server.js";
 import { FleetService } from "../runtime/fleet-service.js";
@@ -21,10 +22,7 @@ export async function runRuntime(): Promise<void> {
   try {
     store = new WorkerFleetStore(paths.databasePath);
     service = new FleetService(store, {
-      launcher: new RealPiLauncher({
-        executable: process.env.PIFLEET_PI_EXECUTABLE ?? "pi",
-        artifactId: process.env.PIFLEET_PI_ARTIFACT_ID ?? "pi@0.80.10",
-      }),
+      launcher: new RealPiLauncher(resolveManagedPiTarget()),
     });
     await service.reconcile();
     resolveService!(service);
