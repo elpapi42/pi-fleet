@@ -11,5 +11,5 @@ if (!isSupported) {
   process.exitCode = 1;
 } else {
   const cli = await import("../dist/cli.mjs");
-  process.exitCode = cli.runCli(process.argv.slice(2), process);
+  process.exitCode = await cli.runCli(process.argv.slice(2));
 }

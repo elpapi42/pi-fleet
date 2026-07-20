@@ -49,11 +49,13 @@ Probe the exact managed Pi artifact in isolated temporary roots. Verify native s
 
 **Evidence:** `test/fixtures/pi-compatibility-profile.json` and `fake-pi-contract.json` prove native selector handling, local deterministic prompt/steer/settlement/latest-text behavior, first materialization, and clean shutdown on Linux x64. Headless `--resume` does not enter RPC mode and is unsupported in v1; macOS parity remains a release gate.
 
-### 3. Pure CLI contract
+### 3. Pure CLI contract — complete
 
 Implement all seven command grammars against a fake client. Freeze JSON-first output, `--human` for six finite commands, stdin `-`, name validation, timeout parsing, cwd handling, exact passthrough, and raw `watch` output.
 
 **Exit gate:** command/unit tests cover all public grammar and stdout/stderr/exit-code contracts.
+
+**Evidence:** `test/unit/cli-contract.test.ts` exercises all seven commands, exact first-`--` passthrough, explicit stdin, JSON/human output, raw watch bytes, timeout exit 124, and structured parser errors against a typed fake `FleetClient`.
 
 ### 4. Private socket and fake runtime
 

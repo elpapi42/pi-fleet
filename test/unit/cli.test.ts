@@ -1,49 +1,47 @@
+import { Readable, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
 
-import { runCli } from "../../src/entry/cli.js";
+import { unavailableFleetClient } from "../../src/client/unavailable-client.js";
+import { runCli, type CliDependencies } from "../../src/entry/cli.js";
 
-function createIo() {
+function createHarness() {
   let stdout = "";
   let stderr = "";
-
-  return {
-    io: {
-      stderr: {
-        write: (chunk: string) => {
-          stderr += chunk;
-          return true;
-        },
+  const stream = (append: (chunk: string) => void) =>
+    new Writable({
+      write(chunk: Buffer | string, _encoding, callback) {
+        append(chunk.toString());
+        callback();
       },
-      stdout: {
-        write: (chunk: string) => {
-          stdout += chunk;
-          return true;
-        },
-      },
-    },
-    read: () => ({ stderr, stdout }),
+    });
+  const dependencies: CliDependencies = {
+    client: unavailableFleetClient,
+    cwd: "/workspace",
+    stdin: Readable.from([]),
+    stdout: stream((chunk) => (stdout += chunk)),
+    stderr: stream((chunk) => (stderr += chunk)),
+    signal: new AbortController().signal,
+    operationIds: () => ({ operationId: "operation-1", createdAt: "2026-01-01T00:00:00.000Z" }),
   };
+  return { dependencies, read: () => ({ stderr, stdout }) };
 }
 
 describe("runCli", () => {
-  it("prints the package version", () => {
-    const output = createIo();
+  it("prints the package version", async () => {
+    const harness = createHarness();
 
-    const exitCode = runCli(["--version"], output.io);
-
-    expect(exitCode).toBe(0);
-    expect(output.read()).toEqual({ stderr: "", stdout: "0.0.0-development\n" });
+    expect(await runCli(["--version"], harness.dependencies)).toBe(0);
+    expect(harness.read()).toEqual({ stderr: "", stdout: "0.0.0-development\n" });
   });
 
-  it("reports that operational commands are not implemented", () => {
-    const output = createIo();
+  it("reports unavailable runtime without pretending the command works", async () => {
+    const harness = createHarness();
 
-    const exitCode = runCli(["list"], output.io);
-
-    expect(exitCode).toBe(1);
-    expect(output.read()).toEqual({
-      stderr: "pifleet is not implemented yet.\n",
-      stdout: "",
+    expect(await runCli(["list"], harness.dependencies)).toBe(1);
+    expect(harness.read().stdout).toBe("");
+    expect(JSON.parse(harness.read().stderr)).toMatchObject({
+      type: "error",
+      error: { code: "runtime_unavailable" },
     });
   });
 });
