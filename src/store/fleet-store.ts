@@ -1,8 +1,9 @@
-import type { AgentSummary, CreateInput } from "../client/fleet-client.js";
+import type { AgentSummary } from "../client/fleet-client.js";
+import type { AgentLaunchProfile } from "../pi/launch-profile.js";
 
 export interface StoredAgent {
   readonly summary: AgentSummary;
-  readonly launch: CreateInput;
+  readonly launch: AgentLaunchProfile;
   readonly latestAssistantText: string | null;
   readonly responseObservedAt: string | null;
 }

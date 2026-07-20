@@ -65,11 +65,13 @@ Add versioned bounded Unix-socket JSONL, a typed client, a foreground fake runti
 
 **Evidence:** `test/integration/socket-runtime.test.ts` proves real Unix-socket create/list/status/destroy, operation replay/conflict behavior, and typed errors. A built-artifact smoke proves automatic runtime startup and the full fake create/send/receive/watch/destroy path.
 
-### 5. Real-Pi in-memory vertical slice
+### 5. Real-Pi in-memory vertical slice — complete
 
 Implement the first end-to-end flow with one agent: promptless `create`, resident reuse, `send`, idle-based `receive`, status/list, clean process loss, restoration of the observed native session, and non-destructive `destroy`.
 
 **Exit gate:** real Pi proves `create → send → receive → second send → restore after clean process loss` without copying or deleting a session.
+
+**Evidence:** `test/process/real-pi-lifecycle.test.ts` runs Pi 0.80.10 against a local deterministic provider and proves promptless creation, resident reuse, idle-based latest-text receive, clean process release, restoration through the same observed native session, conversation continuity, and non-destructive destroy.
 
 ### 6. Native selector matrix and raw watch
 

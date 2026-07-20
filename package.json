@@ -16,6 +16,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:integration": "vitest run test/integration --maxWorkers=1",
+    "test:process": "vitest run test/process --maxWorkers=1",
     "test:compat": "vitest run test/compat --maxWorkers=1",
     "probe:pi": "node scripts/pi-compatibility-probe.mts",
     "build": "node scripts/build.mjs"

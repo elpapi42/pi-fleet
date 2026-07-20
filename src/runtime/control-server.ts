@@ -13,7 +13,7 @@ import type {
 import { parseProtocolRequest } from "../protocol/validation.js";
 import { readJsonLines, writeJsonLine } from "../protocol/jsonl.js";
 import { PROTOCOL_VERSION } from "../protocol/version.js";
-import type { Result } from "../shared/result.js";
+import { err, type Result } from "../shared/result.js";
 import type { FleetService } from "./fleet-service.js";
 
 export interface ControlServer {
@@ -49,13 +49,16 @@ export async function startControlServer(options: {
 
 function handleConnection(socket: Socket, service: FleetService): void {
   let handled = false;
+  const abort = new AbortController();
+  socket.once("close", () => abort.abort());
   const stopReading = readJsonLines(
     socket,
     (value) => {
       if (handled) return;
       handled = true;
       stopReading();
-      void dispatch(value, service, socket).catch((error: unknown) => {
+      void dispatch(value, service, socket, abort.signal).catch((error: unknown) => {
+        if (socket.destroyed) return;
         const message = error instanceof Error ? error.message : "Internal runtime error";
         writeJsonLine(socket, {
           v: PROTOCOL_VERSION,
@@ -78,7 +81,12 @@ function handleConnection(socket: Socket, service: FleetService): void {
   );
 }
 
-async function dispatch(value: unknown, service: FleetService, socket: Socket): Promise<void> {
+async function dispatch(
+  value: unknown,
+  service: FleetService,
+  socket: Socket,
+  connectionSignal: AbortSignal,
+): Promise<void> {
   const request = parseProtocolRequest(value);
   const operationId = request.operation?.operationId;
   let result: Result<unknown, FleetClientError>;
@@ -91,7 +99,12 @@ async function dispatch(value: unknown, service: FleetService, socket: Socket): 
       result = await service.send(asSendInput(request.params), requireOperation(operationId));
       break;
     case "agent.receive":
-      result = await service.receive(asNamedInput(request.params));
+      result = await receiveWithTimeout(
+        service,
+        asNamedInput(request.params),
+        numberParam(request.params, "timeoutMs"),
+        connectionSignal,
+      );
       break;
     case "agent.status":
       result = await service.status(asNamedInput(request.params));
@@ -138,6 +151,38 @@ function asSendInput(params: Record<string, unknown>): SendInput {
 
 function asNamedInput(params: Record<string, unknown>): ReceiveInput & StatusInput & DestroyInput {
   return { name: stringParam(params, "name") };
+}
+
+async function receiveWithTimeout(
+  service: FleetService,
+  input: ReceiveInput,
+  timeoutMs: number | undefined,
+  connectionSignal: AbortSignal,
+): Promise<Result<unknown, FleetClientError>> {
+  const abort = new AbortController();
+  const onConnectionAbort = () => abort.abort();
+  connectionSignal.addEventListener("abort", onConnectionAbort, { once: true });
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => abort.abort(), timeoutMs);
+  try {
+    return await service.receive(input, abort.signal);
+  } catch (error: unknown) {
+    if (abort.signal.aborted) {
+      return err({ code: "timeout", message: "Agent did not become idle before timeout." });
+    }
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    connectionSignal.removeEventListener("abort", onConnectionAbort);
+  }
+}
+
+function numberParam(params: Record<string, unknown>, key: string): number | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${key} must be a non-negative number`);
+  }
+  return value;
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string {

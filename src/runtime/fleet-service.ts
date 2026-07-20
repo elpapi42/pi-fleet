@@ -14,8 +14,12 @@ import type {
   StatusInput,
   StatusResult,
 } from "../client/fleet-client.js";
+import type { PiLauncher } from "../pi/adapter.js";
+import { createLaunchProfile, observeSession } from "../pi/launch-profile.js";
+import type { PiProcess } from "../pi/process.js";
 import { err, ok, type Result } from "../shared/result.js";
 import type { FleetStore, StoredAgent } from "../store/fleet-store.js";
+import { AgentCoordinator } from "./agent-coordinator.js";
 
 interface RecordedOperation {
   readonly method: "create" | "send" | "destroy";
@@ -23,13 +27,25 @@ interface RecordedOperation {
   readonly result: Result<unknown, FleetClientError>;
 }
 
+export interface FleetServiceOptions {
+  readonly launcher?: PiLauncher;
+  readonly now?: () => string;
+}
+
 export class FleetService {
   readonly #operations = new Map<string, RecordedOperation>();
+  readonly #coordinators = new Map<string, AgentCoordinator>();
+  readonly #launcher: PiLauncher | undefined;
+  readonly #now: () => string;
 
   constructor(
     private readonly store: FleetStore,
-    private readonly now: () => string = () => new Date().toISOString(),
-  ) {}
+    options: FleetServiceOptions | (() => string) = {},
+  ) {
+    this.#launcher = typeof options === "function" ? undefined : options.launcher;
+    this.#now =
+      typeof options === "function" ? options : (options.now ?? (() => new Date().toISOString()));
+  }
 
   async create(
     input: CreateInput,
@@ -38,55 +54,144 @@ export class FleetService {
     const replay = this.#operation<CreateResult>(operationId, "create", input);
     if (replay !== null) return replay;
 
-    const agent: StoredAgent = {
+    const profile = createLaunchProfile({
+      cwd: input.cwd,
+      piArgv: input.piArgv,
+      piArtifactId: this.#launcher?.artifactId ?? "fake-pi",
+    });
+    let agent: StoredAgent = {
       summary: {
         id: randomUUID(),
         name: input.name,
-        state: "idle",
-        process: { state: "resident" },
+        state: this.#launcher === undefined ? "idle" : "restoring",
+        process: { state: this.#launcher === undefined ? "resident" : "starting" },
         session: { path: null, id: null },
       },
-      launch: input,
+      launch: profile,
       latestAssistantText: null,
       responseObservedAt: null,
     };
-    const result = (await this.store.createAgent(agent))
-      ? ok<CreateResult>({ schemaVersion: 1, type: "agent.created", agent: agent.summary })
-      : err<FleetClientError>({
-          code: "name_taken",
-          message: `Agent ${input.name} already exists.`,
+    if (!(await this.store.createAgent(agent))) {
+      const result = err<FleetClientError>({
+        code: "name_taken",
+        message: `Agent ${input.name} already exists.`,
+      });
+      this.#remember(operationId, "create", input, result);
+      return result;
+    }
+
+    try {
+      if (this.#launcher !== undefined) {
+        const process = await this.#launcher.start(profile, false);
+        const state = await process.getState();
+        const observedProfile = observeSession(profile, {
+          path: state.sessionFile ?? null,
+          id: state.sessionId,
         });
-    this.#remember(operationId, "create", input, result);
-    return result;
+        agent = {
+          ...agent,
+          launch: observedProfile,
+          summary: {
+            ...agent.summary,
+            state: "idle",
+            process: { state: "resident" },
+            session: { path: state.sessionFile ?? null, id: state.sessionId },
+          },
+        };
+        await this.store.putAgent(agent);
+        const coordinator = this.#attachCoordinator(agent, process);
+        if (input.instructions !== undefined) await coordinator.send(input.instructions);
+        agent = coordinator.storedAgent;
+      }
+
+      const result = ok<CreateResult>({
+        schemaVersion: 1,
+        type: "agent.created",
+        agent: agent.summary,
+      });
+      this.#remember(operationId, "create", input, result);
+      return result;
+    } catch (error: unknown) {
+      const coordinator = this.#coordinators.get(input.name);
+      if (coordinator !== undefined) await coordinator.stop().catch(() => undefined);
+      this.#coordinators.delete(input.name);
+      await this.store.deleteAgent(input.name);
+      const result = err<FleetClientError>({
+        code: "pi_start_failed",
+        message: error instanceof Error ? error.message : "Pi failed to start.",
+      });
+      this.#remember(operationId, "create", input, result);
+      return result;
+    }
   }
 
   async send(input: SendInput, operationId: string): Promise<Result<SendResult, FleetClientError>> {
     const replay = this.#operation<SendResult>(operationId, "send", input);
     if (replay !== null) return replay;
-    const agent = await this.store.getAgent(input.name);
-    if (agent === null) {
-      const result = this.#notFound<SendResult>(input.name);
+    let agent = await this.store.getAgent(input.name);
+    if (agent === null) return this.#rememberNotFound(operationId, "send", input);
+
+    try {
+      let coordinator = this.#coordinators.get(input.name);
+      if (this.#launcher !== undefined && coordinator === undefined) {
+        agent = await this.#markRestoring(agent);
+        const process = await this.#launcher.start(agent.launch, true);
+        const state = await process.getState();
+        const profile = observeSession(agent.launch, {
+          path: state.sessionFile ?? null,
+          id: state.sessionId,
+        });
+        agent = {
+          ...agent,
+          launch: profile,
+          summary: {
+            ...agent.summary,
+            state: "idle",
+            process: { state: "resident" },
+            session: { path: state.sessionFile ?? null, id: state.sessionId },
+          },
+        };
+        await this.store.putAgent(agent);
+        coordinator = this.#attachCoordinator(agent, process);
+      }
+
+      const acceptedAt = this.#now();
+      if (coordinator === undefined) {
+        await this.store.putAgent({
+          ...agent,
+          latestAssistantText: `Fake response to: ${input.message}`,
+          responseObservedAt: acceptedAt,
+        });
+      } else {
+        await coordinator.send(input.message);
+      }
+      const result = ok<SendResult>({
+        schemaVersion: 1,
+        type: "message.accepted",
+        agent: { id: agent.summary.id, name: agent.summary.name },
+        acceptedAt,
+      });
+      this.#remember(operationId, "send", input, result);
+      return result;
+    } catch (error: unknown) {
+      const result = err<FleetClientError>({
+        code: "pi_send_failed",
+        message: error instanceof Error ? error.message : "Pi rejected the message.",
+      });
       this.#remember(operationId, "send", input, result);
       return result;
     }
-    const observedAt = this.now();
-    await this.store.putAgent({
-      ...agent,
-      latestAssistantText: `Fake response to: ${input.message}`,
-      responseObservedAt: observedAt,
-    });
-    const result = ok<SendResult>({
-      schemaVersion: 1,
-      type: "message.accepted",
-      agent: { id: agent.summary.id, name: agent.summary.name },
-      acceptedAt: observedAt,
-    });
-    this.#remember(operationId, "send", input, result);
-    return result;
   }
 
-  async receive(input: ReceiveInput): Promise<Result<ReceiveResult, FleetClientError>> {
-    const agent = await this.store.getAgent(input.name);
+  async receive(
+    input: ReceiveInput,
+    signal?: AbortSignal,
+  ): Promise<Result<ReceiveResult, FleetClientError>> {
+    const coordinator = this.#coordinators.get(input.name);
+    const agent =
+      coordinator === undefined
+        ? await this.store.getAgent(input.name)
+        : await coordinator.waitForIdle(signal);
     if (agent === null) return this.#notFound(input.name);
     if (agent.latestAssistantText === null || agent.responseObservedAt === null) {
       return err({
@@ -124,12 +229,11 @@ export class FleetService {
   ): Promise<Result<DestroyResult, FleetClientError>> {
     const replay = this.#operation<DestroyResult>(operationId, "destroy", input);
     if (replay !== null) return replay;
+    const coordinator = this.#coordinators.get(input.name);
+    if (coordinator !== undefined) await coordinator.stop();
+    this.#coordinators.delete(input.name);
     const agent = await this.store.deleteAgent(input.name);
-    if (agent === null) {
-      const result = this.#notFound<DestroyResult>(input.name);
-      this.#remember(operationId, "destroy", input, result);
-      return result;
-    }
+    if (agent === null) return this.#rememberNotFound(operationId, "destroy", input);
     const result = ok<DestroyResult>({
       schemaVersion: 1,
       type: "agent.destroyed",
@@ -139,8 +243,49 @@ export class FleetService {
     return result;
   }
 
+  async releaseAgentProcess(name: string): Promise<void> {
+    const coordinator = this.#coordinators.get(name);
+    if (coordinator === undefined) return;
+    await coordinator.stop();
+    this.#coordinators.delete(name);
+  }
+
+  async close(): Promise<void> {
+    await Promise.all([...this.#coordinators.values()].map((coordinator) => coordinator.stop()));
+    this.#coordinators.clear();
+  }
+
+  async #markRestoring(agent: StoredAgent): Promise<StoredAgent> {
+    const restoring: StoredAgent = {
+      ...agent,
+      summary: { ...agent.summary, state: "restoring", process: { state: "starting" } },
+    };
+    await this.store.putAgent(restoring);
+    return restoring;
+  }
+
+  #attachCoordinator(agent: StoredAgent, process: PiProcess): AgentCoordinator {
+    const coordinator = new AgentCoordinator(this.store, agent, process, this.#now, () => {
+      if (this.#coordinators.get(agent.summary.name) === coordinator) {
+        this.#coordinators.delete(agent.summary.name);
+      }
+    });
+    this.#coordinators.set(agent.summary.name, coordinator);
+    return coordinator;
+  }
+
   #notFound<T>(name: string): Result<T, FleetClientError> {
     return err({ code: "agent_not_found", message: `Agent ${name} was not found.` });
+  }
+
+  #rememberNotFound<T>(
+    operationId: string,
+    method: "send" | "destroy",
+    payload: object,
+  ): Result<T, FleetClientError> {
+    const result = this.#notFound<T>(String("name" in payload ? payload.name : "unknown"));
+    this.#remember(operationId, method, payload, result);
+    return result;
   }
 
   #operation<T>(
