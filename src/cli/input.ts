@@ -17,7 +17,13 @@ export async function resolveMessageInput(
     if (bytes > maxBytes) throw new Error(`stdin exceeds the ${maxBytes}-byte limit`);
     chunks.push(buffer);
   }
-  return requireContent(Buffer.concat(chunks).toString("utf8"));
+  let decoded: string;
+  try {
+    decoded = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+  } catch {
+    throw new Error("stdin must be valid UTF-8");
+  }
+  return requireContent(decoded);
 }
 
 function requireContent(value: string): string {
