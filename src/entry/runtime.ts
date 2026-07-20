@@ -5,24 +5,34 @@ import { resolveManagedPiTarget } from "../pi/managed-target.js";
 import { resolveFleetPaths } from "../platform/shared/paths.js";
 import { startControlServer } from "../runtime/control-server.js";
 import { FleetService } from "../runtime/fleet-service.js";
+import { runtimeLimitsFromEnv } from "../shared/runtime-limits.js";
 import { WorkerFleetStore } from "../store/worker-store.js";
 
 export async function runRuntime(): Promise<void> {
   const paths = resolveFleetPaths();
+  const limits = runtimeLimitsFromEnv();
   let resolveService: (service: FleetService) => void;
   let rejectService: (error: unknown) => void;
   const serviceReady = new Promise<FleetService>((resolveReady, rejectReady) => {
     resolveService = resolveReady;
     rejectService = rejectReady;
   });
-  const server = await startControlServer({ socketPath: paths.socketPath, service: serviceReady });
+  const server = await startControlServer({
+    socketPath: paths.socketPath,
+    service: serviceReady,
+    limits,
+  });
 
   let store: WorkerFleetStore;
   let service: FleetService;
   try {
     store = new WorkerFleetStore(paths.databasePath);
     service = new FleetService(store, {
-      launcher: new RealPiLauncher(resolveManagedPiTarget()),
+      launcher: new RealPiLauncher({
+        ...resolveManagedPiTarget(),
+        maxStdoutFrameBytes: limits.maxPiFrameBytes,
+      }),
+      limits,
     });
     await service.reconcile();
     resolveService!(service);

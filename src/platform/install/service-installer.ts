@@ -1,4 +1,5 @@
-import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -22,10 +23,16 @@ export async function installUserService(options: {
   const home = options.home ?? homedir();
   if (options.platform === "linux") {
     const path = join(home, ".config", "systemd", "user", "pi-fleet.service");
-    await atomicWrite(path, systemdUserUnit(options.definition));
-    await options.executor.run("systemctl", ["--user", "daemon-reload"]);
+    const definition = systemdUserUnit(options.definition);
+    const needsRepair = await serviceDefinitionNeedsRepair(path, definition, options.definition);
+    if (needsRepair) {
+      await atomicWrite(path, definition);
+      await options.executor.run("systemctl", ["--user", "daemon-reload"]);
+    }
     await options.executor.run("systemctl", ["--user", "enable", "--now", "pi-fleet.service"]);
-    await options.executor.run("systemctl", ["--user", "restart", "pi-fleet.service"]);
+    if (needsRepair) {
+      await options.executor.run("systemctl", ["--user", "restart", "pi-fleet.service"]);
+    }
     return path;
   }
   if (options.platform === "darwin") {
@@ -62,6 +69,25 @@ export async function uninstallUserService(options: {
     return;
   }
   throw new Error(`Native Pi Fleet supervision is unsupported on ${options.platform}`);
+}
+
+export async function serviceDefinitionNeedsRepair(
+  path: string,
+  expectedContents: string,
+  definition: ServiceDefinitionOptions,
+): Promise<boolean> {
+  const current = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (current !== expectedContents) return true;
+  try {
+    await access(definition.nodePath, constants.X_OK);
+    await access(definition.runtimePath, constants.R_OK);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 async function atomicWrite(path: string, contents: string): Promise<void> {

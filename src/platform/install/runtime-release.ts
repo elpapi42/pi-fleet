@@ -2,14 +2,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, cp, lstat, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
+import { hashDirectoryTree, type TreeIntegrity } from "./tree-integrity.js";
+
 interface RuntimeManifest {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly package: { readonly name: string; readonly version: string };
   readonly files: readonly {
     readonly path: string;
     readonly bytes: number;
     readonly sha256: string;
   }[];
+  readonly trees: readonly TreeIntegrity[];
 }
 
 export async function materializeRuntime(options: {
@@ -40,10 +43,12 @@ export async function materializeRuntime(options: {
     });
     await cp(join(sourceRoot, "bin"), join(staging, "bin"), { recursive: true, dereference: true });
     await cp(join(sourceRoot, "package.json"), join(staging, "package.json"));
-    await cp(join(sourceRoot, "node_modules"), join(staging, "node_modules"), {
-      recursive: true,
-      dereference: true,
-    });
+    for (const tree of manifest.trees) {
+      const source = resolveInside(sourceRoot, tree.path);
+      const destination = resolveInside(staging, tree.path);
+      await mkdir(resolve(destination, ".."), { recursive: true, mode: 0o700 });
+      await cp(source, destination, { recursive: true, dereference: true });
+    }
     await verifyRuntime(staging, manifest);
     await chmod(staging, 0o700);
     await rename(staging, destination);
@@ -62,10 +67,7 @@ export async function verifyRuntime(root: string, manifest?: RuntimeManifest): P
     ) as RuntimeManifest);
   const resolvedRoot = resolve(root);
   for (const file of expected.files) {
-    const path = resolve(resolvedRoot, file.path);
-    if (!path.startsWith(`${resolvedRoot}${sep}`)) {
-      throw new Error(`Runtime manifest contains an unsafe path ${file.path}`);
-    }
+    const path = resolveInside(resolvedRoot, file.path);
     const info = await stat(path);
     if (!info.isFile() || info.size !== file.bytes) {
       throw new Error(`Runtime artifact ${file.path} has changed`);
@@ -77,6 +79,25 @@ export async function verifyRuntime(root: string, manifest?: RuntimeManifest): P
       throw new Error(`Runtime artifact ${file.path} failed verification`);
     }
   }
+  for (const expectedTree of expected.trees) {
+    const treeRoot = resolveInside(resolvedRoot, expectedTree.path);
+    const actualTree = await hashDirectoryTree(treeRoot, expectedTree.path);
+    if (
+      actualTree.files !== expectedTree.files ||
+      actualTree.bytes !== expectedTree.bytes ||
+      actualTree.sha256 !== expectedTree.sha256
+    ) {
+      throw new Error(`Runtime dependency tree ${expectedTree.path} failed verification`);
+    }
+  }
+}
+
+function resolveInside(root: string, path: string): string {
+  const resolved = resolve(root, path);
+  if (!resolved.startsWith(`${root}${sep}`)) {
+    throw new Error(`Runtime manifest contains an unsafe path ${path}`);
+  }
+  return resolved;
 }
 
 async function ensurePrivateDirectory(path: string): Promise<void> {

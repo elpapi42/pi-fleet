@@ -12,6 +12,7 @@ export interface RealPiLauncherOptions {
   readonly argvPrefix?: readonly string[];
   readonly env?: NodeJS.ProcessEnv;
   readonly onStart?: (pid: number) => void;
+  readonly maxStdoutFrameBytes?: number;
 }
 
 export class RealPiLauncher implements PiLauncher {
@@ -30,6 +31,9 @@ export class RealPiLauncher implements PiLauncher {
       piArgv,
       cwd: profile.cwd,
       ...(this.options.env === undefined ? {} : { env: this.options.env }),
+      ...(this.options.maxStdoutFrameBytes === undefined
+        ? {}
+        : { maxStdoutFrameBytes: this.options.maxStdoutFrameBytes }),
     });
     this.options.onStart?.(process.pid);
     return process;

@@ -214,7 +214,13 @@ describe("packed and materialized runtime", () => {
       await model.close();
     }
 
-    await writeFile(runtimePath, `${await readFile(runtimePath, "utf8")}\n// corruption\n`);
+    const dependencyPath = join(release, "node_modules", "commander", "package.json");
+    const dependencyContents = await readFile(dependencyPath, "utf8");
+    await writeFile(dependencyPath, `${dependencyContents}\n`);
+    await expect(verifyRuntime(release)).rejects.toThrow(/dependency tree/i);
+    await writeFile(dependencyPath, dependencyContents);
+    await verifyRuntime(release);
+
     await writeFile(runtimePath, `${await readFile(runtimePath, "utf8")}\n// corruption\n`);
     await expect(verifyRuntime(release)).rejects.toThrow(/changed|verification/i);
   }, 60_000);
@@ -227,6 +233,7 @@ describe("packed and materialized runtime", () => {
     const paths = report[0]?.files.map((file) => file.path) ?? [];
 
     expect(paths).toContain("bin/pifleet.mjs");
+    expect(paths).toContain("bin/pifleet-runtime.mjs");
     expect(paths).toContain("dist/runtime.mjs");
     expect(paths).toContain("dist/sqlite-worker.mjs");
     expect(paths).toContain("dist/runtime-manifest.json");

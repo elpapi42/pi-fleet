@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SocketFleetClient } from "../../src/client/socket-fleet-client.js";
 import { startControlServer, type ControlServer } from "../../src/runtime/control-server.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
+import type { RuntimeLimits } from "../../src/shared/runtime-limits.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -13,12 +14,21 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
-async function harness() {
+async function harness(limits?: Partial<RuntimeLimits>) {
   const root = await mkdtemp(join(tmpdir(), "pifleet-socket-test-"));
   const socketPath = join(root, "control.sock");
   const store = new MemoryFleetStore();
-  const service = new FleetService(store, () => "2026-01-01T00:00:00.000Z");
-  const server: ControlServer = await startControlServer({ socketPath, service });
+  const service = new FleetService(store, {
+    now: () => "2026-01-01T00:00:00.000Z",
+    ...(limits === undefined ? {} : { limits }),
+  });
+  const server: ControlServer = await startControlServer({
+    socketPath,
+    service,
+    ...(limits?.maxProtocolFrameBytes === undefined
+      ? {}
+      : { limits: { maxProtocolFrameBytes: limits.maxProtocolFrameBytes } }),
+  });
   cleanups.push(async () => {
     await server.close();
     await rm(root, { recursive: true, force: true });
@@ -102,6 +112,41 @@ describe("private socket runtime", () => {
     expect(frame.value).toMatchObject({ ok: true });
     if (frame.value?.ok !== true) throw new Error("watch failed");
     expect(Buffer.from(frame.value.value.bytes).toString()).toBe('{"type":"message"}\n');
+    abort.abort();
+    await iterator.return?.();
+  });
+
+  it("chunks a complete session record through bounded private frames without changing bytes", async () => {
+    const { client, store, root } = await harness({
+      maxProtocolFrameBytes: 1_200,
+      maxSessionRecordBytes: 4_096,
+    });
+    await client.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, { signal, operation });
+    const stored = await store.getAgent("reviewer");
+    if (stored === null) throw new Error("missing stored agent");
+    const sessionPath = join(root, "large-session.jsonl");
+    await writeFile(sessionPath, '{"type":"session"}\n');
+    await store.putAgent({
+      ...stored,
+      summary: { ...stored.summary, session: { path: sessionPath, id: "session-1" } },
+    });
+
+    const abort = new AbortController();
+    const stream = client.watchSession({ name: "reviewer" }, { signal: abort.signal });
+    const iterator = stream[Symbol.asyncIterator]();
+    let nextFrame = iterator.next();
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 30));
+    const record = `${JSON.stringify({ type: "message", text: "x".repeat(1_500) })}\n`;
+    await appendFile(sessionPath, record);
+
+    let received = "";
+    while (!received.endsWith("\n")) {
+      const frame = await nextFrame;
+      if (frame.value?.ok !== true) throw new Error("watch failed");
+      received += Buffer.from(frame.value.value.bytes).toString();
+      if (!received.endsWith("\n")) nextFrame = iterator.next();
+    }
+    expect(received).toBe(record);
     abort.abort();
     await iterator.return?.();
   });

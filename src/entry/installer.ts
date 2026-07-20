@@ -30,11 +30,15 @@ export async function installRuntimeService(): Promise<string> {
     platform: process.platform,
     definition: {
       nodePath: process.execPath,
-      runtimePath: join(release, "dist", "runtime.mjs"),
+      runtimePath: join(release, "bin", "pifleet-runtime.mjs"),
       ...(explicitStateRoot === undefined ? {} : { stateRoot: explicitStateRoot }),
     },
     executor,
   });
+}
+
+export async function repairRuntimeService(): Promise<string> {
+  return installRuntimeService();
 }
 
 export async function uninstallRuntimeService(): Promise<void> {
@@ -47,11 +51,15 @@ async function main(): Promise<void> {
     process.stdout.write(`${await installRuntimeService()}\n`);
     return;
   }
+  if (command === "repair") {
+    process.stdout.write(`${await repairRuntimeService()}\n`);
+    return;
+  }
   if (command === "uninstall") {
     await uninstallRuntimeService();
     return;
   }
-  throw new Error("Usage: node dist/installer.mjs <install|uninstall>");
+  throw new Error("Usage: node dist/installer.mjs <install|repair|uninstall>");
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -19,6 +19,7 @@ import { createLaunchProfile, observeSession } from "../pi/launch-profile.js";
 import type { PiProcess } from "../pi/process.js";
 import { waitForProcessExit } from "../platform/runtime/process-tree.js";
 import { err, ok, type Result } from "../shared/result.js";
+import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../shared/runtime-limits.js";
 import type { FleetStore, StoredAgent } from "../store/fleet-store.js";
 import { AgentCoordinator } from "./agent-coordinator.js";
 import { SessionTailSubscription } from "./session-tail-subscription.js";
@@ -32,14 +33,17 @@ interface RecordedOperation {
 export interface FleetServiceOptions {
   readonly launcher?: PiLauncher;
   readonly now?: () => string;
+  readonly limits?: Partial<RuntimeLimits>;
 }
 
 export class FleetService {
   readonly #operations = new Map<string, RecordedOperation>();
   readonly #coordinators = new Map<string, AgentCoordinator>();
   readonly #watchers = new Map<string, Set<AbortController>>();
+  readonly #processSlots = new Set<string>();
   readonly #launcher: PiLauncher | undefined;
   readonly #now: () => string;
+  readonly #limits: RuntimeLimits;
 
   constructor(
     private readonly store: FleetStore,
@@ -48,6 +52,10 @@ export class FleetService {
     this.#launcher = typeof options === "function" ? undefined : options.launcher;
     this.#now =
       typeof options === "function" ? options : (options.now ?? (() => new Date().toISOString()));
+    this.#limits = {
+      ...DEFAULT_RUNTIME_LIMITS,
+      ...(typeof options === "function" ? {} : options.limits),
+    };
   }
 
   async create(
@@ -61,6 +69,17 @@ export class FleetService {
     });
     const replay = await this.#operation<CreateResult>(operationId, "create", input);
     if (replay !== null) return replay;
+    if (
+      input.instructions !== undefined &&
+      Buffer.byteLength(input.instructions, "utf8") > this.#limits.maxMessageBytes
+    ) {
+      const result = err<FleetClientError>({
+        code: "invalid_arguments",
+        message: `Initial instructions exceed the ${String(this.#limits.maxMessageBytes)} byte limit.`,
+      });
+      await this.#remember(operationId, "create", input, result);
+      return result;
+    }
     let agent: StoredAgent = {
       summary: {
         id: randomUUID(),
@@ -77,6 +96,16 @@ export class FleetService {
       const result = err<FleetClientError>({
         code: "name_taken",
         message: `Agent ${input.name} already exists.`,
+      });
+      await this.#remember(operationId, "create", input, result);
+      return result;
+    }
+
+    if (this.#launcher !== undefined && this.#reserveProcessSlot(input.name) !== "acquired") {
+      await this.store.deleteAgent(input.name);
+      const result = err<FleetClientError>({
+        code: "capacity_exceeded",
+        message: `Pi Fleet has reached its ${String(this.#limits.maxResidentProcesses)} process limit.`,
       });
       await this.#remember(operationId, "create", input, result);
       return result;
@@ -139,6 +168,7 @@ export class FleetService {
         });
       }
       this.#coordinators.delete(input.name);
+      this.#releaseProcessSlot(input.name);
       await this.store.deleteAgent(input.name);
       const result = err<FleetClientError>({
         code: "pi_start_failed",
@@ -152,6 +182,14 @@ export class FleetService {
   async send(input: SendInput, operationId: string): Promise<Result<SendResult, FleetClientError>> {
     const replay = await this.#operation<SendResult>(operationId, "send", input);
     if (replay !== null) return replay;
+    if (Buffer.byteLength(input.message, "utf8") > this.#limits.maxMessageBytes) {
+      const result = err<FleetClientError>({
+        code: "invalid_arguments",
+        message: `Message exceeds the ${String(this.#limits.maxMessageBytes)} byte limit.`,
+      });
+      await this.#remember(operationId, "send", input, result);
+      return result;
+    }
     const agent = await this.store.getAgent(input.name);
     if (agent === null) return this.#rememberNotFound(operationId, "send", input);
     if (agent.summary.process.state === "cleanup_uncertain") {
@@ -180,9 +218,11 @@ export class FleetService {
     const nonterminalSends = await this.store.listNonterminalSends();
     const activeSendAgents = new Set(nonterminalSends.map((send) => send.agentName));
     for (const incarnation of await this.store.listActiveIncarnations()) {
-      if (incarnation.state !== "cleanup_uncertain" || incarnation.pid === null) continue;
-      if (!(await waitForProcessExit(incarnation.pid))) continue;
+      if (incarnation.state !== "cleanup_uncertain") continue;
+      this.#processSlots.add(incarnation.agentName);
+      if (incarnation.pid === null || !(await waitForProcessExit(incarnation.pid))) continue;
       await this.store.putIncarnation({ ...incarnation, state: "gone" });
+      this.#releaseProcessSlot(incarnation.agentName);
       const agent = await this.store.getAgent(incarnation.agentName);
       if (agent?.summary.process.state !== "cleanup_uncertain") continue;
       await this.store.putAgent({
@@ -277,6 +317,12 @@ export class FleetService {
         message: `Agent ${input.name} has no session path.`,
       });
     }
+    if (this.#watcherCount() >= this.#limits.maxWatchers) {
+      return err({
+        code: "capacity_exceeded",
+        message: `Pi Fleet has reached its ${String(this.#limits.maxWatchers)} watcher limit.`,
+      });
+    }
 
     const abort = new AbortController();
     const onConnectionAbort = () => abort.abort();
@@ -284,7 +330,10 @@ export class FleetService {
     const watchers = this.#watchers.get(input.name) ?? new Set<AbortController>();
     watchers.add(abort);
     this.#watchers.set(input.name, watchers);
-    const subscription = new SessionTailSubscription(sessionPath, { signal: abort.signal });
+    const subscription = new SessionTailSubscription(sessionPath, {
+      signal: abort.signal,
+      maxRecordBytes: this.#limits.maxSessionRecordBytes,
+    });
     const cleanup = () => {
       connectionSignal.removeEventListener("abort", onConnectionAbort);
       watchers.delete(abort);
@@ -351,6 +400,23 @@ export class FleetService {
     try {
       let coordinator = this.#coordinators.get(input.name);
       if (this.#launcher !== undefined && coordinator === undefined) {
+        const reservation = this.#reserveProcessSlot(input.name);
+        if (reservation !== "acquired") {
+          await this.store.putSend({
+            sendId: operationId,
+            agentName: input.name,
+            message: input.message,
+            state: "failed",
+            acceptedAt,
+          });
+          return err({
+            code: reservation === "existing" ? "agent_restoring" : "capacity_exceeded",
+            message:
+              reservation === "existing"
+                ? `Agent ${input.name} is already restoring.`
+                : `Pi Fleet has reached its ${String(this.#limits.maxResidentProcesses)} process limit.`,
+          });
+        }
         agent = await this.#markRestoring(agent);
         incarnationId = randomUUID();
         await this.store.putIncarnation({
@@ -415,6 +481,7 @@ export class FleetService {
         acceptedAt,
       });
     } catch (error: unknown) {
+      if (!this.#coordinators.has(input.name)) this.#releaseProcessSlot(input.name);
       if (incarnationId !== null && !this.#coordinators.has(input.name)) {
         await this.store.putIncarnation({
           incarnationId,
@@ -460,11 +527,29 @@ export class FleetService {
       () => {
         if (this.#coordinators.get(agent.summary.name) === coordinator) {
           this.#coordinators.delete(agent.summary.name);
+          this.#releaseProcessSlot(agent.summary.name);
         }
       },
     );
     this.#coordinators.set(agent.summary.name, coordinator);
     return coordinator;
+  }
+
+  #reserveProcessSlot(name: string): "acquired" | "existing" | "full" {
+    if (this.#processSlots.has(name)) return "existing";
+    if (this.#processSlots.size >= this.#limits.maxResidentProcesses) return "full";
+    this.#processSlots.add(name);
+    return "acquired";
+  }
+
+  #releaseProcessSlot(name: string): void {
+    this.#processSlots.delete(name);
+  }
+
+  #watcherCount(): number {
+    let count = 0;
+    for (const watchers of this.#watchers.values()) count += watchers.size;
+    return count;
   }
 
   #notFound<T>(name: string): Result<T, FleetClientError> {

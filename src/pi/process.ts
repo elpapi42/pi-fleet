@@ -4,7 +4,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { signalProcessTree } from "../platform/runtime/process-tree.js";
 
-const MAX_STDOUT_FRAME_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_STDOUT_FRAME_BYTES = 8 * 1024 * 1024;
 
 export interface PiState {
   readonly isStreaming: boolean;
@@ -30,6 +30,7 @@ export interface PiProcessStartOptions {
   readonly piArgv: readonly string[];
   readonly cwd: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly maxStdoutFrameBytes?: number;
 }
 
 interface ResponseWaiter {
@@ -46,8 +47,10 @@ export class PiProcess {
   #stdoutBuffer = "";
   #stderr = "";
   #stopping = false;
+  readonly #maxStdoutFrameBytes: number;
 
   private constructor(options: PiProcessStartOptions) {
+    this.#maxStdoutFrameBytes = options.maxStdoutFrameBytes ?? DEFAULT_MAX_STDOUT_FRAME_BYTES;
     this.#child = spawn(
       options.executable,
       [...(options.argvPrefix ?? []), "--mode", "rpc", ...options.piArgv],
@@ -152,12 +155,12 @@ export class PiProcess {
     while (true) {
       const newline = this.#stdoutBuffer.indexOf("\n");
       if (newline < 0) {
-        if (Buffer.byteLength(this.#stdoutBuffer) > MAX_STDOUT_FRAME_BYTES) {
+        if (Buffer.byteLength(this.#stdoutBuffer) > this.#maxStdoutFrameBytes) {
           signalProcessTree(this.pid, "SIGTERM");
         }
         return;
       }
-      if (Buffer.byteLength(this.#stdoutBuffer.slice(0, newline)) > MAX_STDOUT_FRAME_BYTES) {
+      if (Buffer.byteLength(this.#stdoutBuffer.slice(0, newline)) > this.#maxStdoutFrameBytes) {
         signalProcessTree(this.pid, "SIGTERM");
         return;
       }

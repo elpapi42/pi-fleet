@@ -13,7 +13,8 @@ import type {
 } from "../client/fleet-client.js";
 import { parseProtocolRequest } from "../protocol/validation.js";
 import { readJsonLines, writeJsonLine } from "../protocol/jsonl.js";
-import { PROTOCOL_VERSION } from "../protocol/version.js";
+import { MAX_PROTOCOL_FRAME_BYTES, PROTOCOL_VERSION } from "../protocol/version.js";
+import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../shared/runtime-limits.js";
 import { err, type Result } from "../shared/result.js";
 import type { FleetService } from "./fleet-service.js";
 
@@ -25,12 +26,15 @@ export interface ControlServer {
 export async function startControlServer(options: {
   readonly socketPath: string;
   readonly service: FleetService | Promise<FleetService>;
+  readonly limits?: Pick<RuntimeLimits, "maxProtocolFrameBytes">;
 }): Promise<ControlServer> {
   await mkdir(dirname(options.socketPath), { recursive: true, mode: 0o700 });
   await prepareSocketPath(options.socketPath);
 
   const service = Promise.resolve(options.service);
-  const server = createServer((socket) => handleConnection(socket, service));
+  const maxFrameBytes =
+    options.limits?.maxProtocolFrameBytes ?? DEFAULT_RUNTIME_LIMITS.maxProtocolFrameBytes;
+  const server = createServer((socket) => handleConnection(socket, service, maxFrameBytes));
   server.listen(options.socketPath);
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once("listening", resolveListen);
@@ -49,7 +53,11 @@ export async function startControlServer(options: {
   };
 }
 
-function handleConnection(socket: Socket, service: Promise<FleetService>): void {
+function handleConnection(
+  socket: Socket,
+  service: Promise<FleetService>,
+  maxFrameBytes: number,
+): void {
   let handled = false;
   const abort = new AbortController();
   socket.once("close", () => abort.abort());
@@ -60,7 +68,7 @@ function handleConnection(socket: Socket, service: Promise<FleetService>): void 
       handled = true;
       stopReading();
       void service
-        .then((readyService) => dispatch(value, readyService, socket, abort.signal))
+        .then((readyService) => dispatch(value, readyService, socket, abort.signal, maxFrameBytes))
         .catch((error: unknown) => {
           if (socket.destroyed) return;
           const message = error instanceof Error ? error.message : "Internal runtime error";
@@ -82,6 +90,7 @@ function handleConnection(socket: Socket, service: Promise<FleetService>): void 
       });
       socket.end();
     },
+    maxFrameBytes,
   );
 }
 
@@ -90,6 +99,7 @@ async function dispatch(
   service: FleetService,
   socket: Socket,
   connectionSignal: AbortSignal,
+  maxFrameBytes: number,
 ): Promise<void> {
   const request = parseProtocolRequest(value);
   const operationId = request.operation?.operationId;
@@ -130,14 +140,19 @@ async function dispatch(
       }
       writeJsonLine(socket, { v: PROTOCOL_VERSION, requestId: request.requestId, stream: "ready" });
       try {
+        const outgoingFrameLimit = Math.min(maxFrameBytes, MAX_PROTOCOL_FRAME_BYTES);
+        const maxRawChunkBytes = Math.max(1, Math.floor((outgoingFrameLimit - 1024) * 0.75));
         for await (const chunk of watch.value) {
-          const writable = writeJsonLine(socket, {
-            v: PROTOCOL_VERSION,
-            requestId: request.requestId,
-            stream: "chunk",
-            data: chunk.toString("base64"),
-          });
-          if (!writable) await once(socket, "drain");
+          for (let offset = 0; offset < chunk.length; offset += maxRawChunkBytes) {
+            const part = chunk.subarray(offset, offset + maxRawChunkBytes);
+            const writable = writeJsonLine(socket, {
+              v: PROTOCOL_VERSION,
+              requestId: request.requestId,
+              stream: "chunk",
+              data: part.toString("base64"),
+            });
+            if (!writable) await once(socket, "drain");
+          }
         }
         if (!socket.destroyed) {
           writeJsonLine(socket, {

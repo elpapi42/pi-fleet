@@ -23,6 +23,8 @@ npm run test:package
 npm run test:platform
 ```
 
-Linux x64 package and user-service behavior is locally validated. Linux logout/reboot recovery, repair after a recorded Node executable disappears, and macOS arm64 launchd/process-group behavior remain release gates and are not claimed as complete.
+Linux x64 package and user-service behavior is locally validated. Materialized releases recursively verify every copied production dependency package, and the internal installer supports idempotent `install`, `repair`, and `uninstall` operations. A safe systemd crash test proved the service cgroup removes the resident Pi child, restart leaves the agent `idle + absent`, and the next `send` alone restores one Pi process on the same native session.
 
-Pi sessions remain user-owned: service removal and `pifleet destroy` never delete them. See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for completed evidence and remaining platform gates.
+Runtime admission is bounded by configurable production defaults: 32 resident/starting processes, 128 watchers, 512 KiB messages, 1 MiB private protocol frames, and 8 MiB Pi/session records. Environment variables with the `PIFLEET_MAX_*` prefix provide positive-integer deployment overrides.
+
+Pi sessions remain user-owned: service removal and `pifleet destroy` never delete them. Linux logout/reboot recovery and macOS arm64 launchd/process-group behavior remain release gates and are not claimed as complete; the package is private and has not been published. See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for completed evidence and remaining platform gates.

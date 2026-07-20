@@ -6,6 +6,7 @@ export function readJsonLines(
   socket: Socket,
   onValue: (value: unknown) => void,
   onError: (error: Error) => void,
+  maxFrameBytes = MAX_PROTOCOL_FRAME_BYTES,
 ): () => void {
   let buffer = Buffer.alloc(0);
   const onData = (chunk: Buffer) => {
@@ -13,12 +14,12 @@ export function readJsonLines(
     while (true) {
       const newline = buffer.indexOf(0x0a);
       if (newline < 0) {
-        if (buffer.length > MAX_PROTOCOL_FRAME_BYTES) {
+        if (buffer.length > maxFrameBytes) {
           onError(new Error("Protocol frame exceeds maximum size"));
         }
         return;
       }
-      if (newline > MAX_PROTOCOL_FRAME_BYTES) {
+      if (newline > maxFrameBytes) {
         onError(new Error("Protocol frame exceeds maximum size"));
         return;
       }
