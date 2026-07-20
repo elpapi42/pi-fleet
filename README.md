@@ -23,12 +23,17 @@ Install the beta globally:
 ```bash
 npm install --global @elpapi42/pi-fleet@beta
 pifleet --version
+```
+
+Configure normal Pi provider credentials **before the first operational Fleet command**. `list`, `create`, and the other operational commands start or reuse one persistent runtime; a variable supplied only to a later command, such as `ANTHROPIC_API_KEY=… pifleet create …`, does not replace that runtime's environment. Put provider credentials in Pi's credential configuration or the persistent service/runtime environment, then verify startup:
+
+```bash
 pifleet list
 ```
 
 `npx @elpapi42/pi-fleet@beta` is suitable for evaluation, but a global installation is recommended for continued use. Fleet materializes a verified runtime independently of the npm installation/cache, and evaluation can leave that runtime and Fleet state behind intentionally.
 
-Pi Fleet includes the tested Pi coding-agent package. It uses your normal Pi configuration, provider credentials, extensions, skills, and project resources. **Do not put API keys or other secrets in CLI arguments:** Fleet persists accepted Pi arguments so it can restore the agent. Use Pi's credential configuration or provider environment variables instead.
+Pi Fleet includes the tested Pi coding-agent package. It uses your normal Pi configuration, provider credentials, extensions, skills, and project resources. **Do not put API keys or other secrets in CLI arguments:** Fleet persists accepted Pi arguments so it can restore the agent.
 
 ## Quick start
 
@@ -42,7 +47,7 @@ Send work and retrieve the latest assistant message after Pi becomes idle:
 
 ```bash
 pifleet send reviewer "Review the authentication changes"
-pifleet receive reviewer --human
+pifleet receive reviewer --timeout 10m --human
 ```
 
 Inspect and remove Fleet management:
@@ -69,7 +74,7 @@ pifleet destroy NAME [--human]
 
 Finite commands emit JSON by default. Add `--human` for concise human output. `watch` has no human mode: stdout is only raw, complete records appended to the selected Pi session JSONL.
 
-Messages can be read explicitly from stdin with `-`:
+Messages can be read explicitly from stdin with `-` and are limited to 512 KiB by default:
 
 ```bash
 git diff | pifleet send reviewer -
@@ -118,6 +123,7 @@ Positional Pi prompts and `@file` inputs after `--` are rejected; use Fleet's op
 - when already idle, it returns immediately;
 - with no assistant message, it returns `no_response`;
 - `--timeout 0` performs an immediate poll;
+- use an explicit duration suffix such as `30s`, `5m`, or `1h`; a unitless value is milliseconds;
 - timing out does not cancel or change Pi.
 
 ## Sessions and `watch`
@@ -174,10 +180,11 @@ Do not include API keys, message contents, session contents, or private paths un
 ## Beta limitations
 
 - Current deterministic reliability and documented global-install package validation cover Linux x64 only. Arbitrarily hoisted local-prefix, pnpm, and unusual `npx` dependency layouts are not yet supported.
-- Actual logout and host reboot recovery remain unvalidated.
+- Disposable systemd/PID-1 restart and user-lingering recovery are validated; a full host logout and kernel reboot remain unvalidated.
 - launchd and macOS descendant containment remain unvalidated.
 - Real disk-exhaustion behavior and multi-hour resource growth remain unvalidated; bounded SQLite and in-process resource tests are covered.
 - Native service install/repair/uninstall exists internally but has no supported public UX yet.
+- Managed Pi `0.80.10` currently pins `brace-expansion@5.0.6`, which is covered by `GHSA-3jxr-9vmj-r5cp`; the next Fleet publication is blocked pending a patched upstream Pi artifact or a deliberately owned patched closure.
 - Runtime upgrades are not automatic; active runtimes are not silently replaced.
 - Session tails cannot promise exactly-once behavior under arbitrary external mutation.
 - A promptless missing session path may remain physically unmaterialized until Pi writes conversation content, following native Pi behavior.

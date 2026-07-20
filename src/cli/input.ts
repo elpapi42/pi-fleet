@@ -1,6 +1,6 @@
 import type { Readable } from "node:stream";
 
-const DEFAULT_MAX_INPUT_BYTES = 1024 * 1024;
+const DEFAULT_MAX_INPUT_BYTES = 512 * 1024;
 
 export async function resolveMessageInput(
   value: string,

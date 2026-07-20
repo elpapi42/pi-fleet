@@ -37,7 +37,9 @@ describe("service installer", () => {
         runtimePath: "/home/user/releases/v1/dist/runtime.mjs",
       },
     });
-    expect(await readFile(path, "utf8")).toContain("KillMode=control-group");
+    const service = await readFile(path, "utf8");
+    expect(service).toContain("KillMode=control-group");
+    expect(service).not.toContain("Environment=PIFLEET_STATE_ROOT=");
     expect(commands).toContainEqual(["systemctl", "--user", "enable", "--now", "pi-fleet.service"]);
 
     await uninstallUserService({ platform: "linux", home, executor });

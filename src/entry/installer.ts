@@ -9,7 +9,7 @@ import {
   type CommandExecutor,
 } from "../platform/install/service-installer.js";
 import { materializeRuntime } from "../platform/install/runtime-release.js";
-import { resolveApplicationRoot, resolveFleetPaths } from "../platform/shared/paths.js";
+import { resolveApplicationRoot } from "../platform/shared/paths.js";
 
 const executor: CommandExecutor = {
   async run(command, args) {
@@ -18,7 +18,7 @@ const executor: CommandExecutor = {
 };
 
 export async function installRuntimeService(): Promise<string> {
-  return installMaterializedService(resolveFleetPaths().stateRoot);
+  return installMaterializedService(process.env.PIFLEET_STATE_ROOT);
 }
 
 export async function repairRuntimeService(): Promise<string> {

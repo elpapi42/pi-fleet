@@ -11,6 +11,11 @@
 - Contained asynchronous coordinator event/store failures by stopping the affected Pi process and rejecting waiters instead of producing unhandled promise rejections.
 - Added a nightly reliability workflow and an isolated soak suite covering 500 concurrent ordered sends and 100 name lifecycle cycles.
 - Reject invalid UTF-8 in stdin and Pi RPC stdout instead of silently replacing bytes at either protocol boundary.
+- Keep idle agents `idle + absent` after Fleet-initiated orderly shutdown even when Pi reports a nonzero exit; active work remains `failed/runtime_interrupted`.
+- Align explicit stdin input with the runtime's 512 KiB message limit and document credential-environment and receive-timeout behavior before the quick start.
+- Install native services without forcing the default persistent state directory into `PIFLEET_STATE_ROOT`, preserving the default split between durable SQLite state and the private runtime socket.
+- Validated systemd user lingering, idle reboot restoration, active reboot interruption without replay, single-writer restoration, and session preservation in a disposable privileged systemd container.
+- Publication remains blocked by newly disclosed `GHSA-3jxr-9vmj-r5cp` in `brace-expansion@5.0.6` pinned by managed Pi `0.80.10`; no ineffective override or audit bypass is applied.
 
 ## 0.1.0-beta.8 — 2026-07-20
 

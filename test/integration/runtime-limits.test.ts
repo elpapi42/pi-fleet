@@ -315,6 +315,38 @@ describe("runtime admission limits", () => {
     });
   });
 
+  it("keeps an idle agent recoverable when orderly shutdown observes a nonzero Pi exit", async () => {
+    const store = new MemoryFleetStore();
+    const launcher: PiLauncher = {
+      artifactId: "idle-shutdown-pi",
+      async start() {
+        const process = fakeProcess(25_500) as unknown as {
+          onExit(listener: (error: Error | null) => void): () => void;
+          stop(): Promise<void>;
+        };
+        let exitListener: ((error: Error | null) => void) | undefined;
+        process.onExit = (listener) => {
+          exitListener = listener;
+          return () => undefined;
+        };
+        process.stop = async () => exitListener?.(new Error("Pi exited with code 1"));
+        return process as PiProcess;
+      },
+    };
+    const service = new FleetService(store, { launcher });
+    await service.create({ name: "idle", cwd: "/tmp", piArgv: [] }, "create-idle");
+
+    await service.close();
+
+    expect(await store.getAgent("idle")).toMatchObject({
+      summary: {
+        state: "idle",
+        process: { state: "absent" },
+        error: undefined,
+      },
+    });
+  });
+
   it("marks active work interrupted during orderly runtime shutdown", async () => {
     let frameListener: ((frame: { type: string }) => void) | undefined;
     const launcher: PiLauncher = {

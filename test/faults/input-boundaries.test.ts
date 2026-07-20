@@ -17,6 +17,16 @@ describe("message input boundaries", () => {
     );
   });
 
+  it("aligns the default stdin limit with the runtime message limit", async () => {
+    const limit = 512 * 1024;
+    await expect(
+      resolveMessageInput("-", Readable.from([Buffer.alloc(limit, 0x61)])),
+    ).resolves.toHaveLength(limit);
+    await expect(
+      resolveMessageInput("-", Readable.from([Buffer.alloc(limit + 1, 0x61)])),
+    ).rejects.toThrow(/524288-byte limit/i);
+  });
+
   it("rejects invalid UTF-8 instead of silently inserting replacement characters", async () => {
     await expect(
       resolveMessageInput("-", Readable.from([Buffer.from([0xc3, 0x28])])),

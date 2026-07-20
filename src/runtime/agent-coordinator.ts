@@ -158,7 +158,9 @@ export class AgentCoordinator {
     const wasActive =
       this.agent.summary.state === "working" || this.agent.summary.state === "restoring";
     const destroyed = this.#stopReason === "destroy";
-    const interrupted = error !== null || (wasActive && this.#stopReason !== "destroy");
+    const interrupted =
+      (error !== null && this.#stopReason === null) ||
+      (wasActive && this.#stopReason !== "destroy");
     const state = destroyed ? "destroying" : interrupted ? "failed" : "idle";
     this.agent = {
       ...this.agent,
