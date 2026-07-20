@@ -13,6 +13,6 @@
     "skipLibCheck": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs"],
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs", "scripts/**/*.mts"],
   "exclude": ["node_modules", "dist", "coverage"]
 }

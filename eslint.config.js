@@ -7,7 +7,7 @@ export default tseslint.config(
     ignores: ["dist/**", "coverage/**", "node_modules/**"],
   },
   {
-    files: ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs", "bin/**/*.mjs"],
+    files: ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs", "scripts/**/*.mts", "bin/**/*.mjs"],
     languageOptions: {
       globals: globals.node,
     },

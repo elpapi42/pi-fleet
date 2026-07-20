@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "piVersion": "0.80.10",
+  "commands": {
+    "getState": {
+      "request": { "id": "state-1", "type": "get_state" },
+      "responseType": "response",
+      "responseCommand": "get_state",
+      "requiredStateFields": ["isStreaming", "isCompacting", "pendingMessageCount", "sessionId"],
+      "optionalStateFields": ["sessionFile"]
+    },
+    "prompt": {
+      "request": {
+        "id": "prompt-1",
+        "type": "prompt",
+        "message": "fixture input",
+        "streamingBehavior": "steer"
+      },
+      "response": {
+        "id": "prompt-1",
+        "type": "response",
+        "command": "prompt",
+        "success": true
+      }
+    },
+    "latestAssistantText": {
+      "request": { "id": "latest-1", "type": "get_last_assistant_text" },
+      "responseCommand": "get_last_assistant_text",
+      "emptyData": {},
+      "textData": { "text": "fixture response" }
+    }
+  },
+  "events": {
+    "working": "agent_start",
+    "idle": "agent_settled",
+    "settledAfterQueuedSteering": true
+  },
+  "ordering": {
+    "responsesMayArriveOutOfInputOrder": true,
+    "correlateByRequestId": true
+  }
+}

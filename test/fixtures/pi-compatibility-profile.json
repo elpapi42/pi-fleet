@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "artifact": {
+    "executable": "pi",
+    "version": "0.80.10"
+  },
+  "runtime": {
+    "node": "24.16.0",
+    "platform": "linux",
+    "architecture": "x64"
+  },
+  "selectors": {
+    "noSelectorReportsConcretePath": true,
+    "noSelectorStartsUnmaterialized": true,
+    "existingSessionUsesExactPathAndId": true,
+    "missingSessionUsesExactPath": true,
+    "missingSessionStartsUnmaterialized": true,
+    "sessionIdIsExact": true,
+    "sessionDirIsHonored": true,
+    "forkCreatesNewSession": true,
+    "forkMaterializesImmediately": true,
+    "continueReopensLatestConcreteSession": true,
+    "resumeWorksHeadlessly": false
+  },
+  "communication": {
+    "promptAcknowledged": true,
+    "activePromptAcceptedAsSteering": true,
+    "agentSettledObserved": true,
+    "latestAssistantTextObserved": true,
+    "sessionMaterializedAfterAssistant": true,
+    "modelRequestCount": 2
+  },
+  "process": {
+    "rpcReady": true,
+    "cleanShutdown": true
+  },
+  "limitations": [
+    "Interactive --resume does not establish RPC mode during headless stdin and is unsupported in v1.",
+    "The probe isolates PI_CODING_AGENT_DIR and uses a local deterministic OpenAI-compatible server; it does not validate external providers or credentials.",
+    "Concurrent external writers and arbitrary session-file rewrites remain outside Fleet's correctness guarantee."
+  ]
+}

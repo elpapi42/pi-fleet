@@ -35,17 +35,19 @@ The CLI never starts Pi directly or accesses durable state. The runtime is the o
 
 ## Milestones
 
-### 1. Tooling and architecture foundation
+### 1. Tooling and architecture foundation — complete
 
 Create a strict TypeScript ESM package with separate CLI/runtime bundles, test/lint/format/build scripts, Node `^22.19.0 || ^24.0.0` gating, and a small shared utility layer. `pifleet --version` works; other invocations clearly report that Fleet is not implemented. No runtime, socket, Pi, SQLite, or service behavior is added.
 
 **Exit gate:** clean install, typecheck, lint, format check, tests, and build pass; the CLI bundle has no runtime/store/Pi imports.
 
-### 2. Real-Pi compatibility probe
+### 2. Real-Pi compatibility probe — complete on Linux x64 / Pi 0.80.10
 
 Probe the exact managed Pi artifact in isolated temporary roots. Verify native selectors (no selector, `--session`, `--session-id`, `--session-dir`, `--fork`, `--continue`, and headless `--resume`), resolved path/ID observation, restoration argv, prompt-with-steer acknowledgement, busy/idle boundary, latest assistant text, session materialization, and clean process recovery.
 
 **Exit gate:** a tracked redacted compatibility profile and deterministic fake-Pi contract exist. Do not assume selector restoration behavior.
+
+**Evidence:** `test/fixtures/pi-compatibility-profile.json` and `fake-pi-contract.json` prove native selector handling, local deterministic prompt/steer/settlement/latest-text behavior, first materialization, and clean shutdown on Linux x64. Headless `--resume` does not enter RPC mode and is unsupported in v1; macOS parity remains a release gate.
 
 ### 3. Pure CLI contract
 
