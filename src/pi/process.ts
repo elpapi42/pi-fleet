@@ -59,9 +59,15 @@ export class PiProcess {
   #stdoutBuffer = Buffer.alloc(0);
   #stderr = "";
   #stopping = false;
+  #handledExit = false;
+  readonly #exitHandled: Promise<void>;
+  #resolveExitHandled: () => void = () => undefined;
   readonly #maxStdoutFrameBytes: number;
 
   private constructor(options: PiProcessStartOptions) {
+    this.#exitHandled = new Promise((resolve) => {
+      this.#resolveExitHandled = resolve;
+    });
     this.#maxStdoutFrameBytes = options.maxStdoutFrameBytes ?? DEFAULT_MAX_STDOUT_FRAME_BYTES;
     this.#child = spawn(
       options.executable,
@@ -159,20 +165,26 @@ export class PiProcess {
 
   async stop(): Promise<void> {
     if (this.#stopping) {
-      if (!(await waitForProcessGroupExit(this.pid))) {
+      if (!(await this.#waitForExit(1_000))) {
         throw new Error(`Pi process group ${String(this.pid)} is still running`);
       }
       return;
     }
     this.#stopping = true;
     if (this.#child.exitCode === null) this.#child.stdin.end();
-    if (await waitForProcessGroupExit(this.pid, 500)) return;
+    if (await this.#waitForExit(500)) return;
     signalProcessTree(this.pid, "SIGTERM");
-    if (await waitForProcessGroupExit(this.pid, 1_000)) return;
+    if (await this.#waitForExit(1_000)) return;
     signalProcessTree(this.pid, "SIGKILL");
-    if (!(await waitForProcessGroupExit(this.pid, 1_000))) {
+    if (!(await this.#waitForExit(1_000))) {
       throw new Error(`Pi process group ${String(this.pid)} did not exit after SIGKILL`);
     }
+  }
+
+  async #waitForExit(timeoutMs: number): Promise<boolean> {
+    if (!(await waitForProcessGroupExit(this.pid, timeoutMs))) return false;
+    await this.#exitHandled;
+    return true;
   }
 
   async #write(frame: PiFrame): Promise<void> {
@@ -228,16 +240,22 @@ export class PiProcess {
   }
 
   #handleExit(code: number | null, signal: NodeJS.Signals | null, cause?: Error): void {
+    if (this.#handledExit) return;
+    this.#handledExit = true;
     const error =
       this.#stopping && (code === 0 || signal === "SIGTERM")
         ? null
         : (cause ??
           new Error(`Pi exited unexpectedly (code=${String(code)}, signal=${String(signal)})`));
-    for (const waiter of this.#responses.values()) {
-      clearTimeout(waiter.timer);
-      waiter.reject(error ?? new Error("Pi stopped before responding"));
+    try {
+      for (const waiter of this.#responses.values()) {
+        clearTimeout(waiter.timer);
+        waiter.reject(error ?? new Error("Pi stopped before responding"));
+      }
+      this.#responses.clear();
+      for (const listener of this.#exitListeners) listener(error);
+    } finally {
+      this.#resolveExitHandled();
     }
-    this.#responses.clear();
-    for (const listener of this.#exitListeners) listener(error);
   }
 }
