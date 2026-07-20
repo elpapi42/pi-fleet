@@ -43,8 +43,14 @@ async function dispatch(request: WorkerRequest): Promise<unknown> {
       return store.getOperation(request.args[0] as string);
     case "putOperation":
       return store.putOperation(request.args[0] as StoredOperation);
+    case "listPendingOperations":
+      return store.listPendingOperations();
+    case "deleteOperation":
+      return store.deleteOperation(request.args[0] as string);
     case "getSend":
       return store.getSend(request.args[0] as string);
+    case "nextSendOrdinal":
+      return store.nextSendOrdinal(request.args[0] as string);
     case "putSend":
       return store.putSend(request.args[0] as StoredSend);
     case "listNonterminalSends":

@@ -86,6 +86,33 @@ describe("service installer", () => {
     expect(commands.filter((command) => command.at(-2) === "restart")).toHaveLength(3);
   });
 
+  it("preserves the installed state root when repair is invoked without one", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pifleet-service-"));
+    roots.push(home);
+    const executor: CommandExecutor = { async run() {} };
+    const nodePath = join(home, "node");
+    const runtimePath = join(home, "runtime.mjs");
+    await Promise.all([writeFile(nodePath, "#!/bin/sh\n"), writeFile(runtimePath, "export {};\n")]);
+    await chmod(nodePath, 0o700);
+
+    const path = await installUserService({
+      platform: "linux",
+      home,
+      executor,
+      definition: { nodePath, runtimePath, stateRoot: "/custom/fleet-state" },
+    });
+    await installUserService({
+      platform: "linux",
+      home,
+      executor,
+      definition: { nodePath, runtimePath },
+    });
+
+    expect(await readFile(path, "utf8")).toContain(
+      "Environment=PIFLEET_STATE_ROOT=/custom/fleet-state",
+    );
+  });
+
   it("generates the launchd lifecycle commands without requiring macOS to inspect them", async () => {
     const home = await mkdtemp(join(tmpdir(), "pifleet-service-"));
     roots.push(home);

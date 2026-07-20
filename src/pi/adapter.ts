@@ -3,7 +3,11 @@ import { PiProcess } from "./process.js";
 
 export interface PiLauncher {
   readonly artifactId: string;
-  start(profile: AgentLaunchProfile, restore: boolean): Promise<PiProcess>;
+  start(
+    profile: AgentLaunchProfile,
+    restore: boolean,
+    onSpawn?: (pid: number) => Promise<void>,
+  ): Promise<PiProcess>;
 }
 
 export interface RealPiLauncherOptions {
@@ -22,7 +26,11 @@ export class RealPiLauncher implements PiLauncher {
     this.artifactId = options.artifactId;
   }
 
-  async start(profile: AgentLaunchProfile, restore: boolean): Promise<PiProcess> {
+  async start(
+    profile: AgentLaunchProfile,
+    restore: boolean,
+    onSpawn?: (pid: number) => Promise<void>,
+  ): Promise<PiProcess> {
     const piArgv = restore ? profile.restorePiArgv : profile.userPiArgv;
     if (piArgv === null) throw new Error("Agent has no observed Pi session to restore");
     const process = await PiProcess.start({
@@ -34,6 +42,7 @@ export class RealPiLauncher implements PiLauncher {
       ...(this.options.maxStdoutFrameBytes === undefined
         ? {}
         : { maxStdoutFrameBytes: this.options.maxStdoutFrameBytes }),
+      ...(onSpawn === undefined ? {} : { onSpawn }),
     });
     this.options.onStart?.(process.pid);
     return process;

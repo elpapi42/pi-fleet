@@ -11,6 +11,27 @@ describe("Pi launch profile", () => {
     }
   });
 
+  it("rejects positional and @file prompts while preserving option values", () => {
+    for (const piArgv of [
+      ["bare prompt"],
+      ["@prompt.md"],
+      ["--approve", "bare prompt"],
+      ["--", "prompt"],
+    ]) {
+      expect(() =>
+        createLaunchProfile({ cwd: "/work", piArgv, piArtifactId: "pi@0.80.10" }),
+      ).toThrow(/prompt/i);
+    }
+
+    expect(() =>
+      createLaunchProfile({
+        cwd: "/work",
+        piArgv: ["--model", "provider/model", "--extension-flag", "value", "--approve"],
+        piArtifactId: "pi@0.80.10",
+      }),
+    ).not.toThrow();
+  });
+
   it("keeps exact first-launch argv and derives restoration after Pi selects a session", () => {
     const profile = createLaunchProfile({
       cwd: "/work/project",

@@ -2,9 +2,20 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
-import { signalProcessTree } from "../platform/runtime/process-tree.js";
+import { signalProcessTree, waitForProcessGroupExit } from "../platform/runtime/process-tree.js";
 
 const DEFAULT_MAX_STDOUT_FRAME_BYTES = 8 * 1024 * 1024;
+
+export class PiCleanupUncertainError extends Error {
+  constructor(
+    readonly pid: number,
+    readonly startupError: unknown,
+    readonly cleanupError: unknown,
+  ) {
+    super(`Pi process group ${String(pid)} could not be cleaned up after startup failed`);
+    this.name = "PiCleanupUncertainError";
+  }
+}
 
 export interface PiState {
   readonly isStreaming: boolean;
@@ -31,6 +42,7 @@ export interface PiProcessStartOptions {
   readonly cwd: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly maxStdoutFrameBytes?: number;
+  readonly onSpawn?: (pid: number) => Promise<void>;
 }
 
 interface ResponseWaiter {
@@ -74,10 +86,15 @@ export class PiProcess {
   static async start(options: PiProcessStartOptions): Promise<PiProcess> {
     const process = new PiProcess(options);
     try {
+      await options.onSpawn?.(process.pid);
       await process.getState();
       return process;
     } catch (error: unknown) {
-      await process.stop().catch(() => undefined);
+      try {
+        await process.stop();
+      } catch (cleanupError: unknown) {
+        throw new PiCleanupUncertainError(process.pid, error, cleanupError);
+      }
       throw error;
     }
   }
@@ -133,14 +150,19 @@ export class PiProcess {
   }
 
   async stop(): Promise<void> {
-    if (this.#stopping || this.#child.exitCode !== null) return;
+    if (this.#stopping) {
+      if (!(await waitForProcessGroupExit(this.pid))) {
+        throw new Error(`Pi process group ${String(this.pid)} is still running`);
+      }
+      return;
+    }
     this.#stopping = true;
-    this.#child.stdin.end();
-    if (await this.#waitForExit(500)) return;
+    if (this.#child.exitCode === null) this.#child.stdin.end();
+    if (await waitForProcessGroupExit(this.pid, 500)) return;
     signalProcessTree(this.pid, "SIGTERM");
-    if (await this.#waitForExit(1_000)) return;
+    if (await waitForProcessGroupExit(this.pid, 1_000)) return;
     signalProcessTree(this.pid, "SIGKILL");
-    if (!(await this.#waitForExit(1_000))) {
+    if (!(await waitForProcessGroupExit(this.pid, 1_000))) {
       throw new Error(`Pi process group ${String(this.pid)} did not exit after SIGKILL`);
     }
   }
@@ -193,14 +215,6 @@ export class PiProcess {
       }
       for (const listener of this.#listeners) listener(frame);
     }
-  }
-
-  async #waitForExit(timeoutMs: number): Promise<boolean> {
-    if (this.#child.exitCode !== null) return true;
-    return Promise.race([
-      once(this.#child, "exit").then(() => true),
-      new Promise<boolean>((resolveTimeout) => setTimeout(() => resolveTimeout(false), timeoutMs)),
-    ]);
   }
 
   #handleExit(code: number | null, signal: NodeJS.Signals | null, cause?: Error): void {

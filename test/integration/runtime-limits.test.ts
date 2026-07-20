@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { PiLauncher } from "../../src/pi/adapter.js";
-import type { PiProcess } from "../../src/pi/process.js";
+import { PiCleanupUncertainError, type PiProcess } from "../../src/pi/process.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
 
@@ -79,6 +79,46 @@ function fakeProcess(pid: number): PiProcess {
   } as unknown as PiProcess;
 }
 
+function settleDuringReceiveLauncher(): PiLauncher {
+  return {
+    artifactId: "settle-race-pi",
+    async start(): Promise<PiProcess> {
+      let stateCalls = 0;
+      let frameListener: ((frame: { type: string }) => void) | undefined;
+      let exitListener: ((error: Error | null) => void) | undefined;
+      return {
+        pid: 30_000,
+        async getState() {
+          stateCalls += 1;
+          if (stateCalls > 1) frameListener?.({ type: "agent_settled" });
+          return {
+            isStreaming: stateCalls > 1,
+            isCompacting: false,
+            pendingMessageCount: 0,
+            sessionFile: "/tmp/settle-race.jsonl",
+            sessionId: "settle-race",
+          };
+        },
+        async prompt() {},
+        async getLastAssistantText() {
+          return "settled response";
+        },
+        onFrame(listener: (frame: { type: string }) => void) {
+          frameListener = listener;
+          return () => undefined;
+        },
+        onExit(listener: (error: Error | null) => void) {
+          exitListener = listener;
+          return () => undefined;
+        },
+        async stop() {
+          exitListener?.(null);
+        },
+      } as unknown as PiProcess;
+    },
+  };
+}
+
 describe("runtime admission limits", () => {
   it("rejects a process-starting create when resident capacity is full", async () => {
     const service = new FleetService(new MemoryFleetStore(), {
@@ -95,9 +135,27 @@ describe("runtime admission limits", () => {
     await service.close();
   });
 
+  it("attaches a matching retry to one in-flight mutation", async () => {
+    const controlled = controlledLauncher();
+    const gate = controlled.holdNextStart();
+    const service = new FleetService(new MemoryFleetStore(), { launcher: controlled.launcher });
+    const input = { name: "one", cwd: "/tmp", piArgv: [] };
+
+    const first = service.create(input, "same-operation");
+    await gate.started;
+    const retry = service.create(input, "same-operation");
+    gate.release();
+    const [firstResult, retryResult] = await Promise.all([first, retry]);
+
+    expect(retryResult).toEqual(firstResult);
+    expect(controlled.starts()).toBe(1);
+    await service.close();
+  });
+
   it("single-flights restoration so concurrent sends cannot start two Pi writers", async () => {
     const controlled = controlledLauncher();
-    const service = new FleetService(new MemoryFleetStore(), { launcher: controlled.launcher });
+    const store = new MemoryFleetStore();
+    const service = new FleetService(store, { launcher: controlled.launcher });
     await service.create(
       { name: "one", cwd: "/tmp", piArgv: ["--session", "/tmp/one.jsonl"] },
       "create-one",
@@ -107,11 +165,116 @@ describe("runtime admission limits", () => {
     const gate = controlled.holdNextStart();
     const first = service.send({ name: "one", message: "first" }, "send-one");
     await gate.started;
-    const second = await service.send({ name: "one", message: "second" }, "send-two");
-    expect(second).toMatchObject({ ok: false, error: { code: "agent_restoring" } });
+    const second = service.send({ name: "one", message: "second" }, "send-two");
     gate.release();
-    expect(await first).toMatchObject({ ok: true });
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult).toMatchObject({ ok: true });
+    expect(secondResult).toMatchObject({ ok: true });
+    expect(await store.getSend("send-one")).toMatchObject({ ordinal: 1, state: "acknowledged" });
+    expect(await store.getSend("send-two")).toMatchObject({ ordinal: 2, state: "acknowledged" });
     expect(controlled.starts()).toBe(2);
+    await service.close();
+  });
+
+  it("preserves a failed agent when instructed create delivery is ambiguous", async () => {
+    const launcher: PiLauncher = {
+      artifactId: "ambiguous-pi",
+      async start() {
+        const process = fakeProcess(25_000) as unknown as {
+          prompt(message: string): Promise<void>;
+        };
+        process.prompt = async () => {
+          throw new Error("Pi RPC request timed out");
+        };
+        return process as PiProcess;
+      },
+    };
+    const service = new FleetService(new MemoryFleetStore(), { launcher });
+
+    expect(
+      await service.create(
+        { name: "ambiguous", instructions: "do work", cwd: "/tmp", piArgv: [] },
+        "create-ambiguous",
+      ),
+    ).toMatchObject({ ok: false, error: { code: "delivery_uncertain" } });
+    expect(await service.status({ name: "ambiguous" })).toMatchObject({
+      ok: true,
+      value: {
+        agent: {
+          state: "failed",
+          process: { state: "absent" },
+          error: { code: "delivery_uncertain" },
+        },
+      },
+    });
+  });
+
+  it("preserves cleanup uncertainty when startup cannot terminate the spawned group", async () => {
+    const launcher: PiLauncher = {
+      artifactId: "unclean-pi",
+      async start() {
+        throw new PiCleanupUncertainError(
+          25_001,
+          new Error("readiness failed"),
+          new Error("alive"),
+        );
+      },
+    };
+    const service = new FleetService(new MemoryFleetStore(), { launcher });
+
+    expect(
+      await service.create({ name: "unclean", cwd: "/tmp", piArgv: [] }, "create-unclean"),
+    ).toMatchObject({ ok: false, error: { code: "incarnation_cleanup_uncertain" } });
+    expect(await service.status({ name: "unclean" })).toMatchObject({
+      ok: true,
+      value: { agent: { state: "failed", process: { state: "cleanup_uncertain" } } },
+    });
+  });
+
+  it("marks active work interrupted during orderly runtime shutdown", async () => {
+    let frameListener: ((frame: { type: string }) => void) | undefined;
+    const launcher: PiLauncher = {
+      artifactId: "active-pi",
+      async start() {
+        const process = fakeProcess(26_000) as unknown as {
+          prompt(message: string): Promise<void>;
+          onFrame(listener: (frame: { type: string }) => void): () => void;
+        };
+        process.onFrame = (listener) => {
+          frameListener = listener;
+          return () => undefined;
+        };
+        process.prompt = async () => frameListener?.({ type: "agent_start" });
+        return process as PiProcess;
+      },
+    };
+    const store = new MemoryFleetStore();
+    const service = new FleetService(store, { launcher });
+    await service.create({ name: "active", cwd: "/tmp", piArgv: [] }, "create-active");
+    await service.send({ name: "active", message: "work" }, "send-active");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await service.close();
+
+    expect(await store.getAgent("active")).toMatchObject({
+      summary: {
+        state: "failed",
+        process: { state: "absent" },
+        error: { code: "runtime_interrupted" },
+      },
+    });
+  });
+
+  it("does not miss settlement between receive state inspection and waiter registration", async () => {
+    const service = new FleetService(new MemoryFleetStore(), {
+      launcher: settleDuringReceiveLauncher(),
+      now: () => "2026-01-01T00:00:00.000Z",
+    });
+    await service.create({ name: "one", cwd: "/tmp", piArgv: [] }, "create-one");
+
+    await expect(service.receive({ name: "one" })).resolves.toMatchObject({
+      ok: true,
+      value: { response: { text: "settled response" } },
+    });
     await service.close();
   });
 

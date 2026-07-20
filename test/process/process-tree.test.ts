@@ -2,7 +2,11 @@ import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
-import { isProcessAlive, signalProcessTree } from "../../src/platform/runtime/process-tree.js";
+import {
+  isProcessAlive,
+  signalProcessTree,
+  waitForProcessGroupExit,
+} from "../../src/platform/runtime/process-tree.js";
 
 describe.skipIf(process.platform === "win32")("process-group cleanup", () => {
   it("escalates a dedicated process group that ignores SIGTERM", async () => {
@@ -20,6 +24,8 @@ describe.skipIf(process.platform === "win32")("process-group cleanup", () => {
 
     signalProcessTree(pids.parent, "SIGKILL");
     await once(processTree, "exit");
+    expect(await waitForProcessGroupExit(pids.parent)).toBe(true);
     expect(isProcessAlive(pids.parent)).toBe(false);
+    expect(isProcessAlive(pids.child)).toBe(false);
   });
 });

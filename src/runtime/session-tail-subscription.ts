@@ -4,6 +4,7 @@ interface TailOptions {
   readonly signal?: AbortSignal;
   readonly pollMs?: number;
   readonly maxRecordBytes?: number;
+  readonly readChunkBytes?: number;
 }
 
 interface FileIdentity {
@@ -22,6 +23,7 @@ export class SessionTailSubscription implements AsyncIterable<Buffer> {
   readonly #initialState: Promise<TailState>;
   readonly #pollMs: number;
   readonly #maxRecordBytes: number;
+  readonly #readChunkBytes: number;
   readonly #signal: AbortSignal | undefined;
 
   constructor(
@@ -30,6 +32,7 @@ export class SessionTailSubscription implements AsyncIterable<Buffer> {
   ) {
     this.#pollMs = options.pollMs ?? 50;
     this.#maxRecordBytes = options.maxRecordBytes ?? 1024 * 1024;
+    this.#readChunkBytes = options.readChunkBytes ?? 64 * 1024;
     this.#signal = options.signal;
     this.#initialState = this.#establishBaseline();
   }
@@ -58,25 +61,39 @@ export class SessionTailSubscription implements AsyncIterable<Buffer> {
       if (!state.appeared) {
         state = { identity, appeared: true, offset: 0, partial: Buffer.alloc(0) };
       }
-
       if (current.size === state.offset) {
         await delay(this.#pollMs, this.#signal);
         continue;
       }
 
-      const appended = await readRange(this.sessionPath, state.offset, current.size - state.offset);
-      const combined = Buffer.concat([state.partial, appended]);
-      if (combined.length > this.#maxRecordBytes && combined.indexOf(0x0a) < 0) {
-        throw new Error("Pi session record exceeds the watch limit");
+      let offset = state.offset;
+      let partial = state.partial;
+      const targetSize = current.size;
+      while (offset < targetSize) {
+        const length = Math.min(this.#readChunkBytes, targetSize - offset);
+        const chunk = await readRange(this.sessionPath, offset, length);
+        if (chunk.length === 0) break;
+        offset += chunk.length;
+        const combined = Buffer.concat([partial, chunk]);
+        const completeRecords: Buffer[] = [];
+        let recordStart = 0;
+        while (true) {
+          const newline = combined.indexOf(0x0a, recordStart);
+          if (newline < 0) break;
+          const record = combined.subarray(recordStart, newline + 1);
+          if (record.length > this.#maxRecordBytes) {
+            throw new Error("Pi session record exceeds the watch limit");
+          }
+          completeRecords.push(Buffer.from(record));
+          recordStart = newline + 1;
+        }
+        partial = Buffer.from(combined.subarray(recordStart));
+        if (partial.length > this.#maxRecordBytes) {
+          throw new Error("Pi session record exceeds the watch limit");
+        }
+        if (completeRecords.length > 0) yield Buffer.concat(completeRecords);
       }
-      const lastNewline = combined.lastIndexOf(0x0a);
-      const complete = lastNewline < 0 ? Buffer.alloc(0) : combined.subarray(0, lastNewline + 1);
-      const partial = lastNewline < 0 ? combined : combined.subarray(lastNewline + 1);
-      if (partial.length > this.#maxRecordBytes) {
-        throw new Error("Pi session record exceeds the watch limit");
-      }
-      state = { identity, appeared: true, offset: current.size, partial };
-      if (complete.length > 0) yield complete;
+      state = { identity, appeared: true, offset, partial };
     }
   }
 
@@ -90,18 +107,18 @@ export class SessionTailSubscription implements AsyncIterable<Buffer> {
     }
     if (!current.isFile()) throw new Error("Selected Pi session path is not a regular file");
 
-    const readStart = Math.max(0, current.size - this.#maxRecordBytes);
+    const readStart = Math.max(0, current.size - this.#maxRecordBytes - 1);
     const tail = await readRange(this.sessionPath, readStart, current.size - readStart);
     const lastNewline = tail.lastIndexOf(0x0a);
     const partial = lastNewline < 0 ? tail : tail.subarray(lastNewline + 1);
-    if (readStart > 0 && lastNewline < 0) {
+    if (partial.length > this.#maxRecordBytes || (readStart > 0 && lastNewline < 0)) {
       throw new Error("Existing Pi session record exceeds the watch limit");
     }
     return {
       identity: { dev: current.dev, ino: current.ino },
       appeared: true,
       offset: current.size,
-      partial,
+      partial: Buffer.from(partial),
     };
   }
 }

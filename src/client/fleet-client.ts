@@ -11,6 +11,7 @@ export interface AgentSummary {
   readonly state: AgentState;
   readonly process: { readonly state: ProcessState };
   readonly session: { readonly path: string | null; readonly id: string | null };
+  readonly error?: { readonly code: string } | undefined;
 }
 
 export interface CreateInput {

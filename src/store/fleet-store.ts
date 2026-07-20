@@ -14,6 +14,7 @@ export interface StoredOperation {
   readonly fingerprint: string;
   readonly state: "pending" | "completed";
   readonly result: unknown | null;
+  readonly targetAgent?: { readonly id: string; readonly name: string };
 }
 
 export interface StoredIncarnation {
@@ -26,6 +27,7 @@ export interface StoredIncarnation {
 export interface StoredSend {
   readonly sendId: string;
   readonly agentName: string;
+  readonly ordinal?: number;
   readonly message: string;
   readonly state: "pending" | "dispatching" | "acknowledged" | "failed" | "uncertain";
   readonly acceptedAt: string;
@@ -40,8 +42,11 @@ export interface FleetStore {
 
   getOperation(operationId: string): Promise<StoredOperation | null>;
   putOperation(operation: StoredOperation): Promise<void>;
+  listPendingOperations(): Promise<readonly StoredOperation[]>;
+  deleteOperation(operationId: string): Promise<void>;
 
   getSend(sendId: string): Promise<StoredSend | null>;
+  nextSendOrdinal(agentName: string): Promise<number>;
   putSend(send: StoredSend): Promise<void>;
   listNonterminalSends(): Promise<readonly StoredSend[]>;
 

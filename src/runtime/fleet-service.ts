@@ -16,8 +16,8 @@ import type {
 } from "../client/fleet-client.js";
 import type { PiLauncher } from "../pi/adapter.js";
 import { createLaunchProfile, observeSession } from "../pi/launch-profile.js";
-import type { PiProcess } from "../pi/process.js";
-import { waitForProcessExit } from "../platform/runtime/process-tree.js";
+import { PiCleanupUncertainError, type PiProcess } from "../pi/process.js";
+import { waitForProcessGroupExit } from "../platform/runtime/process-tree.js";
 import { err, ok, type Result } from "../shared/result.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../shared/runtime-limits.js";
 import type { FleetStore, StoredAgent } from "../store/fleet-store.js";
@@ -38,9 +38,18 @@ export interface FleetServiceOptions {
 
 export class FleetService {
   readonly #operations = new Map<string, RecordedOperation>();
+  readonly #inflightOperations = new Map<
+    string,
+    {
+      readonly method: RecordedOperation["method"];
+      readonly fingerprint: string;
+      readonly promise: Promise<Result<unknown, FleetClientError>>;
+    }
+  >();
   readonly #coordinators = new Map<string, AgentCoordinator>();
   readonly #watchers = new Map<string, Set<AbortController>>();
   readonly #processSlots = new Set<string>();
+  readonly #sendLanes = new Map<string, Promise<void>>();
   readonly #launcher: PiLauncher | undefined;
   readonly #now: () => string;
   readonly #limits: RuntimeLimits;
@@ -58,7 +67,13 @@ export class FleetService {
     };
   }
 
-  async create(
+  create(input: CreateInput, operationId: string): Promise<Result<CreateResult, FleetClientError>> {
+    return this.#runOperation(operationId, "create", input, () =>
+      this.#createImpl(input, operationId),
+    );
+  }
+
+  async #createImpl(
     input: CreateInput,
     operationId: string,
   ): Promise<Result<CreateResult, FleetClientError>> {
@@ -100,6 +115,7 @@ export class FleetService {
       await this.#remember(operationId, "create", input, result);
       return result;
     }
+    await this.#recordOperationTarget(operationId, agent);
 
     if (this.#launcher !== undefined && this.#reserveProcessSlot(input.name) !== "acquired") {
       await this.store.deleteAgent(input.name);
@@ -121,7 +137,14 @@ export class FleetService {
           pid: null,
           state: "starting",
         });
-        const process = await this.#launcher.start(profile, false);
+        const process = await this.#launcher.start(profile, false, async (pid) => {
+          await this.store.putIncarnation({
+            incarnationId: incarnationId!,
+            agentName: input.name,
+            pid,
+            state: "starting",
+          });
+        });
         await this.store.putIncarnation({
           incarnationId,
           agentName: input.name,
@@ -145,7 +168,57 @@ export class FleetService {
         };
         await this.store.putAgent(agent);
         const coordinator = this.#attachCoordinator(agent, process, incarnationId);
-        if (input.instructions !== undefined) await coordinator.send(input.instructions);
+        if (input.instructions !== undefined) {
+          const acceptedAt = this.#now();
+          const sendId = `${operationId}:initial`;
+          const ordinal = await this.store.nextSendOrdinal(input.name);
+          await this.store.putSend({
+            sendId,
+            agentName: input.name,
+            ordinal,
+            message: input.instructions,
+            state: "pending",
+            acceptedAt,
+          });
+          await this.store.putSend({
+            sendId,
+            agentName: input.name,
+            ordinal,
+            message: input.instructions,
+            state: "dispatching",
+            acceptedAt,
+          });
+          try {
+            await this.#enqueueSend(input.name, () => coordinator.send(input.instructions!));
+            await this.store.putSend({
+              sendId,
+              agentName: input.name,
+              ordinal,
+              message: input.instructions,
+              state: "acknowledged",
+              acceptedAt,
+            });
+          } catch (error: unknown) {
+            await this.store.putSend({
+              sendId,
+              agentName: input.name,
+              ordinal,
+              message: input.instructions,
+              state: "uncertain",
+              acceptedAt,
+            });
+            agent = {
+              ...coordinator.storedAgent,
+              summary: {
+                ...coordinator.storedAgent.summary,
+                state: "failed",
+                error: { code: "delivery_uncertain" },
+              },
+            };
+            await this.store.putAgent(agent);
+            throw error;
+          }
+        }
         agent = coordinator.storedAgent;
       }
 
@@ -158,20 +231,59 @@ export class FleetService {
       return result;
     } catch (error: unknown) {
       const coordinator = this.#coordinators.get(input.name);
-      if (coordinator !== undefined) await coordinator.stop().catch(() => undefined);
-      if (incarnationId !== null && coordinator === undefined) {
-        await this.store.putIncarnation({
-          incarnationId,
-          agentName: input.name,
-          pid: null,
-          state: "gone",
-        });
+      const deliveryAmbiguous =
+        (await this.store.getSend(`${operationId}:initial`))?.state === "uncertain";
+      let cleanupUncertain = error instanceof PiCleanupUncertainError;
+      if (coordinator !== undefined) {
+        try {
+          await coordinator.stop("runtime_shutdown");
+        } catch {
+          cleanupUncertain = true;
+        }
       }
       this.#coordinators.delete(input.name);
-      this.#releaseProcessSlot(input.name);
-      await this.store.deleteAgent(input.name);
+      if (cleanupUncertain) {
+        agent = {
+          ...agent,
+          summary: {
+            ...agent.summary,
+            state: "failed",
+            process: { state: "cleanup_uncertain" },
+            error: { code: "incarnation_cleanup_uncertain" },
+          },
+        };
+        await this.store.putAgent(agent);
+      } else if (deliveryAmbiguous) {
+        agent = {
+          ...agent,
+          summary: {
+            ...agent.summary,
+            state: "failed",
+            process: { state: "absent" },
+            error: { code: "delivery_uncertain" },
+          },
+        };
+        await this.store.putAgent(agent);
+        this.#releaseProcessSlot(input.name);
+      } else {
+        if (incarnationId !== null) {
+          await this.store.putIncarnation({
+            incarnationId,
+            agentName: input.name,
+            pid: error instanceof PiCleanupUncertainError ? error.pid : null,
+            state: "gone",
+          });
+        }
+        this.#releaseProcessSlot(input.name);
+        await this.store.deleteAgent(input.name);
+      }
+      const code = cleanupUncertain
+        ? "incarnation_cleanup_uncertain"
+        : deliveryAmbiguous
+          ? "delivery_uncertain"
+          : "pi_start_failed";
       const result = err<FleetClientError>({
-        code: "pi_start_failed",
+        code,
         message: error instanceof Error ? error.message : "Pi failed to start.",
       });
       await this.#remember(operationId, "create", input, result);
@@ -179,7 +291,14 @@ export class FleetService {
     }
   }
 
-  async send(input: SendInput, operationId: string): Promise<Result<SendResult, FleetClientError>> {
+  send(input: SendInput, operationId: string): Promise<Result<SendResult, FleetClientError>> {
+    return this.#runOperation(operationId, "send", input, () => this.#sendImpl(input, operationId));
+  }
+
+  async #sendImpl(
+    input: SendInput,
+    operationId: string,
+  ): Promise<Result<SendResult, FleetClientError>> {
     const replay = await this.#operation<SendResult>(operationId, "send", input);
     if (replay !== null) return replay;
     if (Buffer.byteLength(input.message, "utf8") > this.#limits.maxMessageBytes) {
@@ -202,14 +321,18 @@ export class FleetService {
     }
 
     const acceptedAt = this.#now();
-    await this.store.putSend({
-      sendId: operationId,
-      agentName: input.name,
-      message: input.message,
-      state: "pending",
-      acceptedAt,
+    const result = await this.#enqueueSend(input.name, async () => {
+      const ordinal = await this.store.nextSendOrdinal(input.name);
+      await this.store.putSend({
+        sendId: operationId,
+        agentName: input.name,
+        ordinal,
+        message: input.message,
+        state: "pending",
+        acceptedAt,
+      });
+      return this.#dispatchSend(input, operationId, acceptedAt, agent, ordinal);
     });
-    const result = await this.#dispatchSend(input, operationId, acceptedAt, agent);
     await this.#remember(operationId, "send", input, result);
     return result;
   }
@@ -220,17 +343,21 @@ export class FleetService {
     for (const incarnation of await this.store.listActiveIncarnations()) {
       if (incarnation.state !== "cleanup_uncertain") continue;
       this.#processSlots.add(incarnation.agentName);
-      if (incarnation.pid === null || !(await waitForProcessExit(incarnation.pid))) continue;
+      if (incarnation.pid === null || !(await waitForProcessGroupExit(incarnation.pid))) continue;
       await this.store.putIncarnation({ ...incarnation, state: "gone" });
       this.#releaseProcessSlot(incarnation.agentName);
       const agent = await this.store.getAgent(incarnation.agentName);
       if (agent?.summary.process.state !== "cleanup_uncertain") continue;
+      const interrupted =
+        activeSendAgents.has(incarnation.agentName) ||
+        agent.summary.error?.code === "runtime_interrupted";
       await this.store.putAgent({
         ...agent,
         summary: {
           ...agent.summary,
-          state: activeSendAgents.has(incarnation.agentName) ? "failed" : "idle",
+          state: interrupted ? "failed" : "idle",
           process: { state: "absent" },
+          error: interrupted ? { code: "runtime_interrupted" } : undefined,
         },
       });
     }
@@ -259,8 +386,21 @@ export class FleetService {
         await this.#remember(send.sendId, "send", input, result);
         continue;
       }
-      const result = await this.#dispatchSend(input, send.sendId, send.acceptedAt, agent);
+      const result = await this.#enqueueSend(send.agentName, async () => {
+        const ordinal = send.ordinal ?? (await this.store.nextSendOrdinal(send.agentName));
+        return this.#dispatchSend(input, send.sendId, send.acceptedAt, agent, ordinal);
+      });
       await this.#remember(send.sendId, "send", input, result);
+    }
+
+    for (const operation of await this.store.listPendingOperations()) {
+      if (operation.method === "send") continue;
+      const payload = JSON.parse(operation.fingerprint) as CreateInput | DestroyInput;
+      if (operation.method === "create") {
+        await this.create(payload as CreateInput, operation.operationId);
+      } else {
+        await this.destroy(payload as DestroyInput, operation.operationId);
+      }
     }
   }
 
@@ -342,7 +482,16 @@ export class FleetService {
     return ok(watchWithCleanup(subscription, cleanup));
   }
 
-  async destroy(
+  destroy(
+    input: DestroyInput,
+    operationId: string,
+  ): Promise<Result<DestroyResult, FleetClientError>> {
+    return this.#runOperation(operationId, "destroy", input, () =>
+      this.#destroyImpl(input, operationId),
+    );
+  }
+
+  async #destroyImpl(
     input: DestroyInput,
     operationId: string,
   ): Promise<Result<DestroyResult, FleetClientError>> {
@@ -357,10 +506,11 @@ export class FleetService {
       await this.#remember(operationId, "destroy", input, result);
       return result;
     }
+    if (stored !== null) await this.#recordOperationTarget(operationId, stored);
     for (const watcher of this.#watchers.get(input.name) ?? []) watcher.abort();
     this.#watchers.delete(input.name);
     const coordinator = this.#coordinators.get(input.name);
-    if (coordinator !== undefined) await coordinator.stop();
+    if (coordinator !== undefined) await coordinator.stop("destroy");
     this.#coordinators.delete(input.name);
     const agent = await this.store.deleteAgent(input.name);
     if (agent === null) return this.#rememberNotFound(operationId, "destroy", input);
@@ -376,7 +526,7 @@ export class FleetService {
   async releaseAgentProcess(name: string): Promise<void> {
     const coordinator = this.#coordinators.get(name);
     if (coordinator === undefined) return;
-    await coordinator.stop();
+    await coordinator.stop("idle_release");
     this.#coordinators.delete(name);
   }
 
@@ -385,7 +535,9 @@ export class FleetService {
       for (const watcher of watchers) watcher.abort();
     }
     this.#watchers.clear();
-    await Promise.all([...this.#coordinators.values()].map((coordinator) => coordinator.stop()));
+    await Promise.all(
+      [...this.#coordinators.values()].map((coordinator) => coordinator.stop("runtime_shutdown")),
+    );
     this.#coordinators.clear();
   }
 
@@ -394,6 +546,7 @@ export class FleetService {
     operationId: string,
     acceptedAt: string,
     initialAgent: StoredAgent,
+    ordinal: number,
   ): Promise<Result<SendResult, FleetClientError>> {
     let agent = initialAgent;
     let incarnationId: string | null = null;
@@ -401,59 +554,73 @@ export class FleetService {
       let coordinator = this.#coordinators.get(input.name);
       if (this.#launcher !== undefined && coordinator === undefined) {
         const reservation = this.#reserveProcessSlot(input.name);
-        if (reservation !== "acquired") {
+        if (reservation === "existing") {
+          coordinator = await this.#waitForCoordinator(input.name);
+          if (coordinator === undefined) {
+            throw new Error(`Restoration of ${input.name} did not produce a live Pi process.`);
+          }
+          agent = coordinator.storedAgent;
+        } else if (reservation === "full") {
           await this.store.putSend({
             sendId: operationId,
             agentName: input.name,
+            ordinal,
             message: input.message,
             state: "failed",
             acceptedAt,
           });
           return err({
-            code: reservation === "existing" ? "agent_restoring" : "capacity_exceeded",
-            message:
-              reservation === "existing"
-                ? `Agent ${input.name} is already restoring.`
-                : `Pi Fleet has reached its ${String(this.#limits.maxResidentProcesses)} process limit.`,
+            code: "capacity_exceeded",
+            message: `Pi Fleet has reached its ${String(this.#limits.maxResidentProcesses)} process limit.`,
           });
+        } else {
+          agent = await this.#markRestoring(agent);
+          incarnationId = randomUUID();
+          await this.store.putIncarnation({
+            incarnationId,
+            agentName: input.name,
+            pid: null,
+            state: "starting",
+          });
+          const process = await this.#launcher.start(agent.launch, true, async (pid) => {
+            await this.store.putIncarnation({
+              incarnationId: incarnationId!,
+              agentName: input.name,
+              pid,
+              state: "starting",
+            });
+          });
+          await this.store.putIncarnation({
+            incarnationId,
+            agentName: input.name,
+            pid: process.pid,
+            state: "live",
+          });
+          const state = await process.getState();
+          const profile = observeSession(agent.launch, {
+            path: state.sessionFile ?? null,
+            id: state.sessionId,
+          });
+          agent = {
+            ...agent,
+            launch: profile,
+            summary: {
+              ...agent.summary,
+              state: "idle",
+              process: { state: "resident" },
+              session: { path: state.sessionFile ?? null, id: state.sessionId },
+              error: undefined,
+            },
+          };
+          await this.store.putAgent(agent);
+          coordinator = this.#attachCoordinator(agent, process, incarnationId);
         }
-        agent = await this.#markRestoring(agent);
-        incarnationId = randomUUID();
-        await this.store.putIncarnation({
-          incarnationId,
-          agentName: input.name,
-          pid: null,
-          state: "starting",
-        });
-        const process = await this.#launcher.start(agent.launch, true);
-        await this.store.putIncarnation({
-          incarnationId,
-          agentName: input.name,
-          pid: process.pid,
-          state: "live",
-        });
-        const state = await process.getState();
-        const profile = observeSession(agent.launch, {
-          path: state.sessionFile ?? null,
-          id: state.sessionId,
-        });
-        agent = {
-          ...agent,
-          launch: profile,
-          summary: {
-            ...agent.summary,
-            state: "idle",
-            process: { state: "resident" },
-            session: { path: state.sessionFile ?? null, id: state.sessionId },
-          },
-        };
-        await this.store.putAgent(agent);
-        coordinator = this.#attachCoordinator(agent, process, incarnationId);
       }
 
       await this.store.putSend({
         sendId: operationId,
         agentName: input.name,
+        ordinal,
         message: input.message,
         state: "dispatching",
         acceptedAt,
@@ -470,6 +637,7 @@ export class FleetService {
       await this.store.putSend({
         sendId: operationId,
         agentName: input.name,
+        ordinal,
         message: input.message,
         state: "acknowledged",
         acceptedAt,
@@ -493,6 +661,7 @@ export class FleetService {
       await this.store.putSend({
         sendId: operationId,
         agentName: input.name,
+        ordinal,
         message: input.message,
         state: "uncertain",
         acceptedAt,
@@ -535,6 +704,33 @@ export class FleetService {
     return coordinator;
   }
 
+  #enqueueSend<T>(name: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.#sendLanes.get(name) ?? Promise.resolve();
+    const result = previous.then(operation, operation);
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#sendLanes.set(name, settled);
+    void settled.finally(() => {
+      if (this.#sendLanes.get(name) === settled) this.#sendLanes.delete(name);
+    });
+    return result;
+  }
+
+  async #waitForCoordinator(
+    name: string,
+    timeoutMs = 15_000,
+  ): Promise<AgentCoordinator | undefined> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const coordinator = this.#coordinators.get(name);
+      if (coordinator !== undefined) return coordinator;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return this.#coordinators.get(name);
+  }
+
   #reserveProcessSlot(name: string): "acquired" | "existing" | "full" {
     if (this.#processSlots.has(name)) return "existing";
     if (this.#processSlots.size >= this.#limits.maxResidentProcesses) return "full";
@@ -566,6 +762,38 @@ export class FleetService {
     return result;
   }
 
+  #runOperation<T>(
+    operationId: string,
+    method: RecordedOperation["method"],
+    payload: object,
+    operation: () => Promise<Result<T, FleetClientError>>,
+  ): Promise<Result<T, FleetClientError>> {
+    const fingerprint = JSON.stringify(payload);
+    const inflight = this.#inflightOperations.get(operationId);
+    if (inflight !== undefined) {
+      if (inflight.method !== method || inflight.fingerprint !== fingerprint) {
+        return Promise.resolve(
+          err({
+            code: "operation_conflict",
+            message: `Operation ${operationId} was already used with a different request.`,
+          }),
+        );
+      }
+      return inflight.promise as Promise<Result<T, FleetClientError>>;
+    }
+    const promise = operation();
+    this.#inflightOperations.set(operationId, {
+      method,
+      fingerprint,
+      promise: promise as Promise<Result<unknown, FleetClientError>>,
+    });
+    void promise.then(
+      () => this.#inflightOperations.delete(operationId),
+      () => this.#inflightOperations.delete(operationId),
+    );
+    return promise;
+  }
+
   async #operation<T>(
     operationId: string,
     method: RecordedOperation["method"],
@@ -583,16 +811,63 @@ export class FleetService {
           }
         : undefined);
     if (recorded === undefined) {
+      const fingerprint = JSON.stringify(payload);
       if (stored !== null) {
-        return err({
-          code: "operation_in_progress",
-          message: `Operation ${operationId} is still pending.`,
-        });
+        if (stored.method !== method || stored.fingerprint !== fingerprint) {
+          return err({
+            code: "operation_conflict",
+            message: `Operation ${operationId} was already used with a different request.`,
+          });
+        }
+        const name = "name" in payload ? String(payload.name) : "";
+        const agent = name.length === 0 ? null : await this.store.getAgent(name);
+        if (method === "create") {
+          if (agent === null) {
+            await this.store.deleteOperation(operationId);
+          } else if (agent.summary.state === "idle" || agent.summary.state === "working") {
+            const result = ok<CreateResult>({
+              schemaVersion: 1,
+              type: "agent.created",
+              agent: agent.summary,
+            });
+            await this.#remember(operationId, method, payload, result);
+            return result as Result<T, FleetClientError>;
+          } else if (agent.summary.state === "failed") {
+            const result = err<FleetClientError>({
+              code: agent.summary.error?.code ?? "pi_start_failed",
+              message: `Creation of ${name} did not complete safely.`,
+            });
+            await this.#remember(operationId, method, payload, result);
+            return result;
+          } else {
+            return err({
+              code: "operation_in_progress",
+              message: `Operation ${operationId} is still pending.`,
+            });
+          }
+        } else if (method === "destroy") {
+          if (agent === null && stored.targetAgent !== undefined) {
+            const result = ok<DestroyResult>({
+              schemaVersion: 1,
+              type: "agent.destroyed",
+              agent: stored.targetAgent,
+            });
+            await this.#remember(operationId, method, payload, result);
+            return result as Result<T, FleetClientError>;
+          }
+          // Resume the singular destroy operation against the surviving agent.
+          return null;
+        } else {
+          return err({
+            code: "operation_in_progress",
+            message: `Operation ${operationId} is still pending.`,
+          });
+        }
       }
       await this.store.putOperation({
         operationId,
         method,
-        fingerprint: JSON.stringify(payload),
+        fingerprint,
         state: "pending",
         result: null,
       });
@@ -605,6 +880,15 @@ export class FleetService {
       });
     }
     return recorded.result as Result<T, FleetClientError>;
+  }
+
+  async #recordOperationTarget(operationId: string, agent: StoredAgent): Promise<void> {
+    const operation = await this.store.getOperation(operationId);
+    if (operation === null || operation.state !== "pending") return;
+    await this.store.putOperation({
+      ...operation,
+      targetAgent: { id: agent.summary.id, name: agent.summary.name },
+    });
   }
 
   async #remember<T>(

@@ -64,8 +64,20 @@ export class WorkerFleetStore implements FleetStore {
     await this.#call("putOperation", [operation]);
   }
 
+  listPendingOperations(): Promise<readonly StoredOperation[]> {
+    return this.#call("listPendingOperations", []);
+  }
+
+  async deleteOperation(operationId: string): Promise<void> {
+    await this.#call("deleteOperation", [operationId]);
+  }
+
   getSend(sendId: string): Promise<StoredSend | null> {
     return this.#call("getSend", [sendId]);
+  }
+
+  nextSendOrdinal(agentName: string): Promise<number> {
+    return this.#call("nextSendOrdinal", [agentName]);
   }
 
   async putSend(send: StoredSend): Promise<void> {

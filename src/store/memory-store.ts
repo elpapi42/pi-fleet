@@ -46,8 +46,27 @@ export class MemoryFleetStore implements FleetStore {
     this.#operations.set(operation.operationId, operation);
   }
 
+  async listPendingOperations(): Promise<readonly StoredOperation[]> {
+    return [...this.#operations.values()].filter((operation) => operation.state === "pending");
+  }
+
+  async deleteOperation(operationId: string): Promise<void> {
+    this.#operations.delete(operationId);
+  }
+
   async getSend(sendId: string): Promise<StoredSend | null> {
     return this.#sends.get(sendId) ?? null;
+  }
+
+  async nextSendOrdinal(agentName: string): Promise<number> {
+    return (
+      Math.max(
+        0,
+        ...[...this.#sends.values()]
+          .filter((send) => send.agentName === agentName)
+          .map((send) => send.ordinal ?? 0),
+      ) + 1
+    );
   }
 
   async putSend(send: StoredSend): Promise<void> {

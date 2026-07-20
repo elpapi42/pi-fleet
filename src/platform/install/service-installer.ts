@@ -23,8 +23,9 @@ export async function installUserService(options: {
   const home = options.home ?? homedir();
   if (options.platform === "linux") {
     const path = join(home, ".config", "systemd", "user", "pi-fleet.service");
-    const definition = systemdUserUnit(options.definition);
-    const needsRepair = await serviceDefinitionNeedsRepair(path, definition, options.definition);
+    const effectiveDefinition = await preserveInstalledStateRoot(path, options.definition, "linux");
+    const definition = systemdUserUnit(effectiveDefinition);
+    const needsRepair = await serviceDefinitionNeedsRepair(path, definition, effectiveDefinition);
     if (needsRepair) {
       await atomicWrite(path, definition);
       await options.executor.run("systemctl", ["--user", "daemon-reload"]);
@@ -37,7 +38,12 @@ export async function installUserService(options: {
   }
   if (options.platform === "darwin") {
     const path = join(home, "Library", "LaunchAgents", "works.elpapi.pifleet.plist");
-    await atomicWrite(path, launchdAgentPlist(options.definition));
+    const effectiveDefinition = await preserveInstalledStateRoot(
+      path,
+      options.definition,
+      "darwin",
+    );
+    await atomicWrite(path, launchdAgentPlist(effectiveDefinition));
     const domain = `gui/${options.uid ?? process.getuid?.() ?? 0}`;
     await options.executor.run("launchctl", ["bootout", domain, path]).catch(() => undefined);
     await options.executor.run("launchctl", ["bootstrap", domain, path]);
@@ -88,6 +94,34 @@ export async function serviceDefinitionNeedsRepair(
   } catch {
     return true;
   }
+}
+
+async function preserveInstalledStateRoot(
+  path: string,
+  definition: ServiceDefinitionOptions,
+  platform: "linux" | "darwin",
+): Promise<ServiceDefinitionOptions> {
+  if (definition.stateRoot !== undefined) return definition;
+  const current = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (current === null) return definition;
+  const encoded =
+    platform === "linux"
+      ? /^Environment=PIFLEET_STATE_ROOT=(.+)$/m.exec(current)?.[1]
+      : /<key>PIFLEET_STATE_ROOT<\/key><string>([^<]+)<\/string>/.exec(current)?.[1];
+  if (encoded === undefined) return definition;
+  const stateRoot =
+    platform === "linux"
+      ? encoded
+      : encoded
+          .replaceAll("&apos;", "'")
+          .replaceAll("&quot;", '"')
+          .replaceAll("&gt;", ">")
+          .replaceAll("&lt;", "<")
+          .replaceAll("&amp;", "&");
+  return { ...definition, stateRoot };
 }
 
 async function atomicWrite(path: string, contents: string): Promise<void> {

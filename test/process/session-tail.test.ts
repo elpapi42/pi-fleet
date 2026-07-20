@@ -58,6 +58,22 @@ describe("raw Pi session tail", () => {
     abort.abort();
   });
 
+  it("rejects an oversized complete record without reading an unbounded append", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-tail-"));
+    roots.push(root);
+    const path = join(root, "session.jsonl");
+    await writeFile(path, '{"type":"session"}\n');
+    const iterator = new SessionTailSubscription(path, {
+      pollMs: 10,
+      maxRecordBytes: 64,
+      readChunkBytes: 16,
+    })[Symbol.asyncIterator]();
+
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 30));
+    await appendFile(path, `${JSON.stringify({ text: "x".repeat(100) })}\n`);
+    await expect(nextWithTimeout(iterator)).rejects.toThrow(/exceeds the watch limit/i);
+  });
+
   it("fails instead of rebasing when the selected file is replaced", async () => {
     const root = await mkdtemp(join(tmpdir(), "pifleet-tail-"));
     roots.push(root);

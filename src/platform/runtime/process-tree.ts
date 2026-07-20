@@ -8,20 +8,39 @@ export function signalProcessTree(pid: number, signal: NodeJS.Signals): void {
 }
 
 export function isProcessAlive(pid: number): boolean {
+  return canSignal(pid);
+}
+
+export function isProcessGroupAlive(processGroupId: number): boolean {
+  if (process.platform === "win32") return isProcessAlive(processGroupId);
+  return canSignal(-processGroupId);
+}
+
+export async function waitForProcessExit(pid: number, timeoutMs = 1_000): Promise<boolean> {
+  return waitUntilGone(() => isProcessAlive(pid), timeoutMs);
+}
+
+export async function waitForProcessGroupExit(
+  processGroupId: number,
+  timeoutMs = 1_000,
+): Promise<boolean> {
+  return waitUntilGone(() => isProcessGroupAlive(processGroupId), timeoutMs);
+}
+
+function canSignal(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException).code;
-    return code === "EPERM";
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
-export async function waitForProcessExit(pid: number, timeoutMs = 1_000): Promise<boolean> {
+async function waitUntilGone(isAlive: () => boolean, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!isProcessAlive(pid)) return true;
+    if (!isAlive()) return true;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
   }
-  return !isProcessAlive(pid);
+  return !isAlive();
 }

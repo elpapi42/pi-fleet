@@ -1,9 +1,10 @@
 import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createConnection, createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { SocketFleetClient } from "../../src/client/socket-fleet-client.js";
+import { frameIterator, SocketFleetClient } from "../../src/client/socket-fleet-client.js";
 import { startControlServer, type ControlServer } from "../../src/runtime/control-server.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
 import type { RuntimeLimits } from "../../src/shared/runtime-limits.js";
@@ -149,6 +150,72 @@ describe("private socket runtime", () => {
     expect(received).toBe(record);
     abort.abort();
     await iterator.return?.();
+  });
+
+  it("pauses and resumes watch input when the client frame queue reaches its byte bound", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-socket-pressure-"));
+    const socketPath = join(root, "control.sock");
+    let serverSocket!: Socket;
+    const server = createServer((socket) => {
+      serverSocket = socket;
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    const clientSocket = createConnection(socketPath);
+    await new Promise<void>((resolve, reject) => {
+      clientSocket.once("connect", resolve);
+      clientSocket.once("error", reject);
+    });
+    const abort = new AbortController();
+    const iterator = frameIterator(clientSocket, abort.signal, 128)[Symbol.asyncIterator]();
+    const first = iterator.next();
+    const frame = `${JSON.stringify({ payload: "x".repeat(100) })}\n`;
+    serverSocket.write(frame);
+    serverSocket.write(frame);
+
+    await first;
+    expect(clientSocket.isPaused()).toBe(true);
+    await iterator.next();
+    expect(clientSocket.isPaused()).toBe(false);
+
+    abort.abort();
+    await iterator.return?.();
+    clientSocket.destroy();
+    serverSocket.destroy();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("reports unexpected watch socket EOF as runtime unavailable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-socket-eof-"));
+    const socketPath = join(root, "control.sock");
+    const server = createServer((socket) => {
+      socket.once("data", (chunk) => {
+        const request = JSON.parse(chunk.toString().trim()) as { requestId: string };
+        socket.end(`${JSON.stringify({ v: 1, requestId: request.requestId, stream: "ready" })}\n`);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    cleanups.push(() =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error === undefined ? resolve() : reject(error))),
+      ).finally(() => rm(root, { recursive: true, force: true })),
+    );
+
+    const client = new SocketFleetClient({ socketPath });
+    const stream = client.watchSession({ name: "reviewer" }, { signal });
+    const result = await stream[Symbol.asyncIterator]().next();
+    expect(result.value).toMatchObject({
+      ok: false,
+      error: { code: "runtime_unavailable" },
+    });
   });
 
   it("returns typed errors instead of leaking private protocol frames", async () => {

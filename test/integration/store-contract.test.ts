@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createLaunchProfile, observeSession } from "../../src/pi/launch-profile.js";
@@ -157,6 +158,109 @@ describe("FleetStore contract", () => {
     expect(await store.getOperation("dispatching-send")).toMatchObject({
       state: "completed",
       result: { ok: false, error: { code: "delivery_uncertain" } },
+    });
+  });
+
+  it("rejects changed migration checksums and newer schemas", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-store-"));
+    roots.push(root);
+    const checksumPath = join(root, "checksum.sqlite");
+    const initial = new SqliteFleetStore(checksumPath);
+    await initial.close();
+    const checksumDatabase = new DatabaseSync(checksumPath);
+    checksumDatabase
+      .prepare("UPDATE schema_migrations SET checksum = 'changed' WHERE version = 1")
+      .run();
+    checksumDatabase.close();
+    expect(() => new SqliteFleetStore(checksumPath)).toThrow(/checksum mismatch/i);
+
+    const newerPath = join(root, "newer.sqlite");
+    const newerInitial = new SqliteFleetStore(newerPath);
+    await newerInitial.close();
+    const newerDatabase = new DatabaseSync(newerPath);
+    newerDatabase
+      .prepare(
+        "INSERT INTO schema_migrations(version, checksum, applied_at) VALUES(2, 'future', ?)",
+      )
+      .run(new Date().toISOString());
+    newerDatabase.close();
+    expect(() => new SqliteFleetStore(newerPath)).toThrow(/newer than this runtime/i);
+
+    const rollbackPath = join(root, "rollback.sqlite");
+    const incompatible = new DatabaseSync(rollbackPath);
+    incompatible.exec("CREATE TABLE runtime_metadata(unexpected TEXT)");
+    incompatible.close();
+    expect(() => new SqliteFleetStore(rollbackPath)).toThrow();
+    const inspected = new DatabaseSync(rollbackPath, { readOnly: true });
+    const agentsTable = inspected
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agents'")
+      .get();
+    inspected.close();
+    expect(agentsTable).toBeUndefined();
+  });
+
+  it("resumes pending create and destroy operations after reconstruction", async () => {
+    const store = new MemoryFleetStore();
+    const createInput = { name: "created", cwd: "/workspace", piArgv: [] };
+    await store.putOperation({
+      operationId: "pending-create",
+      method: "create",
+      fingerprint: JSON.stringify(createInput),
+      state: "pending",
+      result: null,
+    });
+    const service = new FleetService(store, () => "2026-01-01T00:00:00.000Z");
+    await service.reconcile();
+    expect(await store.getAgent("created")).not.toBeNull();
+    expect(await store.getOperation("pending-create")).toMatchObject({ state: "completed" });
+
+    const destroyInput = { name: "created" };
+    await store.putOperation({
+      operationId: "pending-destroy",
+      method: "destroy",
+      fingerprint: JSON.stringify(destroyInput),
+      state: "pending",
+      result: null,
+      targetAgent: { id: (await store.getAgent("created"))!.summary.id, name: "created" },
+    });
+    const reconstructed = new FleetService(store, () => "2026-01-01T00:00:00.000Z");
+    await reconstructed.reconcile();
+    expect(await store.getAgent("created")).toBeNull();
+    expect(await store.getOperation("pending-destroy")).toMatchObject({ state: "completed" });
+  });
+
+  it("replays pending operations at the post-mutation crash boundaries", async () => {
+    const store = new MemoryFleetStore();
+    const existing = agent();
+    await store.createAgent(existing);
+    const createInput = { name: "reviewer", cwd: "/workspace", piArgv: [] };
+    await store.putOperation({
+      operationId: "create-after-agent",
+      method: "create",
+      fingerprint: JSON.stringify(createInput),
+      state: "pending",
+      result: null,
+      targetAgent: { id: existing.summary.id, name: existing.summary.name },
+    });
+    const service = new FleetService(store, () => "2026-01-01T00:00:00.000Z");
+    expect(await service.create(createInput, "create-after-agent")).toMatchObject({
+      ok: true,
+      value: { agent: { id: "agent-1", name: "reviewer" } },
+    });
+
+    await store.deleteAgent("reviewer");
+    const destroyInput = { name: "reviewer" };
+    await store.putOperation({
+      operationId: "destroy-after-delete",
+      method: "destroy",
+      fingerprint: JSON.stringify(destroyInput),
+      state: "pending",
+      result: null,
+      targetAgent: { id: "agent-1", name: "reviewer" },
+    });
+    expect(await service.destroy(destroyInput, "destroy-after-delete")).toMatchObject({
+      ok: true,
+      value: { agent: { id: "agent-1", name: "reviewer" } },
     });
   });
 

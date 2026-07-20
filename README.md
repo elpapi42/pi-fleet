@@ -10,7 +10,7 @@ Pi sessions remain under user control. Native Pi arguments pass through after `-
 
 ## Development status
 
-Milestones 1–7 are complete on Linux x64 with Pi 0.80.10. The CLI/runtime protocol, seven commands, native Pi session restoration, resident process reuse, raw session watching, and SQLite-backed recovery are implemented. Milestone 8 adds a pinned managed Pi target, verified materialized runtime releases, Linux process-group cleanup, and systemd/launchd service-definition foundations.
+All eight implementation milestones are complete for the locally testable Linux x64 scope with Pi 0.80.10. The CLI/runtime protocol, seven commands, native Pi session restoration, ordered repeated sends, resident process reuse, idle-based receive, bounded raw session watching, SQLite-backed crash recovery, pinned managed Pi target, verified materialized releases, whole-process-group cleanup, and systemd service foundations are implemented.
 
 ```bash
 npm ci
@@ -27,4 +27,4 @@ Linux x64 package and user-service behavior is locally validated. Materialized r
 
 Runtime admission is bounded by configurable production defaults: 32 resident/starting processes, 128 watchers, 512 KiB messages, 1 MiB private protocol frames, and 8 MiB Pi/session records. Environment variables with the `PIFLEET_MAX_*` prefix provide positive-integer deployment overrides.
 
-Pi sessions remain user-owned: service removal and `pifleet destroy` never delete them. Linux logout/reboot recovery and macOS arm64 launchd/process-group behavior remain release gates and are not claimed as complete; the package is private and has not been published. See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for completed evidence and remaining platform gates.
+Pi sessions remain user-owned: service removal and `pifleet destroy` never delete them. Ambiguous prompt delivery is never replayed, active work interrupted by runtime shutdown becomes failed rather than idle, and a name is not released until the managed process group is proven gone. Linux logout/reboot recovery and macOS arm64 launchd/process-group behavior remain release gates and are not claimed as complete; the package is private and has not been published. See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for completed evidence and remaining platform gates.

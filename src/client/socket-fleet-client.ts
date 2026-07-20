@@ -83,11 +83,15 @@ export class SocketFleetClient implements FleetClient {
       params: input,
     });
 
+    let endedExplicitly = false;
     try {
       for await (const frame of frames) {
         if (!isRecord(frame) || frame.requestId !== requestId) continue;
         if (frame.stream === "ready") continue;
-        if (frame.stream === "end") return;
+        if (frame.stream === "end") {
+          endedExplicitly = true;
+          return;
+        }
         if (frame.stream === "chunk" && typeof frame.data === "string") {
           yield ok({ bytes: Buffer.from(frame.data, "base64") });
           continue;
@@ -99,6 +103,14 @@ export class SocketFleetClient implements FleetClient {
         yield err({ code: "protocol_error", message: "Invalid watch stream frame." });
         return;
       }
+      if (!endedExplicitly && !options.signal.aborted) {
+        yield err({
+          code: "runtime_unavailable",
+          message: "Runtime connection closed before the watch stream ended.",
+        });
+      }
+    } catch (error: unknown) {
+      if (!options.signal.aborted) yield err(connectionError(error));
     } finally {
       socket.destroy();
     }
@@ -201,8 +213,14 @@ function firstMatchingFrame(
   });
 }
 
-async function* frameIterator(socket: Socket, signal: AbortSignal): AsyncIterable<unknown> {
-  const queue: unknown[] = [];
+export async function* frameIterator(
+  socket: Socket,
+  signal: AbortSignal,
+  maxQueuedBytes = 1024 * 1024,
+): AsyncIterable<unknown> {
+  const queue: { readonly value: unknown; readonly bytes: number }[] = [];
+  let queuedBytes = 0;
+  let paused = false;
   let ended = false;
   let failure: Error | null = null;
   let wake: (() => void) | null = null;
@@ -213,7 +231,13 @@ async function* frameIterator(socket: Socket, signal: AbortSignal): AsyncIterabl
   const stop = readJsonLines(
     socket,
     (frame) => {
-      queue.push(frame);
+      const bytes = Buffer.byteLength(JSON.stringify(frame), "utf8");
+      queue.push({ value: frame, bytes });
+      queuedBytes += bytes;
+      if (queuedBytes >= maxQueuedBytes && !paused) {
+        socket.pause();
+        paused = true;
+      }
       notify();
     },
     (error) => {
@@ -223,6 +247,7 @@ async function* frameIterator(socket: Socket, signal: AbortSignal): AsyncIterabl
     },
   );
   socket.once("end", () => {
+    failure = new Error("Runtime connection closed before completing the stream");
     ended = true;
     notify();
   });
@@ -241,7 +266,14 @@ async function* frameIterator(socket: Socket, signal: AbortSignal): AsyncIterabl
         });
         continue;
       }
-      yield queue.shift();
+      const item = queue.shift();
+      if (item === undefined) continue;
+      queuedBytes -= item.bytes;
+      if (paused && queuedBytes < maxQueuedBytes / 2) {
+        socket.resume();
+        paused = false;
+      }
+      yield item.value;
     }
     if (failure !== null) throw failure;
   } finally {
