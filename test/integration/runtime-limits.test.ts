@@ -120,6 +120,20 @@ function settleDuringReceiveLauncher(): PiLauncher {
 }
 
 describe("runtime admission limits", () => {
+  it("returns and remembers invalid Pi startup arguments as a domain error", async () => {
+    const store = new MemoryFleetStore();
+    const service = new FleetService(store, { launcher: fakeLauncher() });
+    const input = { name: "invalid", cwd: "/tmp", piArgv: ["positional-prompt"] };
+
+    const first = await service.create(input, "create-invalid");
+    const retry = await service.create(input, "create-invalid");
+
+    expect(first).toMatchObject({ ok: false, error: { code: "invalid_arguments" } });
+    expect(retry).toEqual(first);
+    expect(await store.getAgent("invalid")).toBeNull();
+    await service.close();
+  });
+
   it("rejects a process-starting create when resident capacity is full", async () => {
     const service = new FleetService(new MemoryFleetStore(), {
       launcher: fakeLauncher(),
@@ -270,6 +284,7 @@ describe("runtime admission limits", () => {
       now: () => "2026-01-01T00:00:00.000Z",
     });
     await service.create({ name: "one", cwd: "/tmp", piArgv: [] }, "create-one");
+    await service.send({ name: "one", message: "work" }, "send-one");
 
     await expect(service.receive({ name: "one" })).resolves.toMatchObject({
       ok: true,

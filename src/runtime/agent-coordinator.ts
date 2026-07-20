@@ -16,6 +16,7 @@ export class AgentCoordinator {
   #lane: Promise<void> = Promise.resolve();
   #stopReason: CoordinatorStopReason | null = null;
   #handlingFailure = false;
+  #mayBeWorking = false;
   #unsubscribeFrame: () => void;
   #unsubscribeExit: () => void;
 
@@ -41,25 +42,37 @@ export class AgentCoordinator {
   }
 
   send(message: string): Promise<void> {
-    return this.#enqueue(() => this.process.prompt(message));
+    return this.#enqueue(async () => {
+      this.#mayBeWorking = true;
+      try {
+        await this.process.prompt(message);
+      } catch (error: unknown) {
+        this.#mayBeWorking = false;
+        throw error;
+      }
+    });
   }
 
   async waitForIdle(signal?: AbortSignal): Promise<StoredAgent> {
     let wait: Promise<void> | null = null;
     await this.#enqueue(async () => {
+      if (!this.#mayBeWorking && this.agent.summary.state === "idle") return;
       if (signal?.aborted === true) throw new Error("Receive cancelled");
 
       let resolveIdle!: () => void;
       let rejectIdle!: (error: Error) => void;
-      wait = new Promise<void>((resolve, reject) => {
+      const pending = new Promise<void>((resolve, reject) => {
         resolveIdle = resolve;
         rejectIdle = reject;
       });
+      void pending.catch(() => undefined);
+      wait = pending;
       const waiter: IdleWaiter = {
         resolve: resolveIdle,
         reject: rejectIdle,
         ...(signal === undefined ? {} : { signal }),
       };
+      this.#idleWaiters.add(waiter);
       if (signal !== undefined) {
         const onAbort = () => {
           this.#idleWaiters.delete(waiter);
@@ -67,8 +80,9 @@ export class AgentCoordinator {
         };
         (waiter as { onAbort?: () => void }).onAbort = onAbort;
         signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
       }
-      this.#idleWaiters.add(waiter);
+      if (!this.#idleWaiters.has(waiter)) return;
 
       const state = await this.process.getState();
       if (!state.isStreaming && state.pendingMessageCount === 0) {
@@ -171,6 +185,7 @@ export class AgentCoordinator {
   }
 
   async #markWorking(): Promise<void> {
+    this.#mayBeWorking = true;
     this.agent = {
       ...this.agent,
       summary: {
@@ -185,6 +200,7 @@ export class AgentCoordinator {
 
   async #markIdle(): Promise<void> {
     const latestAssistantText = await this.process.getLastAssistantText();
+    this.#mayBeWorking = false;
     this.agent = {
       ...this.agent,
       latestAssistantText,

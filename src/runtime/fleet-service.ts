@@ -78,13 +78,23 @@ export class FleetService {
     input: CreateInput,
     operationId: string,
   ): Promise<Result<CreateResult, FleetClientError>> {
-    const profile = createLaunchProfile({
-      cwd: input.cwd,
-      piArgv: input.piArgv,
-      piArtifactId: this.#launcher?.artifactId ?? "fake-pi",
-    });
     const replay = await this.#operation<CreateResult>(operationId, "create", input);
     if (replay !== null) return replay;
+    let profile: ReturnType<typeof createLaunchProfile>;
+    try {
+      profile = createLaunchProfile({
+        cwd: input.cwd,
+        piArgv: input.piArgv,
+        piArtifactId: this.#launcher?.artifactId ?? "fake-pi",
+      });
+    } catch (error: unknown) {
+      const result = err<FleetClientError>({
+        code: "invalid_arguments",
+        message: error instanceof Error ? error.message : "Invalid Pi startup arguments.",
+      });
+      await this.#remember(operationId, "create", input, result);
+      return result;
+    }
     if (
       input.instructions !== undefined &&
       Buffer.byteLength(input.instructions, "utf8") > this.#limits.maxMessageBytes

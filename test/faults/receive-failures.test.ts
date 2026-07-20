@@ -20,7 +20,7 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
-function controlledPi(): ControlledPi {
+function controlledPi(stateDelayMs = 0): ControlledPi {
   let streaming = false;
   let latest: string | null = null;
   let frameListener: ((frame: { type: string }) => void) | undefined;
@@ -32,6 +32,9 @@ function controlledPi(): ControlledPi {
         return {
           pid: 41_000,
           async getState() {
+            if (stateDelayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, stateDelayMs));
+            }
             return {
               isStreaming: streaming,
               isCompacting: false,
@@ -69,10 +72,12 @@ function controlledPi(): ControlledPi {
   };
 }
 
-async function harness() {
+async function harness(
+  options: { readonly working?: boolean; readonly stateDelayMs?: number } = { working: true },
+) {
   const root = await mkdtemp(join(tmpdir(), "pifleet-receive-fault-"));
   const socketPath = join(root, "control.sock");
-  const pi = controlledPi();
+  const pi = controlledPi(options.stateDelayMs);
   const service = new FleetService(new MemoryFleetStore(), {
     launcher: pi.launcher,
     now: () => "2026-01-01T00:00:00.000Z",
@@ -92,13 +97,15 @@ async function harness() {
       operation: { operationId: "create-agent", createdAt: "2026-01-01T00:00:00.000Z" },
     },
   );
-  await client.send(
-    { name: "agent", message: "work" },
-    {
-      signal,
-      operation: { operationId: "send-work", createdAt: "2026-01-01T00:00:00.000Z" },
-    },
-  );
+  if (options.working !== false) {
+    await client.send(
+      { name: "agent", message: "work" },
+      {
+        signal,
+        operation: { operationId: "send-work", createdAt: "2026-01-01T00:00:00.000Z" },
+      },
+    );
+  }
   return { client, pi, signal };
 }
 
@@ -107,6 +114,37 @@ function requestOptions(signal: AbortSignal, timeoutMs?: number) {
 }
 
 describe("receive timeout and cancellation", () => {
+  it("polls an already-idle agent without crashing the control server", async () => {
+    const { client, signal } = await harness({ working: false, stateDelayMs: 5 });
+
+    await expect(client.receive({ name: "agent" }, requestOptions(signal, 0))).resolves.toEqual({
+      ok: false,
+      error: { code: "no_response", message: "Agent agent has no assistant response." },
+    });
+    await expect(client.list(requestOptions(signal))).resolves.toMatchObject({
+      ok: true,
+      value: { type: "agent.list" },
+    });
+  });
+
+  it("returns a settled response repeatedly with an immediate poll", async () => {
+    const { client, pi, signal } = await harness();
+    pi.settle("repeatable response");
+
+    await expect(
+      client.receive({ name: "agent" }, requestOptions(signal, 0)),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { response: { text: "repeatable response" } },
+    });
+    await expect(
+      client.receive({ name: "agent" }, requestOptions(signal, 0)),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { response: { text: "repeatable response" } },
+    });
+  });
+
   it("times out only the caller and allows a later receive to return the settled response", async () => {
     const { client, pi, signal } = await harness();
 
