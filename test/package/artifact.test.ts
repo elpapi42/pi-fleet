@@ -19,12 +19,21 @@ afterEach(async () => {
 async function stopMaterializedRuntime(applicationRoot: string): Promise<void> {
   if (process.platform !== "linux") return;
   const pattern = join(applicationRoot, "releases");
-  const result = await execFileAsync("pgrep", ["-f", pattern]).catch(() => ({ stdout: "" }));
-  for (const value of result.stdout.trim().split("\n")) {
-    if (value.length === 0) continue;
-    const pid = Number(value);
-    if (Number.isSafeInteger(pid) && pid !== process.pid) process.kill(pid, "SIGTERM");
+  const findPids = async (): Promise<number[]> => {
+    const result = await execFileAsync("pgrep", ["-f", pattern]).catch(() => ({ stdout: "" }));
+    return result.stdout
+      .trim()
+      .split("\n")
+      .filter((value) => value.length > 0)
+      .map(Number)
+      .filter((pid) => Number.isSafeInteger(pid) && pid !== process.pid);
+  };
+  for (const pid of await findPids()) process.kill(pid, "SIGTERM");
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if ((await findPids()).length === 0) return;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
   }
+  for (const pid of await findPids()) process.kill(pid, "SIGKILL");
 }
 
 async function startDeterministicModel(): Promise<{
@@ -87,6 +96,14 @@ describe("packed and materialized runtime", () => {
     const installedBin = join(prefix, "bin", "pifleet");
     const installedVersion = await execFileAsync(installedBin, ["--version"], { cwd: root });
     expect(installedVersion.stdout).toBe(`${PRODUCT_VERSION}\n`);
+    const installedClosureDifference = join(
+      installedRoot,
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+      "pifleet-install-layout-difference.txt",
+    );
+    await writeFile(installedClosureDifference, "legitimate installed closure difference\n");
 
     const applicationRoot = join(root, "application");
     const stateRoot = join(root, "state");
@@ -129,6 +146,12 @@ describe("packed and materialized runtime", () => {
     let release = "";
     let cliPath = "";
     try {
+      const initialList = await execFileAsync(installedBin, ["list"], {
+        cwd: root,
+        env: clientEnv,
+      });
+      expect(JSON.parse(initialList.stdout)).toMatchObject({ type: "agent.list", agents: [] });
+
       const created = await execFileAsync(
         installedBin,
         [
@@ -157,11 +180,32 @@ describe("packed and materialized runtime", () => {
       release = join(applicationRoot, "releases", releases[0] ?? "missing");
       cliPath = join(release, "bin", "pifleet.mjs");
       await expect(
+        readFile(
+          join(
+            release,
+            "node_modules",
+            "@earendil-works",
+            "pi-coding-agent",
+            "pifleet-install-layout-difference.txt",
+          ),
+          "utf8",
+        ),
+      ).resolves.toBe("legitimate installed closure difference\n");
+      await expect(
         (await import("node:fs/promises")).lstat(release).then((entry) => entry.mode & 0o777),
       ).resolves.toBe(0o700);
       await rm(installedRoot, { recursive: true, force: true });
       const output = await execFileAsync(process.execPath, [cliPath, "--version"], { cwd: root });
       expect(output.stdout).toBe(`${PRODUCT_VERSION}\n`);
+      await stopMaterializedRuntime(applicationRoot);
+      const restartedList = await execFileAsync(process.execPath, [cliPath, "list"], {
+        cwd: root,
+        env: clientEnv,
+      });
+      expect(JSON.parse(restartedList.stdout)).toMatchObject({
+        type: "agent.list",
+        agents: [{ name: "packaged-agent" }],
+      });
 
       const watch = spawn(process.execPath, [cliPath, "watch", "packaged-agent"], {
         cwd: root,
@@ -231,7 +275,7 @@ describe("packed and materialized runtime", () => {
     const dependencyPath = join(release, "node_modules", "commander", "package.json");
     const dependencyContents = await readFile(dependencyPath, "utf8");
     await writeFile(dependencyPath, `${dependencyContents}\n`);
-    await expect(verifyRuntime(release)).rejects.toThrow(/dependency tree/i);
+    await expect(verifyRuntime(release)).rejects.toThrow(/dependency closure/i);
     await writeFile(dependencyPath, dependencyContents);
     await verifyRuntime(release);
 

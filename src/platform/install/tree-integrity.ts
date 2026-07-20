@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir, stat } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 
 export interface TreeIntegrity {
@@ -53,6 +53,14 @@ async function collectFiles(
     }
     if (!info.isFile()) {
       throw new Error(`Runtime dependency tree contains an unsupported entry: ${absolutePath}`);
+    }
+    if (linkInfo.isSymbolicLink()) {
+      const target = await realpath(absolutePath);
+      if (target !== root && !target.startsWith(`${root}${sep}`)) {
+        throw new Error(
+          `Runtime dependency tree contains an external file symlink: ${absolutePath}`,
+        );
+      }
     }
     const relativePath = relative(root, absolutePath).split(sep).join("/");
     if (relativePath.length === 0 || relativePath.startsWith("../")) {
