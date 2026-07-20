@@ -43,6 +43,7 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
+      - run: npm run test:version-matrix
       - run: npm run test:soak
       - run: npm run release:check
 
