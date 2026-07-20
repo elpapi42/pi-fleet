@@ -16,7 +16,7 @@ export function createProgram(
 ): Command {
   const program = new Command()
     .name(PRODUCT_BINARY)
-    .description("Run Pi in the background and continue the same session")
+    .description("Pi-native execution infrastructure for programmatic orchestration")
     .version(PRODUCT_VERSION)
     .exitOverride()
     .showHelpAfterError(false)
@@ -28,7 +28,7 @@ export function createProgram(
 
   program
     .command("create")
-    .description("Create a pi-fleet entry for a Pi session")
+    .description("Provision a pi-fleet entry for a Pi session")
     .argument("<name>")
     .argument("[instructions]")
     .option("--cwd <path>")
@@ -49,7 +49,7 @@ export function createProgram(
 
   program
     .command("send")
-    .description("Send Pi input")
+    .description("Submit or steer Pi input")
     .argument("<name>")
     .argument("<message>")
     .option("--human")
@@ -59,7 +59,7 @@ export function createProgram(
 
   program
     .command("receive")
-    .description("Wait for idle and return the latest Pi response")
+    .description("Wait for idle and return the exact latest assistant text")
     .argument("<name>")
     .option("--timeout <duration>")
     .option("--human")
@@ -95,7 +95,7 @@ export function createProgram(
 
   program
     .command("watch")
-    .description("Tail new records from the selected Pi session")
+    .description("Stream native Pi session JSONL records")
     .argument("<name>")
     .action(async (name: string) => {
       setExitCode(await runWatch(name, context));
@@ -103,7 +103,7 @@ export function createProgram(
 
   program
     .command("destroy")
-    .description("Remove a pi-fleet entry without deleting its Pi session")
+    .description("Release pi-fleet management without deleting the Pi session")
     .argument("<name>")
     .option("--human")
     .action(async (name: string, options: HumanOptions) => {

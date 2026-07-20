@@ -1,7 +1,7 @@
 {
   "name": "@elpapi42/pi-fleet",
   "version": "0.1.0-beta.9",
-  "description": "Run Pi in the background and continue from the same native session",
+  "description": "Pi-native execution infrastructure for programmatic agent orchestration",
   "license": "MIT",
   "author": "elpapi42",
   "keywords": [
@@ -9,7 +9,10 @@
     "agents",
     "cli",
     "runtime",
-    "automation"
+    "automation",
+    "orchestration",
+    "infrastructure",
+    "jsonl"
   ],
   "repository": {
     "type": "git",

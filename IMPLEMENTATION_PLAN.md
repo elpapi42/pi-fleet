@@ -2,14 +2,15 @@
 
 ## Outcome
 
-Build pi-fleet as a small TypeScript CLI and one local runtime that runs Pi beyond one terminal while leaving native Pi sessions entirely under user control.
+Build pi-fleet as Pi-native, machine-first execution infrastructure for agent systems operating beyond terminal scale. It gives software precise lifecycle control, exact latest-response retrieval, and native structured session data while leaving Pi sessions entirely under user control.
 
 ```text
-create pi-fleet entry → resident Pi process → send normal Pi input
-→ receive latest assistant text after idle → restore same observed session when absent
+orchestrator → create pi-fleet entry → resident Pi process → submit or steer input
+             → inspect lifecycle → retrieve exact latest response
+             → restore the same observed session when absent
 ```
 
-pi-fleet owns names, process lifecycle, ordered prompt delivery, latest observed text, and restoration references. Pi and the user own session paths, IDs, creation, migration, configuration, extensions, and deletion.
+pi-fleet owns names, process lifecycle, ordered prompt delivery, exact latest observed text, and restoration references. Pi and the user own session paths, IDs, creation, migration, configuration, extensions, analysis, knowledge mining, and deletion. Higher-level callers own roles, scheduling, semantic retries, result aggregation, observability, and autonomy.
 
 ## Non-negotiable product rules
 

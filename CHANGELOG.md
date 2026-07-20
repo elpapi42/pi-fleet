@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Documentation
+
+- Reframed pi-fleet as Pi-native, machine-first execution infrastructure for agent systems operating beyond terminal scale rather than a human-facing background terminal tool.
+- Reworked the README and operator skill around programmatic lifecycle control, exact latest-response retrieval, native session JSONL, orchestration boundaries, and user-owned sessions.
+
 ### Reliability
 
 - Added deterministic fault-injection coverage for receive timeout/cancellation, delivery recovery, runtime crashes, Pi RPC failures, SQLite worker/storage failures, protocol framing, command races, raw session boundaries, and public-error redaction.
