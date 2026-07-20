@@ -1,0 +1,19 @@
+{
+  "name": "@elpapi42/pi-fleet",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "A local runtime and machine-first CLI for named Pi agents",
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || ^24.0.0"
+  },
+  "bin": {
+    "pifleet": "./bin/pifleet.mjs"
+  },
+  "scripts": {},
+  "files": [
+    "bin/",
+    "dist/",
+    "README.md"
+  ]
+}
