@@ -1,0 +1,50 @@
+name: Publish npm beta
+
+on:
+  push:
+    tags:
+      - "v*-beta.*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Test and publish beta
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.16.0
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Use trusted-publishing-compatible npm
+        run: npm install --global npm@11.5.1
+
+      - name: Verify tag and beta version
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          test "$package_version" = "$tag_version"
+          case "$package_version" in
+            *-beta.*) ;;
+            *) echo "Refusing to publish non-beta version: $package_version" >&2; exit 1 ;;
+          esac
+
+      - run: npm ci
+      - run: npm audit --omit=dev
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run release:check
+
+      - name: Publish beta with provenance
+        run: npm publish --access public --tag beta --provenance

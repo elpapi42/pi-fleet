@@ -1,14 +1,40 @@
 {
   "name": "@elpapi42/pi-fleet",
-  "version": "0.0.0-development",
-  "private": true,
+  "version": "0.1.0-beta.0",
   "description": "A local runtime and machine-first CLI for named Pi agents",
+  "license": "MIT",
+  "author": "elpapi42",
+  "keywords": [
+    "pi",
+    "agents",
+    "cli",
+    "runtime",
+    "automation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elpapi42/pi-fleet.git"
+  },
+  "homepage": "https://github.com/elpapi42/pi-fleet#readme",
+  "bugs": {
+    "url": "https://github.com/elpapi42/pi-fleet/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  },
   "type": "module",
   "engines": {
     "node": "^22.19.0 || ^24.0.0"
   },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "bin": {
-    "pifleet": "./bin/pifleet.mjs"
+    "pifleet": "bin/pifleet.mjs"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -23,12 +49,15 @@
     "test:compat": "vitest run test/compat --maxWorkers=1",
     "probe:pi": "node scripts/pi-compatibility-probe.mts",
     "benchmark:store": "npm run build && vitest run --config vitest.benchmark.config.ts",
-    "build": "node scripts/build.mjs"
+    "build": "node scripts/build.mjs",
+    "release:check": "node scripts/check-release.mjs"
   },
   "files": [
     "bin/",
     "dist/",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "devDependencies": {
     "@types/node": "22.19.1",

@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -10,6 +9,7 @@ import {
   type CommandExecutor,
 } from "../platform/install/service-installer.js";
 import { materializeRuntime } from "../platform/install/runtime-release.js";
+import { resolveApplicationRoot, resolveFleetPaths } from "../platform/shared/paths.js";
 
 const executor: CommandExecutor = {
   async run(command, args) {
@@ -18,27 +18,28 @@ const executor: CommandExecutor = {
 };
 
 export async function installRuntimeService(): Promise<string> {
+  return installMaterializedService(resolveFleetPaths().stateRoot);
+}
+
+export async function repairRuntimeService(): Promise<string> {
+  return installMaterializedService(process.env.PIFLEET_STATE_ROOT);
+}
+
+async function installMaterializedService(stateRoot: string | undefined): Promise<string> {
   const sourceRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-  const applicationRoot =
-    process.env.PIFLEET_APPLICATION_ROOT ??
-    (process.platform === "darwin"
-      ? join(homedir(), "Library", "Application Support", "Pi Fleet", "runtime")
-      : join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "pi-fleet"));
-  const release = await materializeRuntime({ sourceRoot, applicationRoot });
-  const explicitStateRoot = process.env.PIFLEET_STATE_ROOT;
+  const release = await materializeRuntime({
+    sourceRoot,
+    applicationRoot: resolveApplicationRoot(),
+  });
   return installUserService({
     platform: process.platform,
     definition: {
       nodePath: process.execPath,
       runtimePath: join(release, "bin", "pifleet-runtime.mjs"),
-      ...(explicitStateRoot === undefined ? {} : { stateRoot: explicitStateRoot }),
+      ...(stateRoot === undefined ? {} : { stateRoot }),
     },
     executor,
   });
-}
-
-export async function repairRuntimeService(): Promise<string> {
-  return installRuntimeService();
 }
 
 export async function uninstallRuntimeService(): Promise<void> {

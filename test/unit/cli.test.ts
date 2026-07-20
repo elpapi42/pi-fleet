@@ -31,7 +31,7 @@ describe("runCli", () => {
     const harness = createHarness();
 
     expect(await runCli(["--version"], harness.dependencies)).toBe(0);
-    expect(harness.read()).toEqual({ stderr: "", stdout: "0.0.0-development\n" });
+    expect(harness.read()).toEqual({ stderr: "", stdout: "0.1.0-beta.0\n" });
   });
 
   it("reports unavailable runtime without pretending the command works", async () => {

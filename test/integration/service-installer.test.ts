@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { ensureRuntime } from "../../src/platform/client/start-runtime.js";
 import {
   installUserService,
   uninstallUserService,
@@ -111,6 +112,27 @@ describe("service installer", () => {
     expect(await readFile(path, "utf8")).toContain(
       "Environment=PIFLEET_STATE_ROOT=/custom/fleet-state",
     );
+  });
+
+  it("rejects a CLI state root that differs from the registered service", async () => {
+    if (process.platform !== "linux") return;
+    const home = await mkdtemp(join(tmpdir(), "pifleet-service-"));
+    roots.push(home);
+    const serviceDirectory = join(home, ".config", "systemd", "user");
+    await mkdir(serviceDirectory, { recursive: true });
+    await writeFile(
+      join(serviceDirectory, "pi-fleet.service"),
+      "[Service]\nEnvironment=PIFLEET_STATE_ROOT=/installed/state\n",
+    );
+
+    await expect(
+      ensureRuntime({
+        socketPath: join(home, "requested", "control.sock"),
+        env: { ...process.env, PIFLEET_STATE_ROOT: join(home, "requested") },
+        home,
+        timeoutMs: 25,
+      }),
+    ).rejects.toThrow(/service uses state root \/installed\/state.*requested/i);
   });
 
   it("generates the launchd lifecycle commands without requiring macOS to inspect them", async () => {

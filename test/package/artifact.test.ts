@@ -1,19 +1,30 @@
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { materializeRuntime, verifyRuntime } from "../../src/platform/install/runtime-release.js";
+import { verifyRuntime } from "../../src/platform/install/runtime-release.js";
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
+
+async function stopMaterializedRuntime(applicationRoot: string): Promise<void> {
+  if (process.platform !== "linux") return;
+  const pattern = join(applicationRoot, "releases");
+  const result = await execFileAsync("pgrep", ["-f", pattern]).catch(() => ({ stdout: "" }));
+  for (const value of result.stdout.trim().split("\n")) {
+    if (value.length === 0) continue;
+    const pid = Number(value);
+    if (Number.isSafeInteger(pid) && pid !== process.pid) process.kill(pid, "SIGTERM");
+  }
+}
 
 async function startDeterministicModel(): Promise<{
   readonly port: number;
@@ -53,26 +64,30 @@ async function startDeterministicModel(): Promise<{
 }
 
 describe("packed and materialized runtime", () => {
-  it("materializes a verified private closure that runs away from the source cwd", async () => {
+  it("installs the npm tarball and runs a materialized closure after removing the installation", async () => {
     const root = await mkdtemp(join(tmpdir(), "pifleet-release-"));
     roots.push(root);
-    const release = await materializeRuntime({
-      sourceRoot: resolve("."),
-      applicationRoot: join(root, "application"),
-    });
-
-    const output = await execFileAsync(
-      process.execPath,
-      [join(release, "bin", "pifleet.mjs"), "--version"],
-      {
-        cwd: root,
-      },
+    const packDirectory = join(root, "pack");
+    const prefix = join(root, "prefix");
+    await mkdir(packDirectory);
+    const packed = await execFileAsync(
+      "npm",
+      ["pack", "--json", "--pack-destination", packDirectory],
+      { cwd: resolve(".") },
     );
-    expect(output.stdout).toBe("0.0.0-development\n");
-    expect(
-      (await import("node:fs/promises")).lstat(release).then((entry) => entry.mode & 0o777),
-    ).resolves.toBe(0o700);
+    const packReport = JSON.parse(packed.stdout) as Array<{ filename: string }>;
+    const tarball = join(packDirectory, packReport[0]?.filename ?? "missing.tgz");
+    await execFileAsync(
+      "npm",
+      ["install", "--global", "--prefix", prefix, "--ignore-scripts", tarball],
+      { cwd: root },
+    );
+    const installedRoot = join(prefix, "lib", "node_modules", "@elpapi42", "pi-fleet");
+    const installedBin = join(prefix, "bin", "pifleet");
+    const installedVersion = await execFileAsync(installedBin, ["--version"], { cwd: root });
+    expect(installedVersion.stdout).toBe("0.1.0-beta.0\n");
 
+    const applicationRoot = join(root, "application");
     const stateRoot = join(root, "state");
     const project = join(root, "project");
     const agentDir = join(root, "pi-agent");
@@ -103,29 +118,19 @@ describe("packed and materialized runtime", () => {
         cwd: project,
       })}\n`,
     );
-    const runtimePath = join(release, "dist", "runtime.mjs");
-    const cliPath = join(release, "bin", "pifleet.mjs");
-    const clientEnv = { ...process.env, PIFLEET_STATE_ROOT: stateRoot };
-    const runtime = spawn(process.execPath, [runtimePath], {
-      env: { ...clientEnv, PI_CODING_AGENT_DIR: agentDir },
-      stdio: "ignore",
-    });
+    const clientEnv = {
+      ...process.env,
+      PIFLEET_APPLICATION_ROOT: applicationRoot,
+      PIFLEET_STATE_ROOT: stateRoot,
+      PIFLEET_DISABLE_REGISTERED_SERVICE: "1",
+      PI_CODING_AGENT_DIR: agentDir,
+    };
+    let release = "";
+    let cliPath = "";
     try {
-      for (let attempt = 0; attempt < 200; attempt += 1) {
-        if (
-          await access(join(stateRoot, "control.sock")).then(
-            () => true,
-            () => false,
-          )
-        )
-          break;
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
-      }
-      await access(join(stateRoot, "control.sock"));
       const created = await execFileAsync(
-        process.execPath,
+        installedBin,
         [
-          cliPath,
           "create",
           "packaged-agent",
           "--cwd",
@@ -145,6 +150,17 @@ describe("packed and materialized runtime", () => {
         { cwd: root, env: clientEnv },
       );
       expect(JSON.parse(created.stdout)).toMatchObject({ type: "agent.created" });
+
+      const releases = await readdir(join(applicationRoot, "releases"));
+      expect(releases).toHaveLength(1);
+      release = join(applicationRoot, "releases", releases[0] ?? "missing");
+      cliPath = join(release, "bin", "pifleet.mjs");
+      expect(
+        (await import("node:fs/promises")).lstat(release).then((entry) => entry.mode & 0o777),
+      ).resolves.toBe(0o700);
+      await rm(installedRoot, { recursive: true, force: true });
+      const output = await execFileAsync(process.execPath, [cliPath, "--version"], { cwd: root });
+      expect(output.stdout).toBe("0.1.0-beta.0\n");
 
       const watch = spawn(process.execPath, [cliPath, "watch", "packaged-agent"], {
         cwd: root,
@@ -207,10 +223,7 @@ describe("packed and materialized runtime", () => {
       expect(watch.exitCode).toBe(0);
       await expect(readFile(sessionPath, "utf8")).resolves.toContain("packaged response 1");
     } finally {
-      if (runtime.exitCode === null) {
-        runtime.kill("SIGTERM");
-        await new Promise((resolveExit) => runtime.once("exit", resolveExit));
-      }
+      await stopMaterializedRuntime(applicationRoot);
       await model.close();
     }
 
@@ -221,9 +234,10 @@ describe("packed and materialized runtime", () => {
     await writeFile(dependencyPath, dependencyContents);
     await verifyRuntime(release);
 
+    const runtimePath = join(release, "dist", "runtime.mjs");
     await writeFile(runtimePath, `${await readFile(runtimePath, "utf8")}\n// corruption\n`);
     await expect(verifyRuntime(release)).rejects.toThrow(/changed|verification/i);
-  }, 60_000);
+  }, 120_000);
 
   it("packs only the declared public artifact surface", async () => {
     const result = await execFileAsync("npm", ["pack", "--dry-run", "--json"], {

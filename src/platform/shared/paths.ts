@@ -8,6 +8,15 @@ export interface FleetPaths {
   readonly databasePath: string;
 }
 
+export function resolveApplicationRoot(env: NodeJS.ProcessEnv = process.env): string {
+  return (
+    env.PIFLEET_APPLICATION_ROOT ??
+    (process.platform === "darwin"
+      ? join(homedir(), "Library", "Application Support", "Pi Fleet", "runtime")
+      : join(env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "pi-fleet"))
+  );
+}
+
 export function resolveFleetPaths(env: NodeJS.ProcessEnv = process.env): FleetPaths {
   const explicitRoot = env.PIFLEET_STATE_ROOT;
   if (explicitRoot !== undefined) {
