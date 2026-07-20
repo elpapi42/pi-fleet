@@ -87,6 +87,13 @@ export class SocketFleetClient implements FleetClient {
     try {
       for await (const frame of frames) {
         if (!isRecord(frame) || frame.requestId !== requestId) continue;
+        if (frame.v !== PROTOCOL_VERSION) {
+          yield err({
+            code: "protocol_error",
+            message: "Runtime protocol version is incompatible with this client.",
+          });
+          return;
+        }
         if (frame.stream === "ready") continue;
         if (frame.stream === "end") {
           endedExplicitly = true;
@@ -150,6 +157,12 @@ export class SocketFleetClient implements FleetClient {
       const frame = await response;
       if (!isRecord(frame) || frame.requestId !== requestId || typeof frame.ok !== "boolean") {
         return err({ code: "protocol_error", message: "Invalid runtime response." });
+      }
+      if (frame.v !== PROTOCOL_VERSION) {
+        return err({
+          code: "protocol_error",
+          message: "Runtime protocol version is incompatible with this client.",
+        });
       }
       if (frame.ok) return ok(frame.result as T);
       if (isErrorRecord(frame.error)) return err(frame.error);

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { frameIterator, SocketFleetClient } from "../../src/client/socket-fleet-client.js";
+import { PROTOCOL_VERSION } from "../../src/protocol/version.js";
 import { startControlServer, type ControlServer } from "../../src/runtime/control-server.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
 import type { RuntimeLimits } from "../../src/shared/runtime-limits.js";
@@ -35,6 +36,34 @@ async function harness(limits?: Partial<RuntimeLimits>) {
     await rm(root, { recursive: true, force: true });
   });
   return { client: new SocketFleetClient({ socketPath }), socketPath, service, store, root };
+}
+
+async function protocolFixture(
+  respond: (requestId: string) => Record<string, unknown>,
+): Promise<{ client: SocketFleetClient; closed: Promise<void> }> {
+  const root = await mkdtemp(join(tmpdir(), "pifleet-protocol-version-"));
+  const socketPath = join(root, "control.sock");
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  const server = createServer((socket) => {
+    socket.once("data", (chunk) => {
+      const request = JSON.parse(chunk.toString().trim()) as { requestId: string };
+      socket.write(`${JSON.stringify(respond(request.requestId))}\n`);
+    });
+    socket.once("close", () => resolveClosed());
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  cleanups.push(() =>
+    new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    ).finally(() => rm(root, { recursive: true, force: true })),
+  );
+  return { client: new SocketFleetClient({ socketPath }), closed };
 }
 
 const signal = new AbortController().signal;
@@ -216,6 +245,60 @@ describe("private socket runtime", () => {
       ok: false,
       error: { code: "runtime_unavailable" },
     });
+  });
+
+  it("accepts a matching protocol-major response and closes the connection", async () => {
+    const { client, closed } = await protocolFixture((requestId) => ({
+      v: PROTOCOL_VERSION,
+      requestId,
+      ok: true,
+      result: { type: "agent.list", agents: [] },
+    }));
+
+    await expect(client.list({ signal })).resolves.toEqual({
+      ok: true,
+      value: { type: "agent.list", agents: [] },
+    });
+    await expect(closed).resolves.toBeUndefined();
+  });
+
+  it("rejects an incompatible protocol-major response and closes the connection", async () => {
+    const { client, closed } = await protocolFixture((requestId) => ({
+      v: PROTOCOL_VERSION + 1,
+      requestId,
+      ok: true,
+      result: { type: "agent.list", agents: [] },
+    }));
+
+    await expect(client.list({ signal })).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "protocol_error",
+        message: "Runtime protocol version is incompatible with this client.",
+      },
+    });
+    await expect(closed).resolves.toBeUndefined();
+  });
+
+  it("rejects an incompatible watch stream protocol-major and closes the connection", async () => {
+    const { client, closed } = await protocolFixture((requestId) => ({
+      v: PROTOCOL_VERSION + 1,
+      requestId,
+      stream: "ready",
+    }));
+
+    const iterator = client.watchSession({ name: "reviewer" }, { signal })[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        ok: false,
+        error: {
+          code: "protocol_error",
+          message: "Runtime protocol version is incompatible with this client.",
+        },
+      },
+    });
+    await iterator.return?.();
+    await expect(closed).resolves.toBeUndefined();
   });
 
   it("returns typed errors instead of leaking private protocol frames", async () => {
