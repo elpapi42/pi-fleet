@@ -12,6 +12,22 @@
 - Added a nightly reliability workflow and an isolated soak suite covering 500 concurrent ordered sends and 100 name lifecycle cycles.
 - Reject invalid UTF-8 in stdin and Pi RPC stdout instead of silently replacing bytes at either protocol boundary.
 
+## 0.1.0-beta.4 — 2026-07-20
+
+Manual edge-case testing fix. No intentional CLI contract change.
+
+### Fixed
+
+- Prevented `receive --timeout 0` from rejecting an idle waiter before a handler was attached and terminating the runtime with an unhandled `Receive cancelled` rejection.
+- Added explicit coordinator work tracking so promptless/repeated idle polling returns `no_response` or the latest response immediately, while managed work still waits for Pi settlement.
+- Closed the abort-listener registration race and added regression coverage for timeout, disconnect, repeated receive, and settlement ordering.
+- Return durable `invalid_arguments` errors for rejected Pi startup/positional arguments instead of a generic `internal_error`.
+
+### Manual validation
+
+- Direct isolated lifecycle, timeout, repeated receive, raw watch, session mutation, concurrent startup/send, Pi/runtime crash recovery, capacity, and session-preservation scenarios passed against the beta.4 source build.
+- Fresh-registry operational validation remains enforced by the tag workflow after publication.
+
 ## 0.1.0-beta.3 — 2026-07-20
 
 Reliability fix for fresh global npm installations. No intentional CLI or agent-lifecycle contract change.

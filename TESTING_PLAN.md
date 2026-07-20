@@ -6,7 +6,7 @@ Prove that Pi Fleet remains safe and predictable under timeouts, crashes, malfor
 
 ## Implementation status
 
-The deterministic Linux x64 reliability pass is complete for the pending `0.1.0-beta.3` release:
+The deterministic Linux x64 reliability pass is complete for the pending `0.1.0-beta.4` release:
 
 - `test:faults` covers receive timeout/disconnect/destroy behavior, durable delivery replay boundaries, compiled-runtime `SIGKILL` recovery, cross-command serialization, Pi RPC framing/exit/timeout failures, SQLite worker death/malformed responses/corruption/locking, fail-closed dispatch, protocol malformed/oversized/unterminated input, stdin size/UTF-8 boundaries, raw-watch record boundaries, and public error redaction.
 - Reusable scripted-Pi, fault-barrier, isolated-environment, and side-effect-ledger fixtures are available under `test/fixtures` and `test/helpers`.
