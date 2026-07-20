@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -23,7 +23,7 @@ async function harness() {
     await server.close();
     await rm(root, { recursive: true, force: true });
   });
-  return { client: new SocketFleetClient({ socketPath }), socketPath };
+  return { client: new SocketFleetClient({ socketPath }), socketPath, service, store, root };
 }
 
 const signal = new AbortController().signal;
@@ -77,6 +77,33 @@ describe("private socket runtime", () => {
         { signal, operation },
       ),
     ).toMatchObject({ ok: false, error: { code: "operation_conflict" } });
+  });
+
+  it("streams only decoded session bytes after the private ready frame", async () => {
+    const { client, store, root } = await harness();
+    await client.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, { signal, operation });
+    const stored = await store.getAgent("reviewer");
+    if (stored === null) throw new Error("missing stored agent");
+    const sessionPath = join(root, "session.jsonl");
+    await writeFile(sessionPath, '{"type":"session"}\n');
+    await store.putAgent({
+      ...stored,
+      summary: { ...stored.summary, session: { path: sessionPath, id: "session-1" } },
+    });
+
+    const abort = new AbortController();
+    const stream = client.watchSession({ name: "reviewer" }, { signal: abort.signal });
+    const iterator = stream[Symbol.asyncIterator]();
+    const next = iterator.next();
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 30));
+    await appendFile(sessionPath, '{"type":"message"}\n');
+
+    const frame = await next;
+    expect(frame.value).toMatchObject({ ok: true });
+    if (frame.value?.ok !== true) throw new Error("watch failed");
+    expect(Buffer.from(frame.value.value.bytes).toString()).toBe('{"type":"message"}\n');
+    abort.abort();
+    await iterator.return?.();
   });
 
   it("returns typed errors instead of leaking private protocol frames", async () => {

@@ -21,6 +21,7 @@ export interface CreateLaunchProfileInput {
 }
 
 export function createLaunchProfile(input: CreateLaunchProfileInput): AgentLaunchProfile {
+  validatePersistentRpcArgv(input.piArgv);
   return {
     cwd: input.cwd,
     userPiArgv: [...input.piArgv],
@@ -29,6 +30,18 @@ export function createLaunchProfile(input: CreateLaunchProfileInput): AgentLaunc
     restorePiArgv: null,
     piArtifactId: input.piArtifactId,
   };
+}
+
+function validatePersistentRpcArgv(piArgv: readonly string[]): void {
+  const incompatible = piArgv.find((token) =>
+    ["--mode", "--print", "-p", "--no-session", "--resume", "-r"].includes(token),
+  );
+  if (incompatible !== undefined) {
+    throw new Error(`${incompatible} is incompatible with persistent headless Pi Fleet control`);
+  }
+  if (piArgv.some((token) => token.startsWith("@"))) {
+    throw new Error("Pi @file prompt delivery is incompatible with Fleet-managed send ordering");
+  }
 }
 
 export function observeSession(

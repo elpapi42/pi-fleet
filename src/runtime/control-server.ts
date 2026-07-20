@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { chmod, lstat, mkdir, unlink } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
@@ -112,11 +113,53 @@ async function dispatch(
     case "agent.list":
       result = await service.list();
       break;
-    case "agent.watch":
+    case "agent.watch": {
+      const watch = await service.openWatch(asNamedInput(request.params), connectionSignal);
+      if (!watch.ok) {
+        writeJsonLine(socket, {
+          v: PROTOCOL_VERSION,
+          requestId: request.requestId,
+          stream: "error",
+          error: watch.error,
+        });
+        socket.end();
+        return;
+      }
       writeJsonLine(socket, { v: PROTOCOL_VERSION, requestId: request.requestId, stream: "ready" });
-      writeJsonLine(socket, { v: PROTOCOL_VERSION, requestId: request.requestId, stream: "end" });
-      socket.end();
+      try {
+        for await (const chunk of watch.value) {
+          const writable = writeJsonLine(socket, {
+            v: PROTOCOL_VERSION,
+            requestId: request.requestId,
+            stream: "chunk",
+            data: chunk.toString("base64"),
+          });
+          if (!writable) await once(socket, "drain");
+        }
+        if (!socket.destroyed) {
+          writeJsonLine(socket, {
+            v: PROTOCOL_VERSION,
+            requestId: request.requestId,
+            stream: "end",
+          });
+          socket.end();
+        }
+      } catch (error: unknown) {
+        if (!socket.destroyed) {
+          writeJsonLine(socket, {
+            v: PROTOCOL_VERSION,
+            requestId: request.requestId,
+            stream: "error",
+            error: {
+              code: "session_changed",
+              message: error instanceof Error ? error.message : "Session watch failed.",
+            },
+          });
+          socket.end();
+        }
+      }
       return;
+    }
     case "agent.destroy":
       result = await service.destroy(asNamedInput(request.params), requireOperation(operationId));
       break;

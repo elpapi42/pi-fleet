@@ -37,6 +37,6 @@ export function readJsonLines(
   return () => socket.off("data", onData);
 }
 
-export function writeJsonLine(socket: Socket, value: unknown): void {
-  socket.write(`${JSON.stringify(value)}\n`);
+export function writeJsonLine(socket: Socket, value: unknown): boolean {
+  return socket.write(`${JSON.stringify(value)}\n`);
 }

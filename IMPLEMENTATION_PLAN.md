@@ -73,11 +73,13 @@ Implement the first end-to-end flow with one agent: promptless `create`, residen
 
 **Evidence:** `test/process/real-pi-lifecycle.test.ts` runs Pi 0.80.10 against a local deterministic provider and proves promptless creation, resident reuse, idle-based latest-text receive, clean process release, restoration through the same observed native session, conversation continuity, and non-destructive destroy.
 
-### 6. Native selector matrix and raw watch
+### 6. Native selector matrix and raw watch — complete
 
 Complete selector-specific restoration behavior and tail the exact selected session file from EOF or first materialization. Detect obvious replacement/truncation but do not promise exactness under arbitrary external concurrent writers.
 
 **Exit gate:** every supported selector has first-launch/restoration tests and watch output matches ordinary appended session records byte-for-byte.
+
+**Evidence:** the executable compatibility profile covers existing/missing path, exact ID, custom directory, fork, continue, and unsupported headless resume. `test/process/session-tail.test.ts` and the socket integration suite prove current-EOF, first-materialization, replacement failure, private-frame removal, and byte-identical complete-record delivery.
 
 ### 7. SQLite durability and recovery
 

@@ -20,6 +20,7 @@ import type { PiProcess } from "../pi/process.js";
 import { err, ok, type Result } from "../shared/result.js";
 import type { FleetStore, StoredAgent } from "../store/fleet-store.js";
 import { AgentCoordinator } from "./agent-coordinator.js";
+import { SessionTailSubscription } from "./session-tail-subscription.js";
 
 interface RecordedOperation {
   readonly method: "create" | "send" | "destroy";
@@ -35,6 +36,7 @@ export interface FleetServiceOptions {
 export class FleetService {
   readonly #operations = new Map<string, RecordedOperation>();
   readonly #coordinators = new Map<string, AgentCoordinator>();
+  readonly #watchers = new Map<string, Set<AbortController>>();
   readonly #launcher: PiLauncher | undefined;
   readonly #now: () => string;
 
@@ -223,12 +225,43 @@ export class FleetService {
     });
   }
 
+  async openWatch(
+    input: { readonly name: string },
+    connectionSignal: AbortSignal,
+  ): Promise<Result<AsyncIterable<Buffer>, FleetClientError>> {
+    const agent = await this.store.getAgent(input.name);
+    if (agent === null) return this.#notFound(input.name);
+    const sessionPath = agent.summary.session.path;
+    if (sessionPath === null) {
+      return err({
+        code: "session_unavailable",
+        message: `Agent ${input.name} has no session path.`,
+      });
+    }
+
+    const abort = new AbortController();
+    const onConnectionAbort = () => abort.abort();
+    connectionSignal.addEventListener("abort", onConnectionAbort, { once: true });
+    const watchers = this.#watchers.get(input.name) ?? new Set<AbortController>();
+    watchers.add(abort);
+    this.#watchers.set(input.name, watchers);
+    const subscription = new SessionTailSubscription(sessionPath, { signal: abort.signal });
+    const cleanup = () => {
+      connectionSignal.removeEventListener("abort", onConnectionAbort);
+      watchers.delete(abort);
+      if (watchers.size === 0) this.#watchers.delete(input.name);
+    };
+    return ok(watchWithCleanup(subscription, cleanup));
+  }
+
   async destroy(
     input: DestroyInput,
     operationId: string,
   ): Promise<Result<DestroyResult, FleetClientError>> {
     const replay = this.#operation<DestroyResult>(operationId, "destroy", input);
     if (replay !== null) return replay;
+    for (const watcher of this.#watchers.get(input.name) ?? []) watcher.abort();
+    this.#watchers.delete(input.name);
     const coordinator = this.#coordinators.get(input.name);
     if (coordinator !== undefined) await coordinator.stop();
     this.#coordinators.delete(input.name);
@@ -251,6 +284,10 @@ export class FleetService {
   }
 
   async close(): Promise<void> {
+    for (const watchers of this.#watchers.values()) {
+      for (const watcher of watchers) watcher.abort();
+    }
+    this.#watchers.clear();
     await Promise.all([...this.#coordinators.values()].map((coordinator) => coordinator.stop()));
     this.#coordinators.clear();
   }
@@ -315,5 +352,16 @@ export class FleetService {
       fingerprint: JSON.stringify(payload),
       result,
     });
+  }
+}
+
+async function* watchWithCleanup(
+  subscription: AsyncIterable<Buffer>,
+  cleanup: () => void,
+): AsyncIterable<Buffer> {
+  try {
+    yield* subscription;
+  } finally {
+    cleanup();
   }
 }
