@@ -29,4 +29,5 @@ jobs:
       - run: npm run test:faults
       - run: npm run test:process
       - run: npm run test:compat
+      - run: npm run test:soak
       - run: npm run benchmark:store

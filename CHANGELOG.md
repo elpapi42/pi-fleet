@@ -9,6 +9,7 @@
 - Made SQLite-worker failures terminal for current and future calls and made send recovery safe when an operation exists but no send record was committed.
 - Redacted Pi stderr and unexpected internal exceptions from public errors while retaining stable typed error codes.
 - Contained asynchronous coordinator event/store failures by stopping the affected Pi process and rejecting waiters instead of producing unhandled promise rejections.
+- Added a nightly reliability workflow and an isolated soak suite covering 500 concurrent ordered sends and 100 name lifecycle cycles.
 
 ## 0.1.0-beta.1 — 2026-07-20
 

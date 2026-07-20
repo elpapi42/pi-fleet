@@ -48,6 +48,7 @@
     "test:package": "npm run build && vitest run test/package --maxWorkers=1",
     "test:platform": "vitest run test/integration/service-installer.test.ts test/process/process-tree.test.ts --maxWorkers=1",
     "test:compat": "vitest run test/compat --maxWorkers=1",
+    "test:soak": "vitest run --config vitest.soak.config.ts --maxWorkers=1",
     "probe:pi": "node scripts/pi-compatibility-probe.mts",
     "benchmark:store": "npm run build && vitest run --config vitest.benchmark.config.ts",
     "build": "node scripts/build.mjs",
