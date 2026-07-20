@@ -78,7 +78,8 @@ async function harness(
   const root = await mkdtemp(join(tmpdir(), "pifleet-receive-fault-"));
   const socketPath = join(root, "control.sock");
   const pi = controlledPi(options.stateDelayMs);
-  const service = new FleetService(new MemoryFleetStore(), {
+  const store = new MemoryFleetStore();
+  const service = new FleetService(store, {
     launcher: pi.launcher,
     now: () => "2026-01-01T00:00:00.000Z",
   });
@@ -106,7 +107,7 @@ async function harness(
       },
     );
   }
-  return { client, pi, signal };
+  return { client, pi, service, signal, store };
 }
 
 function requestOptions(signal: AbortSignal, timeoutMs?: number) {
@@ -142,6 +143,37 @@ describe("receive timeout and cancellation", () => {
     ).resolves.toMatchObject({
       ok: true,
       value: { response: { text: "repeatable response" } },
+    });
+  });
+
+  it("returns interruption instead of a stale response after active work fails", async () => {
+    const { client, pi, service, signal, store } = await harness();
+    pi.settle("previous response");
+    await expect(client.receive({ name: "agent" }, requestOptions(signal))).resolves.toMatchObject({
+      ok: true,
+      value: { response: { text: "previous response" } },
+    });
+
+    await service.close();
+    const agent = await store.getAgent("agent");
+    expect(agent).not.toBeNull();
+    await store.putAgent({
+      ...agent!,
+      summary: {
+        ...agent!.summary,
+        state: "failed",
+        process: { state: "absent" },
+        error: { code: "runtime_interrupted" },
+      },
+    });
+
+    await expect(client.receive({ name: "agent" }, requestOptions(signal, 0))).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "runtime_interrupted",
+        message:
+          "Agent agent is failed (runtime_interrupted) and has no current successful response.",
+      },
     });
   });
 

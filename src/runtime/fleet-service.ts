@@ -447,6 +447,13 @@ export class FleetService {
       throw error;
     }
     if (agent === null) return this.#notFound(input.name);
+    if (agent.summary.state === "failed") {
+      const code = agent.summary.error?.code ?? "agent_failed";
+      return err({
+        code,
+        message: `Agent ${input.name} is failed (${code}) and has no current successful response.`,
+      });
+    }
     if (agent.latestAssistantText === null || agent.responseObservedAt === null) {
       return err({
         code: "no_response",
