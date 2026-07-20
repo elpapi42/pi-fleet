@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { verifyRuntime } from "../../src/platform/install/runtime-release.js";
+import { PRODUCT_VERSION } from "../../src/shared/product-identity.js";
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
@@ -85,7 +86,7 @@ describe("packed and materialized runtime", () => {
     const installedRoot = join(prefix, "lib", "node_modules", "@elpapi42", "pi-fleet");
     const installedBin = join(prefix, "bin", "pifleet");
     const installedVersion = await execFileAsync(installedBin, ["--version"], { cwd: root });
-    expect(installedVersion.stdout).toBe("0.1.0-beta.0\n");
+    expect(installedVersion.stdout).toBe(`${PRODUCT_VERSION}\n`);
 
     const applicationRoot = join(root, "application");
     const stateRoot = join(root, "state");
@@ -155,12 +156,12 @@ describe("packed and materialized runtime", () => {
       expect(releases).toHaveLength(1);
       release = join(applicationRoot, "releases", releases[0] ?? "missing");
       cliPath = join(release, "bin", "pifleet.mjs");
-      expect(
+      await expect(
         (await import("node:fs/promises")).lstat(release).then((entry) => entry.mode & 0o777),
       ).resolves.toBe(0o700);
       await rm(installedRoot, { recursive: true, force: true });
       const output = await execFileAsync(process.execPath, [cliPath, "--version"], { cwd: root });
-      expect(output.stdout).toBe("0.1.0-beta.0\n");
+      expect(output.stdout).toBe(`${PRODUCT_VERSION}\n`);
 
       const watch = spawn(process.execPath, [cliPath, "watch", "packaged-agent"], {
         cwd: root,

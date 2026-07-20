@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { unavailableFleetClient } from "../../src/client/unavailable-client.js";
 import { runCli, type CliDependencies } from "../../src/entry/cli.js";
+import { PRODUCT_VERSION } from "../../src/shared/product-identity.js";
 
 function createHarness() {
   let stdout = "";
@@ -31,7 +32,7 @@ describe("runCli", () => {
     const harness = createHarness();
 
     expect(await runCli(["--version"], harness.dependencies)).toBe(0);
-    expect(harness.read()).toEqual({ stderr: "", stdout: "0.1.0-beta.0\n" });
+    expect(harness.read()).toEqual({ stderr: "", stdout: `${PRODUCT_VERSION}\n` });
   });
 
   it("reports unavailable runtime without pretending the command works", async () => {

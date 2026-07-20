@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-beta.1 — 2026-07-20
+
+Release-pipeline validation beta. No product-contract changes from `0.1.0-beta.0`.
+
+### Changed
+
+- Publishes through the tag-driven GitHub Actions workflow using npm trusted publishing and provenance.
+- Retains the same Linux x64 validation scope, beta limitations, and user-owned Pi session guarantees as `0.1.0-beta.0`.
+
 ## 0.1.0-beta.0 — 2026-07-20
 
 First public beta of Pi Fleet.
