@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -141,5 +141,59 @@ describe("runtime materialization manifest validation", () => {
 
     await expect(materialize(testFixture)).rejects.toThrow(/verification|manifest|artifact/i);
     await expect(readFile(artifact)).resolves.toEqual(before);
+  });
+
+  it("converges eight concurrent materializers on one verified release", async () => {
+    const testFixture = await fixture();
+    await testFixture.writeManifest();
+
+    const releases = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        materializeRuntime({
+          sourceRoot: testFixture.sourceRoot,
+          applicationRoot: testFixture.applicationRoot,
+        }),
+      ),
+    );
+
+    expect([...new Set(releases)]).toHaveLength(1);
+    await expect(verifyRuntime(releases[0]!)).resolves.toBeUndefined();
+  });
+
+  it("leaves an unrelated staging directory untouched", async () => {
+    const testFixture = await fixture();
+    const stale = join(testFixture.applicationRoot, "releases", ".staging-unrelated");
+    await mkdir(stale, { recursive: true });
+    await writeFile(join(stale, "marker"), "keep");
+
+    await materialize(testFixture);
+
+    await expect(readFile(join(stale, "marker"), "utf8")).resolves.toBe("keep");
+  });
+
+  it("reuses an existing verified release without rewriting its core artifacts", async () => {
+    const testFixture = await fixture();
+    const release = await materialize(testFixture);
+    const artifact = join(release, "dist", "runtime.mjs");
+    const before = await lstat(artifact);
+
+    await expect(materialize(testFixture)).resolves.toBe(release);
+
+    const after = await lstat(artifact);
+    expect(after.ino).toBe(before.ino);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it("fails closed without replacing an existing corrupt release", async () => {
+    const testFixture = await fixture();
+    const release = await materialize(testFixture);
+    const artifact = join(release, "dist", "runtime.mjs");
+    await writeFile(artifact, "corrupt");
+
+    await expect(materialize(testFixture)).rejects.toThrow(/changed|verification|artifact/i);
+    await expect(readFile(artifact, "utf8")).resolves.toBe("corrupt");
+    await expect(readdir(join(testFixture.applicationRoot, "releases"))).resolves.toContain(
+      release.split("/").at(-1),
+    );
   });
 });

@@ -64,11 +64,15 @@ export async function materializeRuntime(options: {
     }
     await verifyRuntime(staging, manifest);
     await chmod(staging, 0o700);
-    await rename(staging, destination);
+    try {
+      await rename(staging, destination);
+    } catch (error: unknown) {
+      if (!isDestinationRace(error) || !(await pathExists(destination))) throw error;
+      await verifyRuntime(destination, manifest);
+    }
     return destination;
-  } catch (error: unknown) {
+  } finally {
     await rm(staging, { recursive: true, force: true });
-    throw error;
   }
 }
 
@@ -238,6 +242,11 @@ function isValidSize(value: unknown): value is number {
 
 function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function isDestinationRace(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EEXIST" || code === "ENOTEMPTY";
 }
 
 async function ensurePrivateDirectory(path: string): Promise<void> {
