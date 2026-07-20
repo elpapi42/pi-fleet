@@ -12,6 +12,16 @@
 - Added a nightly reliability workflow and an isolated soak suite covering 500 concurrent ordered sends and 100 name lifecycle cycles.
 - Reject invalid UTF-8 in stdin and Pi RPC stdout instead of silently replacing bytes at either protocol boundary.
 
+## 0.1.0-beta.5 — 2026-07-20
+
+Release-pipeline reliability follow-up; includes the beta.4 receive and argument-validation fixes.
+
+### Fixed
+
+- On Linux, process-group cleanup now treats zombie processes as exited by inspecting procfs instead of relying only on signal probes. This prevents conservative cleanup waits and CI failures when an orphaned descendant is awaiting reaping.
+- Pi shutdown now waits for the child-process exit callback and coordinator transition before reporting completion, preventing a status read from briefly retaining `resident` after an idle release.
+- Repeated the process-tree and real-Pi process suites five times locally before tagging after beta.4's publish workflow exposed the runner-specific zombie behavior.
+
 ## 0.1.0-beta.4 — 2026-07-20
 
 Manual edge-case testing fix. No intentional CLI contract change.
