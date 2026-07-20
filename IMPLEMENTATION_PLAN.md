@@ -2,10 +2,10 @@
 
 ## Outcome
 
-Build Pi Fleet as a small TypeScript CLI and one local runtime that keeps Pi sessions reachable, while leaving Pi sessions entirely under user control.
+Build Pi Fleet as a small TypeScript CLI and one local runtime that runs Pi beyond one terminal while leaving native Pi sessions entirely under user control.
 
 ```text
-create Pi handle → resident Pi process → send normal Pi input
+create Fleet entry → resident Pi process → send normal Pi input
 → receive latest assistant text after idle → restore same observed session when absent
 ```
 

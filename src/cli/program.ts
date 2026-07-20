@@ -16,7 +16,7 @@ export function createProgram(
 ): Command {
   const program = new Command()
     .name(PRODUCT_BINARY)
-    .description("Keep Pi sessions reachable between tasks")
+    .description("Run Pi in the background and continue the same session")
     .version(PRODUCT_VERSION)
     .exitOverride()
     .showHelpAfterError(false)
@@ -28,7 +28,7 @@ export function createProgram(
 
   program
     .command("create")
-    .description("Create a reusable Pi handle")
+    .description("Create a Fleet entry for a Pi session")
     .argument("<name>")
     .argument("[instructions]")
     .option("--cwd <path>")
@@ -78,7 +78,7 @@ export function createProgram(
 
   program
     .command("status")
-    .description("Inspect a Pi handle without waking it")
+    .description("Inspect a Fleet entry without waking Pi")
     .argument("<name>")
     .option("--human")
     .action(async (name: string, options: HumanOptions) => {
@@ -87,7 +87,7 @@ export function createProgram(
 
   program
     .command("list")
-    .description("List Pi handles without waking them")
+    .description("List Fleet entries without waking Pi")
     .option("--human")
     .action(async (options: HumanOptions) => {
       setExitCode(await runList({ human: options.human ?? false }, context));
@@ -103,7 +103,7 @@ export function createProgram(
 
   program
     .command("destroy")
-    .description("Stop managing a Pi handle without deleting its session")
+    .description("Remove a Fleet entry without deleting its Pi session")
     .argument("<name>")
     .option("--human")
     .action(async (name: string, options: HumanOptions) => {

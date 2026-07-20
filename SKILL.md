@@ -1,6 +1,6 @@
 ---
 name: pi-fleet-operator
-description: Operate the `pifleet` CLI for durable Pi session handles. Use this skill whenever the user asks to create or reuse a Pi handle, delegate or steer work through Pi Fleet, wait for or retrieve a Pi response, inspect handle state, tail a Pi session, manage an existing Pi session through Fleet, or destroy a Fleet handle. Also use it for Pi Fleet CLI troubleshooting and automation, even when the user says only “the fleet,” “my reviewer,” or “send this to the specialist.”
+description: Operate the `pifleet` CLI to run Pi in the background and continue through the same native session. Use this skill whenever the user asks to create or reuse a Fleet entry, delegate or steer work through Pi Fleet, wait for or retrieve a Pi response, inspect Fleet state, tail a Pi session, manage an existing Pi session through Fleet, or stop Fleet management. Also use it for Pi Fleet CLI troubleshooting and automation, even when the user says only “the fleet,” “my reviewer,” or “send this to the specialist.”
 compatibility: Requires the `pifleet` executable on PATH and a supported Pi Fleet installation.
 ---
 
@@ -17,13 +17,13 @@ Use Pi Fleet as a small lifecycle layer around native Pi sessions. Preserve the 
    pifleet --version
    ```
 
-2. Do not install, upgrade, repair, or restart Pi Fleet unless the user asks for maintenance. Ordinary agent operations should use the existing installation.
+2. Do not install, upgrade, repair, or restart Pi Fleet unless the user asks for maintenance. Ordinary Fleet operations should use the existing installation.
 3. Prefer the default compact JSON output for automation. Use `--human` only when presenting a response directly to a person.
 4. Treat stdout, stderr, and exit status as separate contracts. Do not scrape human prose when JSON is available.
 
-Operational commands may start the central Fleet runtime, but passive inspection must not wake an individual agent. `status`, `list`, `watch`, and retrieval of an already settled response are passive with respect to the Pi process.
+Operational commands may start the central Fleet runtime, but passive inspection must not wake an individual Pi process. `status`, `list`, `watch`, and retrieval of an already settled response are passive with respect to Pi.
 
-## Create an agent
+## Create a Fleet entry
 
 Use an explicit, stable lowercase name. Valid names are 1–63 characters matching:
 
@@ -31,7 +31,7 @@ Use an explicit, stable lowercase name. Valid names are 1–63 characters matchi
 ^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$
 ```
 
-Create a promptless agent when the user has not supplied work:
+Create a promptless entry when the user has not supplied work:
 
 ```bash
 pifleet create NAME --cwd /absolute/project/path
@@ -74,7 +74,7 @@ pifleet send NAME "MESSAGE"
 
 A successful send means Fleet accepted and ordered the input. It does not mean the work completed or produced a distinct response. While Pi is active, later sends steer the active work at Pi's next decision point; while idle, a send begins normal work.
 
-Wait for the agent to become idle and retrieve Pi's latest assistant message:
+Wait for Pi to become idle and retrieve its latest assistant message:
 
 ```bash
 pifleet receive NAME --timeout 10m
@@ -93,7 +93,7 @@ Important receive semantics:
 - Multiple sends may influence one final response.
 - `--timeout 0` performs an immediate poll.
 - Use explicit units such as `30s`, `5m`, or `1h`; a unitless duration is milliseconds.
-- Timeout exits with status `124` and does not cancel or alter agent work.
+- Timeout exits with status `124` and does not cancel or alter Pi's work.
 - Canceling a held receive affects only that client.
 
 When sending large or shell-sensitive content, use explicit stdin. Fleet never consumes piped stdin implicitly:
@@ -107,21 +107,21 @@ The default message limit is 512 KiB. Input must be valid UTF-8 and not empty or
 
 ## Inspect without changing work
 
-Inspect one agent:
+Inspect one Fleet entry:
 
 ```bash
 pifleet status NAME
 ```
 
-List all logical agents:
+List all Fleet entries:
 
 ```bash
 pifleet list
 ```
 
-Reason from both logical state and process residency. An `idle` agent can be `resident` or `absent`; the next send restores an absent agent from its native session. Do not infer continuity from a PID.
+Reason from both logical state and process residency. An `idle` entry can be `resident` or `absent`; the next send restores an absent Pi process from its native session. Do not infer continuity from a PID.
 
-If an agent is `failed`, inspect its error before acting. In particular:
+If an entry is `failed`, inspect its error before acting. In particular:
 
 - `runtime_interrupted` means active work was interrupted and was not silently replayed.
 - `delivery_uncertain` means Pi may have received the input; do not automatically resend because tools may already have produced side effects.
@@ -140,11 +140,11 @@ pifleet watch NAME
 
 It has no `--human` mode and adds no Fleet wrappers, readiness markers, history, or transient RPC events. For an existing session it begins at the current EOF; for an unmaterialized session it waits and begins at byte zero when the file appears.
 
-Keep watching decoupled from sending. Starting or canceling a watcher must not wake, steer, cancel, or otherwise change the agent. Treat replacement, truncation, path changes, lag, runtime loss, or unexpected EOF as visible watch failures rather than guessing or replaying bytes.
+Keep watching decoupled from sending. Starting or canceling a watcher must not wake, steer, cancel, or otherwise change Pi. Treat replacement, truncation, path changes, lag, runtime loss, or unexpected EOF as visible watch failures rather than guessing or replaying bytes.
 
 ## Destroy deliberately
 
-Destroy only when the user wants Fleet to stop managing the handle:
+Destroy only when the user wants Fleet to stop managing the entry:
 
 ```bash
 pifleet destroy NAME
@@ -152,7 +152,7 @@ pifleet destroy NAME
 
 Destroy stops the managed process and removes Fleet's name, operation state, and capacity ownership. It never deletes the Pi session, Pi configuration, credentials, extensions, skills, prompts, or project files.
 
-Do not automatically destroy a durable collaborator merely because one assignment finished. For clearly temporary agents, destroy after confirming the required result or artifact was received.
+Do not automatically destroy a durable Fleet entry merely because one assignment finished. For clearly temporary entries, destroy after confirming the required result or artifact was received.
 
 ## Automation and error handling
 
@@ -165,11 +165,11 @@ For scripts:
 - keep `watch` stdout untouched if byte fidelity matters;
 - handle a closed downstream watch pipe as normal client disconnection;
 - avoid concurrent commands that assume send-to-response correlation;
-- use the same agent name for related follow-up work when retained session context is the desired benefit.
+- use the same Fleet name for related follow-up work when retained session context is the desired benefit.
 
 ## Safe testing boundary
 
-Never test against the user's default Fleet state unless the user explicitly asks to exercise real agents. Isolate experimental or destructive checks with dedicated temporary values for at least:
+Never test against the user's default Fleet state unless the user explicitly asks to exercise real Fleet entries. Isolate experimental or destructive checks with dedicated temporary values for at least:
 
 ```text
 HOME
@@ -180,8 +180,8 @@ PI_CODING_AGENT_DIR
 PIFLEET_DISABLE_REGISTERED_SERVICE=1
 ```
 
-Use unique temporary roots and clean up only resources created under those roots. Do not operate on unrelated real Fleet agents, sessions, services, or process groups.
+Use unique temporary roots and clean up only resources created under those roots. Do not operate on unrelated real Fleet entries, sessions, services, or process groups.
 
 ## Report completion
 
-Report the agent name, the operation performed, the resulting logical/process state when relevant, and the retrieved response or artifact. Call out timeout, uncertainty, interruption, or unvalidated continuity explicitly. Keep routine reports concise and never expose private session content, credentials, or unnecessary paths.
+Report the Fleet name, the operation performed, the resulting logical/process state when relevant, and the retrieved response or artifact. Call out timeout, uncertainty, interruption, or unvalidated continuity explicitly. Keep routine reports concise and never expose private session content, credentials, or unnecessary paths.
