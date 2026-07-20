@@ -12,6 +12,15 @@
 - Added a nightly reliability workflow and an isolated soak suite covering 500 concurrent ordered sends and 100 name lifecycle cycles.
 - Reject invalid UTF-8 in stdin and Pi RPC stdout instead of silently replacing bytes at either protocol boundary.
 
+## 0.1.0-beta.6 — 2026-07-20
+
+Manual interruption-semantics correction. No intentional command-surface change.
+
+### Fixed
+
+- `receive` now returns the agent's stored failure code when the agent is failed instead of returning an older assistant response as successful completion of interrupted work.
+- Added regression coverage for the exact state observed during manual testing: a previous response exists, later work is interrupted, the Pi process is absent, and immediate receive reports `runtime_interrupted`.
+
 ## 0.1.0-beta.5 — 2026-07-20
 
 Release-pipeline reliability follow-up; includes the beta.4 receive and argument-validation fixes.

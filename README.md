@@ -8,7 +8,7 @@ create · send · receive · status · list · watch · destroy
 
 Fleet keeps a Pi process resident when possible, restores it from the same native Pi session when absent, accepts repeated steering input, and returns the latest assistant message after Pi becomes idle. Pi sessions remain under your control: Fleet references them but never copies or deletes them.
 
-> **Beta:** `0.1.0-beta.5` has passed deterministic Linux x64 fault, recovery, package, compatibility, and resource-stability tests with Pi `0.80.10`. Its tag workflow passed a fresh registry-install operational smoke, and direct isolated registry testing passed lifecycle, timeout, repeated receive, raw watch, session mutation and selectors, concurrency, Pi/runtime crash recovery, and capacity scenarios. Actual logout/reboot recovery, macOS launchd/containment, automatic upgrades, and public service-management UX are not yet release-validated.
+> **Beta:** `0.1.0-beta.6` has passed deterministic Linux x64 fault, recovery, package, compatibility, and resource-stability tests with Pi `0.80.10`. Its tag workflow requires a fresh registry-install operational smoke, and direct isolated registry testing covers lifecycle, timeout, repeated receive, raw watch, session mutation and selectors, concurrency, Pi/runtime crash recovery, capacity, and interrupted-work response handling. Actual logout/reboot recovery, macOS launchd/containment, automatic upgrades, and public service-management UX are not yet release-validated.
 
 ## Install
 
