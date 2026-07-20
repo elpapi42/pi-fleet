@@ -81,11 +81,13 @@ Complete selector-specific restoration behavior and tail the exact selected sess
 
 **Evidence:** the executable compatibility profile covers existing/missing path, exact ID, custom directory, fork, continue, and unsupported headless resume. `test/process/session-tail.test.ts` and the socket integration suite prove current-EOF, first-materialization, replacement failure, private-frame removal, and byte-identical complete-record delivery.
 
-### 7. SQLite durability and recovery
+### 7. SQLite durability and recovery — complete
 
 Replace the memory store behind the same async interface. Persist agents, ordered send certainty, process-incarnation evidence, operation results, observed session references, and latest assistant text. Never add work-cycle, per-message-response, or Fleet session ownership tables.
 
 **Exit gate:** runtime restart preserves names/latest text, never replays ambiguous sends, and prevents a second Fleet writer before old-process absence is proven.
+
+**Evidence:** shared memory/SQLite store contract tests cover agents, operations, sends, incarnations, clean and unclean reopen, persistent operation replay, and pending-versus-dispatching reconciliation. The real-Pi restart test proves latest-response polling stays passive and restore-on-send reopens the same conversation. A 1,000-operation worker-store benchmark measured about 1.4 ms p99 event-loop delay versus about 68 ms on the main thread, selecting one SQLite worker for the runtime.
 
 ### 8. Packaging and native supervision
 

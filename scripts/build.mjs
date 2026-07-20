@@ -4,6 +4,7 @@ import { build } from "esbuild";
 const entryPoints = [
   ["src/entry/cli.ts", "dist/cli.mjs", "dist/cli-meta.json"],
   ["src/entry/runtime.ts", "dist/runtime.mjs", "dist/runtime-meta.json"],
+  ["src/store/sqlite-worker.ts", "dist/sqlite-worker.mjs", "dist/sqlite-worker-meta.json"],
 ];
 
 await rm("dist", { force: true, recursive: true });

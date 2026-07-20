@@ -4,17 +4,35 @@ import { RealPiLauncher } from "../pi/adapter.js";
 import { resolveFleetPaths } from "../platform/shared/paths.js";
 import { startControlServer } from "../runtime/control-server.js";
 import { FleetService } from "../runtime/fleet-service.js";
-import { MemoryFleetStore } from "../store/memory-store.js";
+import { WorkerFleetStore } from "../store/worker-store.js";
 
 export async function runRuntime(): Promise<void> {
   const paths = resolveFleetPaths();
-  const service = new FleetService(new MemoryFleetStore(), {
-    launcher: new RealPiLauncher({
-      executable: process.env.PIFLEET_PI_EXECUTABLE ?? "pi",
-      artifactId: process.env.PIFLEET_PI_ARTIFACT_ID ?? "pi@0.80.10",
-    }),
+  let resolveService: (service: FleetService) => void;
+  let rejectService: (error: unknown) => void;
+  const serviceReady = new Promise<FleetService>((resolveReady, rejectReady) => {
+    resolveService = resolveReady;
+    rejectService = rejectReady;
   });
-  const server = await startControlServer({ socketPath: paths.socketPath, service });
+  const server = await startControlServer({ socketPath: paths.socketPath, service: serviceReady });
+
+  let store: WorkerFleetStore;
+  let service: FleetService;
+  try {
+    store = new WorkerFleetStore(paths.databasePath);
+    service = new FleetService(store, {
+      launcher: new RealPiLauncher({
+        executable: process.env.PIFLEET_PI_EXECUTABLE ?? "pi",
+        artifactId: process.env.PIFLEET_PI_ARTIFACT_ID ?? "pi@0.80.10",
+      }),
+    });
+    await service.reconcile();
+    resolveService!(service);
+  } catch (error: unknown) {
+    rejectService!(error);
+    await server.close();
+    throw error;
+  }
 
   await new Promise<void>((resolveShutdown) => {
     let closing = false;
@@ -24,6 +42,7 @@ export async function runRuntime(): Promise<void> {
       void server
         .close()
         .then(() => service.close())
+        .then(() => store.close(true))
         .finally(resolveShutdown);
     };
     process.once("SIGTERM", shutdown);

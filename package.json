@@ -19,6 +19,7 @@
     "test:process": "vitest run test/process --maxWorkers=1",
     "test:compat": "vitest run test/compat --maxWorkers=1",
     "probe:pi": "node scripts/pi-compatibility-probe.mts",
+    "benchmark:store": "npm run build && vitest run --config vitest.benchmark.config.ts",
     "build": "node scripts/build.mjs"
   },
   "files": [

@@ -24,12 +24,13 @@ export interface ControlServer {
 
 export async function startControlServer(options: {
   readonly socketPath: string;
-  readonly service: FleetService;
+  readonly service: FleetService | Promise<FleetService>;
 }): Promise<ControlServer> {
   await mkdir(dirname(options.socketPath), { recursive: true, mode: 0o700 });
   await prepareSocketPath(options.socketPath);
 
-  const server = createServer((socket) => handleConnection(socket, options.service));
+  const service = Promise.resolve(options.service);
+  const server = createServer((socket) => handleConnection(socket, service));
   server.listen(options.socketPath);
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once("listening", resolveListen);
@@ -48,7 +49,7 @@ export async function startControlServer(options: {
   };
 }
 
-function handleConnection(socket: Socket, service: FleetService): void {
+function handleConnection(socket: Socket, service: Promise<FleetService>): void {
   let handled = false;
   const abort = new AbortController();
   socket.once("close", () => abort.abort());
@@ -58,17 +59,19 @@ function handleConnection(socket: Socket, service: FleetService): void {
       if (handled) return;
       handled = true;
       stopReading();
-      void dispatch(value, service, socket, abort.signal).catch((error: unknown) => {
-        if (socket.destroyed) return;
-        const message = error instanceof Error ? error.message : "Internal runtime error";
-        writeJsonLine(socket, {
-          v: PROTOCOL_VERSION,
-          requestId: requestIdFrom(value),
-          ok: false,
-          error: { code: "invalid_request", message },
+      void service
+        .then((readyService) => dispatch(value, readyService, socket, abort.signal))
+        .catch((error: unknown) => {
+          if (socket.destroyed) return;
+          const message = error instanceof Error ? error.message : "Internal runtime error";
+          writeJsonLine(socket, {
+            v: PROTOCOL_VERSION,
+            requestId: requestIdFrom(value),
+            ok: false,
+            error: { code: "invalid_request", message },
+          });
+          socket.end();
         });
-        socket.end();
-      });
     },
     (error) => {
       writeJsonLine(socket, {

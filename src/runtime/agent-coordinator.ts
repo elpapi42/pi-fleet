@@ -16,6 +16,7 @@ export class AgentCoordinator {
     private readonly store: FleetStore,
     private agent: StoredAgent,
     readonly process: PiProcess,
+    readonly incarnationId: string,
     private readonly now: () => string,
     private readonly onProcessExit: (error: Error | null) => void,
   ) {
@@ -37,6 +38,12 @@ export class AgentCoordinator {
           },
         };
         await this.store.putAgent(this.agent);
+        await this.store.putIncarnation({
+          incarnationId: this.incarnationId,
+          agentName: this.agent.summary.name,
+          pid: this.process.pid,
+          state: "gone",
+        });
         this.#resolveIdleWaiters();
         this.onProcessExit(error);
       });
@@ -82,6 +89,12 @@ export class AgentCoordinator {
 
   async stop(): Promise<void> {
     this.#stopping = true;
+    await this.store.putIncarnation({
+      incarnationId: this.incarnationId,
+      agentName: this.agent.summary.name,
+      pid: this.process.pid,
+      state: "stopping",
+    });
     await this.process.stop();
     await this.#lane;
   }

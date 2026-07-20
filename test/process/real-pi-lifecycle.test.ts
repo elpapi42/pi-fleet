@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RealPiLauncher } from "../../src/pi/adapter.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
+import { SqliteFleetStore } from "../../src/store/sqlite-store.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -144,5 +145,81 @@ describe("real Pi in-memory lifecycle", () => {
       ok: true,
     });
     await expect(readFile(sessionPath, "utf8")).resolves.toContain("deterministic response 3");
+  }, 30_000);
+
+  it("persists the latest response and restores only when addressed after runtime restart", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-real-pi-restart-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const project = join(root, "project");
+    const agentDir = join(root, "pi-agent");
+    await mkdir(project, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const model = await deterministicServer();
+    await writeFile(
+      join(agentDir, "models.json"),
+      JSON.stringify({
+        providers: {
+          "pifleet-probe": {
+            baseUrl: `http://127.0.0.1:${model.port}/v1`,
+            api: "openai-completions",
+            apiKey: "local-placeholder",
+            models: [{ id: "deterministic", contextWindow: 4096, maxTokens: 256 }],
+          },
+        },
+      }),
+    );
+    const pids: number[] = [];
+    const launcher = () =>
+      new RealPiLauncher({
+        executable: "pi",
+        artifactId: "pi@0.80.10",
+        env: { PI_CODING_AGENT_DIR: agentDir },
+        onStart: (pid) => pids.push(pid),
+      });
+    const piArgv = [
+      "--provider",
+      "pifleet-probe",
+      "--model",
+      "deterministic",
+      "--no-extensions",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-tools",
+    ];
+    const databasePath = join(root, "fleet.sqlite");
+    const firstStore = new SqliteFleetStore(databasePath);
+    const firstService = new FleetService(firstStore, { launcher: launcher() });
+    await firstService.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
+    await firstService.send({ name: "reviewer", message: "first" }, "send-1");
+    expect(await firstService.receive({ name: "reviewer" })).toMatchObject({
+      ok: true,
+      value: { response: { text: "deterministic response 1" } },
+    });
+    await firstService.close();
+    await firstStore.close(true);
+
+    const secondStore = new SqliteFleetStore(databasePath);
+    const secondService = new FleetService(secondStore, { launcher: launcher() });
+    cleanups.push(async () => {
+      await secondService.close();
+      await secondStore.close(true);
+    });
+    expect(await secondService.status({ name: "reviewer" })).toMatchObject({
+      ok: true,
+      value: { agent: { state: "idle", process: { state: "absent" } } },
+    });
+    expect(await secondService.receive({ name: "reviewer" })).toMatchObject({
+      ok: true,
+      value: { response: { text: "deterministic response 1" } },
+    });
+    expect(pids).toHaveLength(1);
+
+    await secondService.send({ name: "reviewer", message: "second" }, "send-2");
+    expect(await secondService.receive({ name: "reviewer" })).toMatchObject({
+      ok: true,
+      value: { response: { text: "deterministic response 2" } },
+    });
+    expect(pids).toHaveLength(2);
+    await secondService.destroy({ name: "reviewer" }, "destroy-1");
   }, 30_000);
 });
