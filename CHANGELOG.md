@@ -12,6 +12,15 @@
 - Added a nightly reliability workflow and an isolated soak suite covering 500 concurrent ordered sends and 100 name lifecycle cycles.
 - Reject invalid UTF-8 in stdin and Pi RPC stdout instead of silently replacing bytes at either protocol boundary.
 
+## 0.1.0-beta.8 — 2026-07-20
+
+Publishes the beta.7 manual-testing fixes after its immutable tag failed before npm publication.
+
+### Changed
+
+- The process-tree fixture now waits for both parent and child SIGTERM handlers through an IPC readiness handshake before exposing their PIDs, removing a CI scheduling race while preserving the real escalation assertion.
+- Includes the beta.7 `watch` EPIPE and pre-dispatch restoration-failure fixes; beta.7 itself was never published to npm.
+
 ## 0.1.0-beta.7 — 2026-07-20
 
 Continued direct CLI edge-case testing. No intentional command-surface change.
