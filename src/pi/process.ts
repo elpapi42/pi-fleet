@@ -56,7 +56,7 @@ export class PiProcess {
   readonly #responses = new Map<string, ResponseWaiter>();
   readonly #listeners = new Set<(frame: PiFrame) => void>();
   readonly #exitListeners = new Set<(error: Error | null) => void>();
-  #stdoutBuffer = "";
+  #stdoutBuffer = Buffer.alloc(0);
   #stderr = "";
   #stopping = false;
   readonly #maxStdoutFrameBytes: number;
@@ -73,9 +73,8 @@ export class PiProcess {
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
-    this.#child.stdout.setEncoding("utf8");
     this.#child.stderr.setEncoding("utf8");
-    this.#child.stdout.on("data", (chunk: string) => this.#consumeStdout(chunk));
+    this.#child.stdout.on("data", (chunk: Buffer) => this.#consumeStdout(chunk));
     this.#child.stderr.on("data", (chunk: string) => {
       this.#stderr = `${this.#stderr}${chunk}`.slice(-65_536);
     });
@@ -181,28 +180,30 @@ export class PiProcess {
     await once(this.#child.stdin, "drain");
   }
 
-  #consumeStdout(chunk: string): void {
-    this.#stdoutBuffer += chunk;
+  #consumeStdout(chunk: Buffer): void {
+    this.#stdoutBuffer = Buffer.concat([this.#stdoutBuffer, chunk]);
     while (true) {
-      const newline = this.#stdoutBuffer.indexOf("\n");
+      const newline = this.#stdoutBuffer.indexOf(0x0a);
       if (newline < 0) {
-        if (Buffer.byteLength(this.#stdoutBuffer) > this.#maxStdoutFrameBytes) {
+        if (this.#stdoutBuffer.length > this.#maxStdoutFrameBytes) {
           signalProcessTree(this.pid, "SIGTERM");
         }
         return;
       }
-      if (Buffer.byteLength(this.#stdoutBuffer.slice(0, newline)) > this.#maxStdoutFrameBytes) {
+      if (newline > this.#maxStdoutFrameBytes) {
         signalProcessTree(this.pid, "SIGTERM");
         return;
       }
-      const line = this.#stdoutBuffer.slice(0, newline).replace(/\r$/, "");
-      this.#stdoutBuffer = this.#stdoutBuffer.slice(newline + 1);
-      if (line.length === 0) continue;
+      let lineBytes = this.#stdoutBuffer.subarray(0, newline);
+      this.#stdoutBuffer = this.#stdoutBuffer.subarray(newline + 1);
+      if (lineBytes.at(-1) === 0x0d) lineBytes = lineBytes.subarray(0, -1);
+      if (lineBytes.length === 0) continue;
       let frame: PiFrame;
       try {
+        const line = new TextDecoder("utf-8", { fatal: true }).decode(lineBytes);
         frame = JSON.parse(line) as PiFrame;
       } catch {
-        this.#child.kill("SIGTERM");
+        signalProcessTree(this.pid, "SIGTERM");
         return;
       }
       if (

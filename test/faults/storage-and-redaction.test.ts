@@ -122,7 +122,7 @@ describe("Pi RPC failure containment", () => {
     },
   );
 
-  it.each(["malformed", "partial", "exit"])(
+  it.each(["malformed", "invalid-utf8", "partial", "exit"])(
     "terminates requests after %s Pi output/exit",
     async (mode) => {
       const pi = await rejectsPrompt(mode);
