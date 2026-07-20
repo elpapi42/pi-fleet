@@ -33,6 +33,7 @@ npm publish --access public --tag beta --provenance
 
    ```bash
    npm ci
+   npm run audit:production
    npm run typecheck
    npm run lint
    npm run format:check
@@ -58,7 +59,7 @@ npm publish --access public --tag beta --provenance
    pifleet list
    ```
 
-The workflow rejects non-beta versions and tags that do not exactly match `package.json`. It always publishes with `--tag beta`, never `latest`.
+The workflow rejects non-beta versions and tags that do not exactly match `package.json`. It always publishes with `--tag beta`. The production-audit gate normally requires zero vulnerabilities; while managed Pi remains at `0.80.10`, it permits only the exact `brace-expansion@5.0.6` advisory `GHSA-3jxr-9vmj-r5cp` recorded in upstream issue #6882. Any changed package/version/path or any additional advisory fails closed, and the exception should be removed as soon as Pi publishes the patched closure.
 
 ## Rollback
 

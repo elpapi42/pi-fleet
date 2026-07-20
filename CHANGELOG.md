@@ -15,7 +15,27 @@
 - Align explicit stdin input with the runtime's 512 KiB message limit and document credential-environment and receive-timeout behavior before the quick start.
 - Install native services without forcing the default persistent state directory into `PIFLEET_STATE_ROOT`, preserving the default split between durable SQLite state and the private runtime socket.
 - Validated systemd user lingering, idle reboot restoration, active reboot interruption without replay, single-writer restoration, and session preservation in a disposable privileged systemd container.
-- Publication remains blocked by newly disclosed `GHSA-3jxr-9vmj-r5cp` in `brace-expansion@5.0.6` pinned by managed Pi `0.80.10`; no ineffective override or audit bypass is applied.
+- Added a fail-closed production-audit policy that permits only `GHSA-3jxr-9vmj-r5cp` at the exact `brace-expansion@5.0.6` path pinned by managed Pi `0.80.10`; every changed or additional vulnerability still blocks release.
+
+## 0.1.0-beta.9 — 2026-07-20
+
+Core product and Linux supervision validation after beta.8.
+
+### Fixed
+
+- An orderly Fleet shutdown now leaves idle agents `idle + absent` even if Pi reports a nonzero exit; active interrupted work still becomes `failed/runtime_interrupted` without replay.
+- A clean native-service install no longer forces the default persistent state directory into `PIFLEET_STATE_ROOT`, so the service and ordinary CLI agree on the private runtime socket while SQLite remains in durable state storage.
+- Explicit stdin now uses the runtime's default 512 KiB message boundary instead of accepting a larger payload that the runtime later rejects.
+- Onboarding now explains persistent credential environments before the first operational command and uses explicit receive timeout units.
+
+### Validated
+
+- Reused one real named agent across a service restart and related follow-up assignment with the same native Pi session and less re-explanation.
+- Proved user lingering, idle PID-1 restart without eager restoration, single-writer session restoration, active restart interruption without replay, explicit recovery, and session preservation in a disposable systemd container.
+
+### Security
+
+- The production audit remains fail-closed except for one deliberate exact exception: managed Pi `0.80.10` currently pins `brace-expansion@5.0.6` affected by local glob-input denial-of-service advisory `GHSA-3jxr-9vmj-r5cp`. The policy verifies the advisory, package versions, and installed path and rejects every additional or changed vulnerability. Upstream tracking is `earendil-works/pi#6882`.
 
 ## 0.1.0-beta.8 — 2026-07-20
 

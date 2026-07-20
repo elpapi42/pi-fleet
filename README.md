@@ -8,7 +8,7 @@ create · send · receive · status · list · watch · destroy
 
 Fleet keeps a Pi process resident when possible, restores it from the same native Pi session when absent, accepts repeated steering input, and returns the latest assistant message after Pi becomes idle. Pi sessions remain under your control: Fleet references them but never copies or deletes them.
 
-> **Beta:** `0.1.0-beta.8` has passed deterministic Linux x64 fault, recovery, package, compatibility, and resource-stability tests with Pi `0.80.10`. Its tag workflow requires a fresh registry-install operational smoke, and direct isolated testing covers lifecycle, timeout, repeated receive, raw watch and pipe disconnection, session mutation and selectors, concurrency, Pi/runtime crash recovery, capacity, interrupted-work responses, provider failures, extension UI cancellation, and failed restoration. Actual logout/reboot recovery, macOS launchd/containment, automatic upgrades, and public service-management UX are not yet release-validated.
+> **Beta:** `0.1.0-beta.9` has passed deterministic Linux x64 fault, recovery, package, compatibility, systemd/PID-1 restart, and resource-stability tests with Pi `0.80.10`. Its tag workflow requires a fresh registry-install operational smoke, and direct isolated testing covers lifecycle, timeout, repeated receive, raw watch and pipe disconnection, session mutation and selectors, concurrency, Pi/runtime crash recovery, capacity, interrupted-work responses, provider failures, extension UI cancellation, and failed restoration. Actual logout/reboot recovery, macOS launchd/containment, automatic upgrades, and public service-management UX are not yet release-validated.
 
 ## Install
 
@@ -184,7 +184,7 @@ Do not include API keys, message contents, session contents, or private paths un
 - launchd and macOS descendant containment remain unvalidated.
 - Real disk-exhaustion behavior and multi-hour resource growth remain unvalidated; bounded SQLite and in-process resource tests are covered.
 - Native service install/repair/uninstall exists internally but has no supported public UX yet.
-- Managed Pi `0.80.10` currently pins `brace-expansion@5.0.6`, which is covered by `GHSA-3jxr-9vmj-r5cp`; the next Fleet publication is blocked pending a patched upstream Pi artifact or a deliberately owned patched closure.
+- Managed Pi `0.80.10` pins `brace-expansion@5.0.6`, which has the local glob-input denial-of-service advisory `GHSA-3jxr-9vmj-r5cp`. Beta.9 carries a narrow, visible audit exception for only that exact package, version, path, and advisory; any other production vulnerability still fails the release gate. Upstream tracking: [earendil-works/pi#6882](https://github.com/earendil-works/pi/issues/6882).
 - Runtime upgrades are not automatic; active runtimes are not silently replaced.
 - Session tails cannot promise exactly-once behavior under arbitrary external mutation.
 - A promptless missing session path may remain physically unmaterialized until Pi writes conversation content, following native Pi behavior.

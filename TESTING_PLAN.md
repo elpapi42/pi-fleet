@@ -6,7 +6,7 @@ Prove that Pi Fleet remains safe and predictable under timeouts, crashes, malfor
 
 ## Implementation status
 
-The deterministic Linux x64 reliability pass is complete for `0.1.0-beta.8`:
+The deterministic Linux x64 reliability pass is complete for `0.1.0-beta.9`:
 
 - `test:faults` covers receive timeout/disconnect/destroy behavior, durable delivery replay boundaries, compiled-runtime `SIGKILL` recovery, cross-command serialization, Pi RPC framing/exit/timeout failures, SQLite worker death/malformed responses/corruption/locking, fail-closed dispatch, protocol malformed/oversized/unterminated input, stdin size/UTF-8 boundaries, raw-watch record boundaries, and public error redaction.
 - Reusable scripted-Pi, fault-barrier, isolated-environment, and side-effect-ledger fixtures are available under `test/fixtures` and `test/helpers`.
@@ -19,7 +19,7 @@ The beta.8 tag workflow passed its fresh-registry operational smoke. Direct isol
 
 Post-beta.8 product validation reused one real named agent across a service restart and a related second assignment with the same Pi session and materially less re-explanation. A disposable privileged Debian/systemd container then proved user lingering with no login session, clean native-service startup, idle PID-1 restart to `idle + absent` without eager Pi restoration, one later restoration of the same session, active restart to `failed/runtime_interrupted`, no provider replay, no duplicate writer, successful explicit recovery, and user-session preservation. This is strong systemd/PID-1 restart evidence but not a host-kernel reboot. The test also exposed and locally fixed idle orderly-shutdown classification and default service socket/state-root divergence.
 
-The remaining evidence gates are real disk exhaustion, a full host-kernel reboot, macOS launchd/containment, released-version matrices beyond the currently tested beta.0/beta.1 pair, and multi-hour platform resource-growth testing. Publication of the local post-beta.8 fixes is additionally blocked by newly disclosed `GHSA-3jxr-9vmj-r5cp` in `brace-expansion@5.0.6`, pinned by managed Pi `0.80.10`; release must wait for a patched upstream Pi artifact or deliberately own and validate a patched bundled closure rather than bypassing the audit.
+The remaining evidence gates are real disk exhaustion, a full host-kernel reboot, macOS launchd/containment, released-version matrices beyond the currently tested beta.0/beta.1 pair, and multi-hour platform resource-growth testing. Managed Pi `0.80.10` pins newly disclosed `GHSA-3jxr-9vmj-r5cp` in `brace-expansion@5.0.6`; beta.9 records a deliberate narrow audit exception for only that exact package, version, installed path, and advisory while upstream issue #6882 remains open. Any changed dependency identity or additional production advisory fails closed.
 
 ## Required invariants
 
