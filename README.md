@@ -23,6 +23,6 @@ npm run test:package
 npm run test:platform
 ```
 
-Linux x64 package and user-service behavior is locally validated. macOS arm64 launchd behavior, logout/reboot recovery, and process-group containment remain release gates and are not claimed as complete.
+Linux x64 package and user-service behavior is locally validated. Linux logout/reboot recovery, repair after a recorded Node executable disappears, and macOS arm64 launchd/process-group behavior remain release gates and are not claimed as complete.
 
 Pi sessions remain user-owned: service removal and `pifleet destroy` never delete them. See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for completed evidence and remaining platform gates.

@@ -97,7 +97,7 @@ Linux process groups receive bounded stdin close, SIGTERM, and SIGKILL escalatio
 
 **Local evidence:** package tests execute a materialized runtime from an unrelated directory, run create/destroy against an exact user session, prove that destroy leaves that session intact, detect artifact corruption, and inspect `npm pack`. Linux process tests prove process-group escalation, and installer integration tests prove service lifecycle commands and non-destructive removal. The full unit/integration/process/package suite passes on Linux x64.
 
-**Remaining release gate:** macOS arm64 launchd execution, logout/reboot behavior, and descendant containment have not been runtime-tested on macOS. The launchd definition is generated and unit/integration-tested only. Public release readiness also requires running the complete packaged create/send/receive/watch/restore/destroy smoke under native supervision on each claimed platform.
+**Remaining release gate:** Linux logout/reboot recovery and repair after the recorded absolute Node executable disappears have not been proven. macOS arm64 launchd execution, logout/reboot behavior, and descendant containment have not been runtime-tested on macOS; its definition is generated and unit/integration-tested only. Public release readiness also requires running the complete packaged create/send/receive/watch/restore/destroy smoke under native supervision on each claimed platform.
 
 ## Sequencing
 
