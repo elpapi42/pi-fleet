@@ -12,6 +12,21 @@
 - Added a nightly reliability workflow and an isolated soak suite covering 500 concurrent ordered sends and 100 name lifecycle cycles.
 - Reject invalid UTF-8 in stdin and Pi RPC stdout instead of silently replacing bytes at either protocol boundary.
 
+## 0.1.0-beta.2 — 2026-07-20
+
+Reliability-focused beta maintenance release. No intentional product-contract changes.
+
+### Reliability
+
+- Added deterministic fault coverage and reproducible randomized lifecycle-race soak testing.
+- Fixed timeout/cancellation classification, ambiguous-delivery recovery, no-replay behavior, and coordinator/store failure containment.
+- Validated inbound protocol majors, strict and concurrent runtime materialization, and released beta.0/beta.1 CLI-runtime compatibility.
+- Added unclean SQLite `quick_check` validation, redacted error handling, fatal UTF-8 checks, process cleanup coverage, and nightly resource-stability checks.
+
+### Validation limits
+
+- Real disk exhaustion, host logout/reboot, macOS launchd/containment, and multi-hour platform resource soak remain unvalidated.
+
 ## 0.1.0-beta.1 — 2026-07-20
 
 Release-pipeline validation beta. No product-contract changes from `0.1.0-beta.0`.

@@ -1,6 +1,6 @@
 {
   "name": "@elpapi42/pi-fleet",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "A local runtime and machine-first CLI for named Pi agents",
   "license": "MIT",
   "author": "elpapi42",

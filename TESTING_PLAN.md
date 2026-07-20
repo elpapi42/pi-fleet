@@ -6,14 +6,15 @@ Prove that Pi Fleet remains safe and predictable under timeouts, crashes, malfor
 
 ## Implementation status
 
-The first reliability-hardening pass is implemented after `v0.1.0-beta.1`:
+The deterministic Linux x64 reliability pass is complete for `0.1.0-beta.2`:
 
-- A dedicated `test:faults` suite covers receive timeout/disconnect/destroy behavior, durable delivery replay boundaries, compiled-runtime `SIGKILL` recovery, cross-command serialization, Pi RPC framing/exit/timeout failures, SQLite worker death/malformed responses/corruption/locking, fail-closed dispatch, protocol malformed/oversized/unterminated input, stdin size/UTF-8 boundaries, raw-watch record boundaries, and public error redaction.
+- `test:faults` covers receive timeout/disconnect/destroy behavior, durable delivery replay boundaries, compiled-runtime `SIGKILL` recovery, cross-command serialization, Pi RPC framing/exit/timeout failures, SQLite worker death/malformed responses/corruption/locking, fail-closed dispatch, protocol malformed/oversized/unterminated input, stdin size/UTF-8 boundaries, raw-watch record boundaries, and public error redaction.
 - Reusable scripted-Pi, fault-barrier, isolated-environment, and side-effect-ledger fixtures are available under `test/fixtures` and `test/helpers`.
-- Production fixes now distinguish receive timeout from connection cancellation, reject all current and future store calls after SQLite-worker failure, clean pending Pi requests after write failures, reject invalid UTF-8 at stdin and Pi RPC boundaries, redact unexpected public errors and Pi stderr, serialize create/send/destroy per agent, safely resume send operations when no send row was committed, return stable receive errors when destroy/interruption wins, and contain asynchronous coordinator event/store failures by stopping Pi and rejecting waiters.
-- The tag publishing workflow runs all deterministic tests through `npm test`; a separate nightly Linux workflow runs faults, process, compatibility, a 500-send/100-lifecycle soak, and the store benchmark.
+- Production fixes distinguish receive timeout from connection cancellation, reject current and future store calls after SQLite-worker failure, clean pending Pi requests after write failures, reject invalid UTF-8 at stdin and Pi RPC boundaries, redact unexpected public errors and Pi stderr, serialize create/send/destroy per agent, safely resume send operations when no send row was committed, return stable receive errors when destroy/interruption wins, and contain asynchronous coordinator/store failures by stopping Pi and rejecting waiters.
+- Runtime protocol-major validation, strict manifest/path checks, concurrent immutable materialization, released beta.0/beta.1 CLI-runtime compatibility, unclean-database `PRAGMA quick_check`, deterministic randomized lifecycle races, and bounded resource-stability soak coverage are complete.
+- The tag publishing workflow runs deterministic tests plus the released-version matrix and soak; nightly Linux runs faults, process, compatibility, version matrix, resource soak, and the store benchmark.
 
-The remaining Priority 1/2 matrix is intentionally tracked below. Full disk-exhaustion injection, randomized long-duration soak, actual logout/reboot, macOS launchd/containment, and cross-version released-package matrices require dedicated disposable environments and remain release-evidence gates rather than claims inferred from unit tests.
+The remaining evidence gates are intentionally outside this local deterministic claim: real disk exhaustion, host logout/reboot, macOS launchd/containment, released-version matrices beyond the currently tested beta.0/beta.1 pair, and multi-hour platform resource-growth testing. These require disposable platform or filesystem environments and are not inferred from the passing local suites.
 
 ## Required invariants
 
