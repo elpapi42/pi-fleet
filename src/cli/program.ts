@@ -28,7 +28,7 @@ export function createProgram(
 
   program
     .command("create")
-    .description("Provision a pi-fleet entry for a Pi session")
+    .description("Create a Pi agent with a stable local name")
     .argument("<name>")
     .argument("[instructions]")
     .option("--cwd <path>")
@@ -78,7 +78,7 @@ export function createProgram(
 
   program
     .command("status")
-    .description("Inspect a pi-fleet entry without waking Pi")
+    .description("Inspect an agent without waking Pi")
     .argument("<name>")
     .option("--human")
     .action(async (name: string, options: HumanOptions) => {
@@ -87,7 +87,7 @@ export function createProgram(
 
   program
     .command("list")
-    .description("List pi-fleet entries without waking Pi")
+    .description("List agents without waking Pi")
     .option("--human")
     .action(async (options: HumanOptions) => {
       setExitCode(await runList({ human: options.human ?? false }, context));
@@ -103,7 +103,7 @@ export function createProgram(
 
   program
     .command("destroy")
-    .description("Release pi-fleet management without deleting the Pi session")
+    .description("Destroy an agent without deleting its Pi session")
     .argument("<name>")
     .option("--human")
     .action(async (name: string, options: HumanOptions) => {

@@ -6,6 +6,7 @@
 
 - Reframed pi-fleet as Pi-native, machine-first execution infrastructure for agent systems operating beyond terminal scale rather than a human-facing background terminal tool.
 - Reworked the README and operator skill around programmatic lifecycle control, exact latest-response retrieval, native session JSONL, orchestration boundaries, and user-owned sessions.
+- Clarified that `create` creates an agent whose local name is its stable programmatic address, while its process residency and user-controlled native session remain separate concerns.
 - Removed superseded internal implementation, testing, and release-planning documents to keep repository documentation focused on the README, operator skill, and changelog.
 
 ### Reliability

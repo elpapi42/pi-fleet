@@ -1,6 +1,6 @@
 ---
 name: pi-fleet-operator
-description: Use `pifleet` as a machine-first control layer for Pi processes and sessions. Invoke this skill whenever an agent, Pi extension, orchestration workflow, or AI factory needs to provision Pi execution, delegate or steer work, inspect lifecycle state, retrieve exact latest settled assistant text, consume native session JSONL, restore a session-backed process, coordinate several Pi workers, or release pi-fleet management. Also use it for pi-fleet automation and troubleshooting even when the user says only “use pi-fleet,” “delegate this,” “ask the reviewer,” or “check the workers.”
+description: Use `pifleet` as a machine-first control layer for Pi agents and their native sessions. Invoke this skill whenever an agent, Pi extension, orchestration workflow, or AI factory needs to create Pi agents, delegate or steer work, inspect lifecycle state, retrieve exact latest settled assistant text, consume native session JSONL, restore a session-backed process, coordinate several Pi agents, or release pi-fleet management. Also use it for pi-fleet automation and troubleshooting even when the user says only “use pi-fleet,” “delegate this,” “ask the reviewer,” or “check the agents.”
 compatibility: Requires the `pifleet` executable on PATH and a supported pi-fleet installation.
 ---
 
@@ -26,30 +26,30 @@ The governing boundary is: **pi-fleet controls execution; the user controls the 
 
 Operational commands may start the central runtime. Passive inspection must not wake an individual Pi process: `status`, `list`, `watch`, and retrieval of an already settled response remain passive with respect to Pi.
 
-## Choose whether to reuse or provision
+## Choose whether to reuse or create an agent
 
-Start with `list` or `status` when continuity may already exist:
+Start with `list` or `status` when the required agent may already exist:
 
 ```bash
 pifleet list
 pifleet status NAME
 ```
 
-Reuse an existing entry when the assignment should benefit from its native Pi session. Provision a new entry only when a distinct execution resource or conversation is intended.
+Reuse an existing agent when the assignment should benefit from its native Pi session. Create a new agent only when a distinct managed agent or conversation is intended.
 
-Names are stable local programmatic addresses, not personas or workflow definitions. Use deterministic, collision-safe lowercase names of 1–63 characters matching:
+Every agent has a stable local programmatic name. The name is an address, not a persona or workflow definition. Use deterministic, collision-safe lowercase names of 1–63 characters matching:
 
 ```text
 ^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$
 ```
 
-Provision without initial work:
+Create an agent without initial work:
 
 ```bash
 pifleet create NAME --cwd /absolute/project/path
 ```
 
-Provision and submit initial work:
+Create an agent and submit initial work:
 
 ```bash
 pifleet create NAME "INITIAL INSTRUCTIONS" --cwd /absolute/project/path
@@ -124,7 +124,7 @@ Receive semantics:
 - Timeout exits `124` without canceling or mutating Pi work.
 - Canceling one held receive affects only that client.
 
-The calling agent is responsible for mapping assignments to entries and deciding how to aggregate returned results.
+The calling agent is responsible for mapping assignments to managed agents and deciding how to aggregate returned results.
 
 ## Inspect lifecycle state
 
@@ -135,7 +135,7 @@ pifleet status NAME
 pifleet list
 ```
 
-Reason separately about logical state and process residency. An `idle` entry can be `resident` or `absent`; the next send restores an absent process from its native session when safe. Never infer continuity from a PID.
+Reason separately about agent state and process residency. An `idle` agent can be `resident` or `absent`; the next send restores an absent process from the agent's native session when safe. Never infer continuity from a PID.
 
 Handle failed state conservatively:
 
@@ -146,19 +146,19 @@ Handle failed state conservatively:
 
 Ask for policy or user direction before semantically retrying uncertain work. A new send is a new instruction, not evidence that earlier work did nothing.
 
-## Coordinate multiple entries
+## Coordinate multiple agents
 
-When orchestrating several Pi processes:
+When orchestrating several Pi agents:
 
 1. Keep fan-out bounded by available capacity.
-2. Give each intended continuity boundary its own deterministic name and session.
-3. Treat lifecycle, timeout, and failure independently per entry.
+2. Give each intended continuity boundary its own agent, deterministic name, and session.
+3. Treat lifecycle, timeout, and failure independently per agent.
 4. Do not assume completion order matches submission order.
-5. Retrieve each entry's exact latest settled assistant text with `receive`; do not mine terminal-like output for answers.
+5. Retrieve each agent's exact latest settled assistant text with `receive`; do not mine terminal-like output for answers.
 6. Aggregate, compare, route, and validate results in the calling layer.
 7. Keep semantic retry and cancellation policy outside pi-fleet.
 
-pi-fleet has no scheduler queue or idle-process eviction. A process-starting operation can return `capacity_exceeded`; callers must reduce fan-out or deliberately release another entry rather than assuming hidden queueing.
+pi-fleet has no scheduler queue or idle-process eviction. A process-starting operation can return `capacity_exceeded`; callers must reduce fan-out or deliberately destroy another agent rather than assuming hidden queueing.
 
 ## Consume native session records
 
@@ -178,7 +178,7 @@ Use `status` and `list` for lifecycle information. Never infer lifecycle solely 
 
 ## Release management deliberately
 
-Release an entry only when pi-fleet should stop owning its process lifecycle:
+Destroy an agent only when pi-fleet should stop owning its process lifecycle:
 
 ```bash
 pifleet destroy NAME
@@ -186,7 +186,7 @@ pifleet destroy NAME
 
 Destroy stops the managed process and removes pi-fleet's name, operation state, and capacity ownership. It never deletes Pi sessions, configuration, credentials, extensions, skills, prompts, or project files.
 
-Do not automatically destroy a reusable entry merely because one assignment finished. For intentionally temporary entries, retrieve the required result or artifact before releasing management.
+Do not automatically destroy a reusable agent merely because one assignment finished. For intentionally temporary agents, retrieve the required result or artifact before releasing management.
 
 ## Respect transport contracts
 
@@ -203,11 +203,11 @@ For automation:
 - keep `watch` bytes untouched when fidelity matters;
 - treat downstream `watch` EPIPE as normal client disconnection;
 - avoid concurrency assumptions based on send-to-response correlation;
-- use the same entry for related work only when retained session context is intentional.
+- use the same agent for related work only when retained session context is intentional.
 
 ## Isolate testing
 
-Never test against the user's default pi-fleet state unless explicitly asked to exercise real entries. Isolate experimental or destructive checks with unique temporary values for at least:
+Never test against the user's default pi-fleet state unless explicitly asked to exercise real agents. Isolate experimental or destructive checks with unique temporary values for at least:
 
 ```text
 HOME
@@ -218,7 +218,7 @@ PI_CODING_AGENT_DIR
 PIFLEET_DISABLE_REGISTERED_SERVICE=1
 ```
 
-Clean up only resources created under those roots. Do not operate on unrelated pi-fleet entries, sessions, services, or process groups.
+Clean up only resources created under those roots. Do not operate on unrelated pi-fleet agents, sessions, services, or process groups.
 
 ## Report outcomes
 

@@ -2,15 +2,15 @@
 
 **Pi orchestration beyond terminal scale.**
 
-pi-fleet is a local, machine-first runtime for software that controls Pi processes and sessions. It provides precise lifecycle control, exact latest-response retrieval, and native structured session data without scraping terminals.
+pi-fleet is a local, machine-first runtime for software that orchestrates Pi agents and their native sessions. It provides precise lifecycle control, exact latest-response retrieval, and native structured session data without scraping terminals.
 
 **Control execution. Own the session. Build the orchestration above it.**
 
 ## Why pi-fleet exists
 
-A terminal pane is useful observability for one Pi process. It is not an observability model for dozens or hundreds of them.
+A terminal pane is useful observability for one Pi agent. It is not an observability model for dozens or hundreds of them.
 
-Terminal multiplexers such as tmux, cmux, and Herdr expose processes, panes, and rendered output. Agent software needs Pi-aware state: whether Pi is working or idle, whether input was accepted, which native session is active, what the exact latest settled assistant response was, and whether interrupted work can be retried safely.
+Terminal multiplexers such as tmux, cmux, and Herdr expose processes, panes, and rendered output. Agent software needs Pi-aware state: whether an agent is working or idle, whether input was accepted, which native session it is using, what its exact latest settled assistant response was, and whether interrupted work can be retried safely.
 
 | Terminal multiplexers (tmux, cmux, Herdr)  | pi-fleet                                   |
 | ------------------------------------------ | ------------------------------------------ |
@@ -31,10 +31,11 @@ Pi extensions · agents · orchestrators · AI software factories
                          pifleet CLI
                               │
                     local pi-fleet runtime
-                       │      │      │
-                      Pi     Pi     Pi
-                       │      │      │
-                native user-controlled sessions
+                       ├── Pi agent ── native session
+                       ├── Pi agent ── native session
+                       └── Pi agent ── native session
+
+                 sessions remain user-controlled
 ```
 
 pi-fleet is infrastructure **for orchestration**, not an orchestration framework. It owns execution lifecycle, process availability, ordered communication, restoration references, exact result retrieval, and explicit failure state.
@@ -44,8 +45,8 @@ Callers own roles, task decomposition, scheduling, semantic retries, approval, a
 Typical callers include:
 
 - an existing agent delegating through the [pi-fleet operator skill](./SKILL.md);
-- a Pi extension coordinating specialized workers;
-- a local service collecting exact results from many Pi processes;
+- a Pi extension coordinating specialized agents;
+- a local service collecting exact results from many Pi agents;
 - an AI software factory implementing its own scheduling and quality gates;
 - observability, audit, or knowledge systems consuming native Pi sessions.
 
@@ -58,13 +59,13 @@ pi-fleet currently supports Linux x64 with Node.js `^22.19.0 || ^24.0.0` and nor
 ```bash
 npm install --global @elpapi42/pi-fleet@beta
 
-# Provision an addressable Pi execution resource.
+# Create an agent with the stable programmatic address "reviewer".
 pifleet create reviewer --cwd "$PWD" > created.json
 
 # Submit work. While Pi is active, later sends use Pi steering semantics.
 pifleet send reviewer "Review the authentication changes" > accepted.json
 
-# Inspect lifecycle without waking an absent Pi process.
+# Inspect the agent without restoring an absent Pi process.
 pifleet status reviewer > status.json
 
 # Wait for idle and retrieve the exact latest assistant response.
@@ -84,7 +85,9 @@ Configure provider credentials before the first operational pi-fleet command. Co
 
 **pi-fleet controls execution. You control the session.**
 
-Pi sessions are not opaque pi-fleet data. They remain native, user-controlled resources that can support independent observability, auditing, provenance, search, evaluation, and knowledge mining.
+`create` creates an agent: a durable logical resource with a stable local name, a native Pi session, and a managed process lifecycle. Its Pi process may be resident or absent, but the agent remains addressable until `destroy`.
+
+The agent's session is not opaque pi-fleet data. It remains a native, user-controlled resource that can support independent observability, auditing, provenance, search, evaluation, and knowledge mining.
 
 - Use Pi's normal session storage or provide exact paths, IDs, directories, forks, and continuation selectors.
 - pi-fleet records the concrete session selected by Pi only so it can restore and observe execution.
@@ -134,14 +137,14 @@ pifleet destroy NAME [--human]
 
 | Purpose                | Commands         | Semantics                                                                 |
 | ---------------------- | ---------------- | ------------------------------------------------------------------------- |
-| Provision              | `create`         | Reserve a stable local name and start Pi, optionally with initial input   |
+| Create an agent        | `create`         | Assign a stable local name and start Pi, optionally with initial input    |
 | Communicate            | `send`           | Start ordinary work while idle or steer active work at Pi's next decision |
 | Retrieve exact results | `receive`        | Wait for idle and return Pi's latest assistant text                       |
 | Inspect lifecycle      | `status`, `list` | Observe logical and process state without restoring Pi                    |
 | Observe session data   | `watch`          | Stream newly appended native session JSONL records                        |
 | Release execution      | `destroy`        | Stop pi-fleet management without deleting the Pi session                  |
 
-Names are 1–63 lowercase letters, digits, or interior hyphens. A name is a stable local programmatic address—not a persona, role, or second source of truth.
+Every agent has a local name of 1–63 lowercase letters, digits, or interior hyphens. The name is its stable programmatic address—not a persona, role, or second source of truth.
 
 ### Send and receive
 
@@ -160,7 +163,7 @@ pifleet create researcher - --cwd "$PWD" < instructions.md
 
 ### Lifecycle and recovery
 
-An idle Pi process normally remains resident. If it is absent, a later `send` restores the concrete native session when safe. `status`, `list`, `watch`, and retrieval of an already settled response do not restore Pi.
+An idle agent's Pi process normally remains resident. If the process is absent, a later `send` restores the agent from its concrete native session when safe. `status`, `list`, `watch`, and retrieval of an already settled response do not restore the process.
 
 Inspect failed state before deciding what the orchestrator should do:
 
@@ -197,7 +200,7 @@ Pi sessions:     Pi's normal ~/.pi storage or the exact selected path
 
 `npx @elpapi42/pi-fleet@beta` is suitable for evaluation; global installation is recommended for continued use. pi-fleet materializes its runtime independently of the npm cache or installation, so evaluation can leave runtime and state behind.
 
-Before uninstalling, release entries you no longer want pi-fleet to manage:
+Before uninstalling, destroy agents you no longer want pi-fleet to manage:
 
 ```bash
 pifleet list
