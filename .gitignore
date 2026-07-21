@@ -1,5 +1,6 @@
-# Required local code index
+# Required local code index and upstream Pi source reference
 /.codegraph/
+/pi/
 
 # Node/build outputs
 node_modules/
