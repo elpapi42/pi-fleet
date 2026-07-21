@@ -1,12 +1,5 @@
-# Existing local research, source clones, and design artifacts
+# Required local code index
 /.codegraph/
-/pi/
-/herdr/
-/research/
-/PROPOSAL.md
-/PRIOR_ART.md
-/DAEMON_CLI_PROPOSAL.md
-/TYPESCRIPT_IMPLEMENTATION_PROPOSAL.md
 
 # Node/build outputs
 node_modules/

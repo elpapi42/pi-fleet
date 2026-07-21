@@ -239,8 +239,6 @@ npm run test:platform
 npm run test:soak
 ```
 
-See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md) for architecture and release gates, and [`TESTING_PLAN.md`](./TESTING_PLAN.md) for fault injection, crash recovery, concurrency, privacy, and soak testing.
-
 ## License
 
 MIT © elpapi42

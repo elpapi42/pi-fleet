@@ -98,7 +98,9 @@ export function validatePersistentRpcArgv(piArgv: readonly string[]): void {
       );
     }
     if (token.startsWith("@")) {
-      throw new Error("Pi @file prompt delivery is incompatible with pi-fleet-managed send ordering");
+      throw new Error(
+        "Pi @file prompt delivery is incompatible with pi-fleet-managed send ordering",
+      );
     }
     if (PI_VALUE_OPTIONS.has(token)) {
       if (piArgv[index + 1] === undefined) throw new Error(`${token} requires a value`);
