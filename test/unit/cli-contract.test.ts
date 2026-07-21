@@ -51,6 +51,7 @@ function fakeClient(overrides: Partial<FleetClient> = {}): FleetClient {
       yield err<FleetClientError>({ code: "internal_error", message: "unexpected" });
     },
     destroy: unavailable,
+    compact: unavailable,
     ...overrides,
   };
 }
@@ -186,6 +187,25 @@ describe("public CLI contract", () => {
       124,
     );
     expect(harness.output().stdout).toBe("");
+  });
+
+  it("supports compact through JSON and human public formats", async () => {
+    const client = fakeClient({
+      compact: async () =>
+        ok({
+          schemaVersion: 1,
+          type: "agent.compacted",
+          agent: { id: agent.id, name: agent.name },
+          compaction: { tokensBefore: 1200, estimatedTokensAfter: 300 },
+        }),
+    });
+    const json = createHarness(client);
+    expect(await runCli(["compact", "reviewer"], json.dependencies)).toBe(0);
+    expect(JSON.parse(json.output().stdout)).toMatchObject({ type: "agent.compacted" });
+
+    const human = createHarness(client);
+    expect(await runCli(["compact", "reviewer", "--human"], human.dependencies)).toBe(0);
+    expect(human.output().stdout).toBe("reviewer: compacted (1200 → 300 estimated tokens)\n");
   });
 
   it("supports status, list, and destroy through their public formats", async () => {

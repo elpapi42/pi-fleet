@@ -6,6 +6,25 @@ import { signalProcessTree, waitForProcessGroupExit } from "../platform/runtime/
 
 const DEFAULT_MAX_STDOUT_FRAME_BYTES = 8 * 1024 * 1024;
 
+export class PiRpcRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PiRpcRejectedError";
+  }
+}
+
+export interface PiCompactionResult {
+  readonly tokensBefore: number;
+  readonly estimatedTokensAfter?: number;
+}
+
+export class PiCompactionError extends Error {
+  constructor(readonly code: "nothing_to_compact" | "compaction_failed") {
+    super(code);
+    this.name = "PiCompactionError";
+  }
+}
+
 export class PiCleanupUncertainError extends Error {
   constructor(
     readonly pid: number,
@@ -132,6 +151,37 @@ export class PiProcess {
     await this.request({ type: "prompt", message, streamingBehavior: "steer" });
   }
 
+  async compact(): Promise<PiCompactionResult> {
+    let frame: PiFrame;
+    try {
+      frame = await this.request({ type: "compact" });
+    } catch (error: unknown) {
+      if (!(error instanceof PiRpcRejectedError)) throw error;
+      const code =
+        error.message === "Already compacted" || error.message.startsWith("Nothing to compact")
+          ? "nothing_to_compact"
+          : "compaction_failed";
+      throw new PiCompactionError(code);
+    }
+    const tokensBefore = frame.data?.tokensBefore;
+    const estimatedTokensAfter = frame.data?.estimatedTokensAfter;
+    if (
+      typeof tokensBefore !== "number" ||
+      !Number.isFinite(tokensBefore) ||
+      tokensBefore < 0 ||
+      (estimatedTokensAfter !== undefined &&
+        (typeof estimatedTokensAfter !== "number" ||
+          !Number.isFinite(estimatedTokensAfter) ||
+          estimatedTokensAfter < 0))
+    ) {
+      throw new Error("Pi returned an invalid compaction result");
+    }
+    return {
+      tokensBefore,
+      ...(estimatedTokensAfter === undefined ? {} : { estimatedTokensAfter }),
+    };
+  }
+
   async getLastAssistantText(): Promise<string | null> {
     const frame = await this.request({ type: "get_last_assistant_text" });
     return typeof frame.data?.text === "string" ? frame.data.text : null;
@@ -158,8 +208,9 @@ export class PiProcess {
       }
     }
     const frame = await response;
-    if (frame.success !== true)
-      throw new Error(frame.error ?? `Pi rejected ${String(command.type)}`);
+    if (frame.success !== true) {
+      throw new PiRpcRejectedError(frame.error ?? `Pi rejected ${String(command.type)}`);
+    }
     return frame;
   }
 

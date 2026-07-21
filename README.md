@@ -142,6 +142,7 @@ pifleet receive NAME [--timeout DURATION] [--human]
 pifleet status NAME [--human]
 pifleet list [--human]
 pifleet watch NAME
+pifleet compact NAME [--human]
 pifleet destroy NAME [--human]
 ```
 
@@ -152,6 +153,7 @@ pifleet destroy NAME [--human]
 | Retrieve exact results | `receive`        | Wait for idle and return Pi's latest assistant text                       |
 | Inspect lifecycle      | `status`, `list` | Observe logical and process state without restoring Pi                    |
 | Observe session data   | `watch`          | Stream newly appended native session JSONL records                        |
+| Compact context        | `compact`        | Compact an idle agent with Pi's native compaction RPC                     |
 | Release execution      | `destroy`        | Stop pi-fleet management without deleting the Pi session                  |
 
 Every agent has a local name of 1–63 lowercase letters, digits, or interior hyphens. The name is its stable programmatic address—not a persona, role, or second source of truth.
@@ -172,6 +174,8 @@ pifleet create researcher - --cwd "$PWD" < instructions.md
 ```
 
 ### Lifecycle and recovery
+
+`compact` is an explicit process-starting action for an idle absent agent. It restores the exact native session when capacity allows, then uses Pi's typed compaction RPC and returns bounded token metrics. It checks authoritative Pi state immediately before invocation and refuses observed active, queued, restoring, or already-compacting work. Pi does not provide an atomic idle-only compact operation, so trusted extension activity beginning in the narrow interval after that check can still encounter Pi's native abort-first compaction behavior. During compaction the agent is not idle; `receive` waits, and `watch` remains a raw native session tail containing Pi's appended compaction record. Treat `compaction_uncertain` as potentially applied and never retry it automatically.
 
 An idle agent's Pi process normally remains resident. If the process is absent, a later `send` restores the agent from its concrete native session when safe. `status`, `list`, `watch`, and retrieval of an already settled response do not restore the process.
 
@@ -194,7 +198,7 @@ Lifecycle and status are available through pi-fleet's finite JSON commands. `wat
 
 ## Runtime, data, and maintenance
 
-The short-lived CLI connects to one private per-user runtime. On first operational use, pi-fleet verifies and materializes an immutable runtime release, then starts it in the background. A registered native service is preferred when present; service management remains experimental and outside the seven-command beta interface.
+The short-lived CLI connects to one private per-user runtime. On first operational use, pi-fleet verifies and materializes an immutable runtime release, then starts it in the background. A registered native service is preferred when present; service management remains experimental and outside the public beta command interface.
 
 Linux defaults:
 

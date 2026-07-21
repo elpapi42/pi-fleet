@@ -1,4 +1,4 @@
-import type { AgentSummary } from "../client/fleet-client.js";
+import type { AgentSummary, FleetClientError } from "../client/fleet-client.js";
 import type { AgentLaunchProfile } from "../pi/launch-profile.js";
 
 export interface StoredAgent {
@@ -10,7 +10,7 @@ export interface StoredAgent {
 
 export interface StoredOperation {
   readonly operationId: string;
-  readonly method: "create" | "send" | "destroy";
+  readonly method: "create" | "send" | "destroy" | "compact";
   readonly fingerprint: string;
   readonly state: "pending" | "completed";
   readonly result: unknown | null;
@@ -22,6 +22,18 @@ export interface StoredIncarnation {
   readonly agentName: string;
   readonly pid: number | null;
   readonly state: "starting" | "live" | "stopping" | "cleanup_uncertain" | "gone";
+}
+
+export interface StoredCompact {
+  readonly compactId: string;
+  readonly agentName: string;
+  readonly state: "pending" | "dispatching" | "completed" | "failed" | "uncertain";
+  readonly requestedAt: string;
+  readonly result?: {
+    readonly tokensBefore: number;
+    readonly estimatedTokensAfter?: number;
+  };
+  readonly error?: FleetClientError;
 }
 
 export interface StoredSend {
@@ -49,6 +61,10 @@ export interface FleetStore {
   nextSendOrdinal(agentName: string): Promise<number>;
   putSend(send: StoredSend): Promise<void>;
   listNonterminalSends(): Promise<readonly StoredSend[]>;
+
+  getCompact(compactId: string): Promise<StoredCompact | null>;
+  putCompact(compact: StoredCompact): Promise<void>;
+  listNonterminalCompacts(): Promise<readonly StoredCompact[]>;
 
   putIncarnation(incarnation: StoredIncarnation): Promise<void>;
   listActiveIncarnations(): Promise<readonly StoredIncarnation[]>;

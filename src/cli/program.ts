@@ -2,6 +2,7 @@ import { Command } from "commander";
 
 import { PRODUCT_BINARY, PRODUCT_VERSION } from "../shared/product-identity.js";
 import type { CommandContext } from "./context.js";
+import { runCompact } from "./commands/compact.js";
 import { runCreate } from "./commands/create.js";
 import { runDestroy } from "./commands/destroy.js";
 import { runList } from "./commands/list.js";
@@ -99,6 +100,15 @@ export function createProgram(
     .argument("<name>")
     .action(async (name: string) => {
       setExitCode(await runWatch(name, context));
+    });
+
+  program
+    .command("compact")
+    .description("Compact an idle Pi agent session")
+    .argument("<name>")
+    .option("--human")
+    .action(async (name: string, options: HumanOptions) => {
+      setExitCode(await runCompact({ name, human: options.human ?? false }, context));
     });
 
   program

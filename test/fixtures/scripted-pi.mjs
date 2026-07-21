@@ -25,6 +25,18 @@ lines.on("line", (line) => {
     return;
   }
 
+  if (mode === "normal" && request.type === "compact") {
+    process.stdout.write(
+      `${response(request.id, "compact", {
+        summary: "PRIVATE_COMPACTION_SUMMARY",
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1200,
+        estimatedTokensAfter: 300,
+      })}\n`,
+    );
+    return;
+  }
+
   switch (mode) {
     case "timeout":
       process.stderr.write(process.env.PIFLEET_TEST_CANARY ?? "private-stderr-canary");

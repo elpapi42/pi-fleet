@@ -15,6 +15,27 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+function downgradeDatabaseToSchemaV1(path: string): void {
+  const database = new DatabaseSync(path);
+  database.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE operations RENAME TO operations_v2;
+    CREATE TABLE operations(
+      operation_id TEXT PRIMARY KEY,
+      method TEXT NOT NULL CHECK(method IN ('create','send','destroy')),
+      state TEXT NOT NULL CHECK(state IN ('pending','completed')),
+      data_json TEXT NOT NULL CHECK(json_valid(data_json))
+    );
+    INSERT INTO operations(operation_id, method, state, data_json)
+      SELECT operation_id, method, state, data_json FROM operations_v2;
+    DROP TABLE operations_v2;
+    DROP TABLE compact_records;
+    DELETE FROM schema_migrations WHERE version = 2;
+    COMMIT;
+  `);
+  database.close();
+}
+
 function agent(): StoredAgent {
   const launch = observeSession(
     createLaunchProfile({ cwd: "/workspace", piArgv: [], piArtifactId: "pi@0.80.10" }),
@@ -60,6 +81,18 @@ async function exerciseStore(store: FleetStore): Promise<void> {
   });
   expect(await store.listNonterminalSends()).toHaveLength(1);
 
+  await store.putCompact({
+    compactId: "compact-1",
+    agentName: "reviewer",
+    state: "completed",
+    requestedAt: "2026-01-01T00:00:00.000Z",
+    result: { tokensBefore: 1200, estimatedTokensAfter: 300 },
+  });
+  expect(await store.getCompact("compact-1")).toMatchObject({
+    state: "completed",
+    result: { tokensBefore: 1200, estimatedTokensAfter: 300 },
+  });
+
   await store.putIncarnation({
     incarnationId: "incarnation-1",
     agentName: "reviewer",
@@ -100,6 +133,10 @@ describe("FleetStore contract", () => {
     });
     expect(await second.getOperation("operation-1")).toMatchObject({ state: "completed" });
     expect(await second.getSend("send-1")).toMatchObject({ state: "dispatching" });
+    expect(await second.getCompact("compact-1")).toMatchObject({
+      state: "completed",
+      result: { tokensBefore: 1200, estimatedTokensAfter: 300 },
+    });
     await second.close();
   });
 
@@ -161,6 +198,99 @@ describe("FleetStore contract", () => {
     });
   });
 
+  it("does not replay an interrupted compaction during recovery", async () => {
+    const store = new MemoryFleetStore();
+    const service = new FleetService(store, () => "2026-01-01T00:00:00.000Z");
+    await service.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, "create-1");
+    await store.putOperation({
+      operationId: "compact-1",
+      method: "compact",
+      fingerprint: JSON.stringify({ name: "reviewer" }),
+      state: "pending",
+      result: null,
+    });
+    await store.putCompact({
+      compactId: "compact-1",
+      agentName: "reviewer",
+      state: "dispatching",
+      requestedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    await service.reconcile();
+
+    expect(await store.getCompact("compact-1")).toMatchObject({ state: "uncertain" });
+    expect(await store.getOperation("compact-1")).toMatchObject({
+      state: "completed",
+      result: { ok: false, error: { code: "compaction_uncertain" } },
+    });
+  });
+
+  it("migrates a schema-v1 operation ledger without changing existing results", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-migrate-v1-"));
+    roots.push(root);
+    const path = join(root, "fleet.sqlite");
+    const initial = new SqliteFleetStore(path);
+    for (const method of ["create", "send", "destroy"] as const) {
+      await initial.putOperation({
+        operationId: `existing-${method}`,
+        method,
+        fingerprint: JSON.stringify({ name: "reviewer", method }),
+        state: method === "send" ? "pending" : "completed",
+        result: method === "send" ? null : { ok: true, value: { method } },
+      });
+    }
+    await initial.close();
+    downgradeDatabaseToSchemaV1(path);
+
+    const migrated = new SqliteFleetStore(path);
+    for (const method of ["create", "send", "destroy"] as const) {
+      expect(await migrated.getOperation(`existing-${method}`)).toMatchObject({
+        method,
+        state: method === "send" ? "pending" : "completed",
+      });
+    }
+    await migrated.putOperation({
+      operationId: "new-compact",
+      method: "compact",
+      fingerprint: JSON.stringify({ name: "reviewer" }),
+      state: "pending",
+      result: null,
+    });
+    expect(await migrated.getOperation("new-compact")).toMatchObject({ method: "compact" });
+    await migrated.close();
+  });
+
+  it("rolls back a failed schema-v1 compact migration", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-migrate-rollback-"));
+    roots.push(root);
+    const path = join(root, "fleet.sqlite");
+    const initial = new SqliteFleetStore(path);
+    await initial.putOperation({
+      operationId: "preserved-operation",
+      method: "send",
+      fingerprint: "preserved",
+      state: "pending",
+      result: null,
+    });
+    await initial.close();
+    downgradeDatabaseToSchemaV1(path);
+    const incompatible = new DatabaseSync(path);
+    incompatible.exec("CREATE TABLE compact_records(unexpected TEXT)");
+    incompatible.close();
+
+    expect(() => new SqliteFleetStore(path)).toThrow();
+    const inspected = new DatabaseSync(path, { readOnly: true });
+    expect(
+      inspected
+        .prepare("SELECT method FROM operations WHERE operation_id = ?")
+        .get("preserved-operation"),
+    ).toEqual({ method: "send" });
+    expect(
+      inspected.prepare("SELECT MAX(version) AS version FROM schema_migrations").get(),
+    ).toEqual({ version: 1 });
+    inspected.close();
+  });
+
   it("rejects changed migration checksums and newer schemas", async () => {
     const root = await mkdtemp(join(tmpdir(), "pifleet-store-"));
     roots.push(root);
@@ -180,7 +310,7 @@ describe("FleetStore contract", () => {
     const newerDatabase = new DatabaseSync(newerPath);
     newerDatabase
       .prepare(
-        "INSERT INTO schema_migrations(version, checksum, applied_at) VALUES(2, 'future', ?)",
+        "INSERT INTO schema_migrations(version, checksum, applied_at) VALUES(3, 'future', ?)",
       )
       .run(new Date().toISOString());
     newerDatabase.close();

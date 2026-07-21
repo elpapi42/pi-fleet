@@ -1,6 +1,7 @@
 import type {
   FleetStore,
   StoredAgent,
+  StoredCompact,
   StoredIncarnation,
   StoredOperation,
   StoredSend,
@@ -10,6 +11,7 @@ export class MemoryFleetStore implements FleetStore {
   readonly #agents = new Map<string, StoredAgent>();
   readonly #operations = new Map<string, StoredOperation>();
   readonly #sends = new Map<string, StoredSend>();
+  readonly #compacts = new Map<string, StoredCompact>();
   readonly #incarnations = new Map<string, StoredIncarnation>();
 
   async createAgent(agent: StoredAgent): Promise<boolean> {
@@ -76,6 +78,20 @@ export class MemoryFleetStore implements FleetStore {
   async listNonterminalSends(): Promise<readonly StoredSend[]> {
     return [...this.#sends.values()].filter(
       (send) => send.state === "pending" || send.state === "dispatching",
+    );
+  }
+
+  async getCompact(compactId: string): Promise<StoredCompact | null> {
+    return this.#compacts.get(compactId) ?? null;
+  }
+
+  async putCompact(compact: StoredCompact): Promise<void> {
+    this.#compacts.set(compact.compactId, compact);
+  }
+
+  async listNonterminalCompacts(): Promise<readonly StoredCompact[]> {
+    return [...this.#compacts.values()].filter(
+      (compact) => compact.state === "pending" || compact.state === "dispatching",
     );
   }
 

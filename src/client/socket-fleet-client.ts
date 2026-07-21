@@ -6,6 +6,8 @@ import { PROTOCOL_VERSION } from "../protocol/version.js";
 import { err, ok, type Result } from "../shared/result.js";
 import type {
   CreateInput,
+  CompactInput,
+  CompactResult,
   CreateResult,
   DestroyInput,
   DestroyResult,
@@ -130,6 +132,13 @@ export class SocketFleetClient implements FleetClient {
     return this.#request("agent.destroy", input, options);
   }
 
+  compact(
+    input: CompactInput,
+    options: MutationOptions,
+  ): Promise<Result<CompactResult, FleetClientError>> {
+    return this.#request("agent.compact", input, options);
+  }
+
   async #request<T>(
     method: string,
     params: object,
@@ -165,6 +174,17 @@ export class SocketFleetClient implements FleetClient {
         });
       }
       if (frame.ok) return ok(frame.result as T);
+      if (
+        method === "agent.compact" &&
+        isErrorRecord(frame.error) &&
+        frame.error.code === "invalid_request" &&
+        frame.error.message === "Invalid protocol request: /method"
+      ) {
+        return err({
+          code: "protocol_incompatible",
+          message: "The running pi-fleet runtime does not support compact; upgrade or repair it.",
+        });
+      }
       if (isErrorRecord(frame.error)) return err(frame.error);
       return err({ code: "protocol_error", message: "Runtime returned an invalid error." });
     } catch (error: unknown) {

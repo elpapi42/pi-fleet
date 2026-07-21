@@ -1,6 +1,12 @@
 import { parentPort, workerData } from "node:worker_threads";
 
-import type { StoredAgent, StoredIncarnation, StoredOperation, StoredSend } from "./fleet-store.js";
+import type {
+  StoredAgent,
+  StoredCompact,
+  StoredIncarnation,
+  StoredOperation,
+  StoredSend,
+} from "./fleet-store.js";
 import { SqliteFleetStore } from "./sqlite-store.js";
 
 interface WorkerRequest {
@@ -55,6 +61,12 @@ async function dispatch(request: WorkerRequest): Promise<unknown> {
       return store.putSend(request.args[0] as StoredSend);
     case "listNonterminalSends":
       return store.listNonterminalSends();
+    case "getCompact":
+      return store.getCompact(request.args[0] as string);
+    case "putCompact":
+      return store.putCompact(request.args[0] as StoredCompact);
+    case "listNonterminalCompacts":
+      return store.listNonterminalCompacts();
     case "putIncarnation":
       return store.putIncarnation(request.args[0] as StoredIncarnation);
     case "listActiveIncarnations":

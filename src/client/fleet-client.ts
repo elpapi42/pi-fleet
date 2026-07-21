@@ -42,6 +42,10 @@ export interface DestroyInput {
   readonly name: string;
 }
 
+export interface CompactInput {
+  readonly name: string;
+}
+
 export interface OperationIdentity {
   readonly operationId: string;
   readonly createdAt: string;
@@ -100,6 +104,16 @@ export interface DestroyResult {
   readonly agent: { readonly id: string; readonly name: string };
 }
 
+export interface CompactResult {
+  readonly schemaVersion: 1;
+  readonly type: "agent.compacted";
+  readonly agent: { readonly id: string; readonly name: string };
+  readonly compaction: {
+    readonly tokensBefore: number;
+    readonly estimatedTokensAfter?: number;
+  };
+}
+
 export interface RawSessionChunk {
   readonly bytes: Uint8Array;
 }
@@ -127,6 +141,10 @@ export interface FleetClient {
     input: DestroyInput,
     options: MutationOptions,
   ): Promise<Result<DestroyResult, FleetClientError>>;
+  compact(
+    input: CompactInput,
+    options: MutationOptions,
+  ): Promise<Result<CompactResult, FleetClientError>>;
 }
 
 export interface CliIo {

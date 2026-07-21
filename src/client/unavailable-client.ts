@@ -16,4 +16,5 @@ export const unavailableFleetClient: FleetClient = {
     yield err(unavailable());
   },
   destroy: async () => err(unavailable()),
+  compact: async () => err(unavailable()),
 };

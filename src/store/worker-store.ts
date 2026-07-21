@@ -4,6 +4,7 @@ import { Worker } from "node:worker_threads";
 import type {
   FleetStore,
   StoredAgent,
+  StoredCompact,
   StoredIncarnation,
   StoredOperation,
   StoredSend,
@@ -91,6 +92,18 @@ export class WorkerFleetStore implements FleetStore {
 
   listNonterminalSends(): Promise<readonly StoredSend[]> {
     return this.#call("listNonterminalSends", []);
+  }
+
+  getCompact(compactId: string): Promise<StoredCompact | null> {
+    return this.#call("getCompact", [compactId]);
+  }
+
+  async putCompact(compact: StoredCompact): Promise<void> {
+    await this.#call("putCompact", [compact]);
+  }
+
+  listNonterminalCompacts(): Promise<readonly StoredCompact[]> {
+    return this.#call("listNonterminalCompacts", []);
   }
 
   async putIncarnation(incarnation: StoredIncarnation): Promise<void> {

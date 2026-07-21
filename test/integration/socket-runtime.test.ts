@@ -99,6 +99,79 @@ describe("private socket runtime", () => {
     });
   });
 
+  it("maps an older runtime rejecting compact to protocol_incompatible", async () => {
+    const fixture = await protocolFixture((requestId) => ({
+      v: PROTOCOL_VERSION,
+      requestId,
+      ok: false,
+      error: { code: "invalid_request", message: "Invalid protocol request: /method" },
+    }));
+
+    expect(
+      await fixture.client.compact(
+        { name: "reviewer" },
+        {
+          signal,
+          operation: { operationId: "compact-old-runtime", createdAt: operation.createdAt },
+        },
+      ),
+    ).toMatchObject({ ok: false, error: { code: "protocol_incompatible" } });
+    await fixture.closed;
+  });
+
+  it("preserves current-runtime compact validation errors", async () => {
+    const fixture = await protocolFixture((requestId) => ({
+      v: PROTOCOL_VERSION,
+      requestId,
+      ok: false,
+      error: { code: "invalid_request", message: "Invalid protocol request: /operation" },
+    }));
+
+    expect(
+      await fixture.client.compact(
+        { name: "reviewer" },
+        { signal, operation: { operationId: "compact-invalid", createdAt: operation.createdAt } },
+      ),
+    ).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+    await fixture.closed;
+  });
+
+  it("compacts an idle agent through the real protocol and replays the operation", async () => {
+    const { client } = await harness();
+    await client.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, { signal, operation });
+    const compactOperation = { operationId: "compact-1", createdAt: operation.createdAt };
+    const first = await client.compact(
+      { name: "reviewer" },
+      { signal, operation: compactOperation },
+    );
+    const retry = await client.compact(
+      { name: "reviewer" },
+      { signal, operation: compactOperation },
+    );
+    expect(first).toMatchObject({
+      ok: true,
+      value: { type: "agent.compacted", agent: { name: "reviewer" } },
+    });
+    expect(retry).toEqual(first);
+  });
+
+  it("rejects compact when the agent is not idle", async () => {
+    const { client, store } = await harness();
+    await client.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, { signal, operation });
+    const stored = await store.getAgent("reviewer");
+    if (stored === null) throw new Error("missing stored agent");
+    await store.putAgent({
+      ...stored,
+      summary: { ...stored.summary, state: "working", process: { state: "resident" } },
+    });
+    expect(
+      await client.compact(
+        { name: "reviewer" },
+        { signal, operation: { operationId: "compact-busy", createdAt: operation.createdAt } },
+      ),
+    ).toMatchObject({ ok: false, error: { code: "agent_busy" } });
+  });
+
   it("replays one operation result and rejects reuse with another payload", async () => {
     const { client } = await harness();
     const first = await client.create(

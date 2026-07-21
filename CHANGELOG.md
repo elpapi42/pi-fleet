@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Added `pifleet compact NAME [--human]`, backed by Pi's typed native compaction RPC. It restores an absent idle agent when capacity allows, checks authoritative state immediately before invocation, returns bounded token metrics, keeps raw session watchers attached, and never replays ambiguous compaction after a crash. Pi does not currently provide an atomic idle-only compact primitive, so a narrow trusted-extension activity race remains documented.
+
 ### Documentation
 
 - Reframed pi-fleet as Pi-native, machine-first execution infrastructure for agent systems operating beyond terminal scale rather than a human-facing background terminal tool.

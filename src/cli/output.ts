@@ -1,6 +1,7 @@
 import type { Writable } from "node:stream";
 
 import type {
+  CompactResult,
   CreateResult,
   DestroyResult,
   FleetClientError,
@@ -16,7 +17,8 @@ type FiniteResult =
   | ReceiveResult
   | StatusResult
   | ListResult
-  | DestroyResult;
+  | DestroyResult
+  | CompactResult;
 
 export function writeResult(stream: Writable, result: FiniteResult, human: boolean): void {
   stream.write(human ? `${renderHuman(result)}\n` : `${JSON.stringify(result)}\n`);
@@ -48,5 +50,7 @@ function renderHuman(result: FiniteResult): string {
             .join("\n");
     case "agent.destroyed":
       return `${result.agent.name}: destroyed`;
+    case "agent.compacted":
+      return `${result.agent.name}: compacted (${String(result.compaction.tokensBefore)} → ${String(result.compaction.estimatedTokensAfter ?? "unknown")} estimated tokens)`;
   }
 }

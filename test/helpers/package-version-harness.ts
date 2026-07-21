@@ -130,6 +130,25 @@ export async function invokeList(
   return JSON.parse(result.stdout) as unknown;
 }
 
+export async function invokeJsonError(
+  artifacts: PackageArtifacts,
+  args: readonly string[],
+  environment: CompatibilityEnvironment,
+): Promise<unknown> {
+  try {
+    await execFileAsync(process.execPath, [artifacts.cliPath, ...args], {
+      cwd: environment.root,
+      env: environment.env,
+      timeout: 15_000,
+    });
+  } catch (error: unknown) {
+    const stderr =
+      typeof error === "object" && error !== null && "stderr" in error ? String(error.stderr) : "";
+    return JSON.parse(stderr) as unknown;
+  }
+  throw new Error(`Expected ${args.join(" ")} to fail`);
+}
+
 export async function socketInode(socketPath: string): Promise<bigint> {
   return (await lstat(socketPath, { bigint: true })).ino;
 }

@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   FleetStore,
   StoredAgent,
+  StoredCompact,
   StoredIncarnation,
   StoredOperation,
   StoredSend,
@@ -49,6 +50,29 @@ const MIGRATIONS = [
         state TEXT NOT NULL CHECK(state IN ('starting','live','stopping','cleanup_uncertain','gone')),
         data_json TEXT NOT NULL CHECK(json_valid(data_json))
       );
+    `,
+  },
+  {
+    version: 2,
+    checksum: "002_compact_v1",
+    statements: `
+      ALTER TABLE operations RENAME TO operations_v1;
+      CREATE TABLE operations(
+        operation_id TEXT PRIMARY KEY,
+        method TEXT NOT NULL CHECK(method IN ('create','send','destroy','compact')),
+        state TEXT NOT NULL CHECK(state IN ('pending','completed')),
+        data_json TEXT NOT NULL CHECK(json_valid(data_json))
+      );
+      INSERT INTO operations(operation_id, method, state, data_json)
+        SELECT operation_id, method, state, data_json FROM operations_v1;
+      DROP TABLE operations_v1;
+      CREATE TABLE compact_records(
+        compact_id TEXT PRIMARY KEY,
+        agent_name TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('pending','dispatching','completed','failed','uncertain')),
+        data_json TEXT NOT NULL CHECK(json_valid(data_json))
+      );
+      CREATE INDEX compact_records_nonterminal ON compact_records(state, agent_name);
     `,
   },
 ] as const;
@@ -235,6 +259,32 @@ export class SqliteFleetStore implements FleetStore {
       )
       .all() as unknown as JsonRow[];
     return rows.map((row) => JSON.parse(row.data_json) as StoredSend);
+  }
+
+  async getCompact(compactId: string): Promise<StoredCompact | null> {
+    const row = this.#database
+      .prepare("SELECT data_json FROM compact_records WHERE compact_id = ?")
+      .get(compactId) as JsonRow | undefined;
+    return row === undefined ? null : (JSON.parse(row.data_json) as StoredCompact);
+  }
+
+  async putCompact(compact: StoredCompact): Promise<void> {
+    this.#database
+      .prepare(
+        `INSERT INTO compact_records(compact_id, agent_name, state, data_json)
+         VALUES(?, ?, ?, ?)
+         ON CONFLICT(compact_id) DO UPDATE SET state=excluded.state, data_json=excluded.data_json`,
+      )
+      .run(compact.compactId, compact.agentName, compact.state, JSON.stringify(compact));
+  }
+
+  async listNonterminalCompacts(): Promise<readonly StoredCompact[]> {
+    const rows = this.#database
+      .prepare(
+        "SELECT data_json FROM compact_records WHERE state IN ('pending','dispatching') ORDER BY rowid",
+      )
+      .all() as unknown as JsonRow[];
+    return rows.map((row) => JSON.parse(row.data_json) as StoredCompact);
   }
 
   async putIncarnation(incarnation: StoredIncarnation): Promise<void> {

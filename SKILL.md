@@ -1,6 +1,6 @@
 ---
 name: pi-fleet-operator
-description: Use `pifleet` as a machine-first control layer for Pi agents and their native sessions. Invoke this skill whenever an agent, Pi extension, orchestration workflow, or AI factory needs to create Pi agents, delegate or steer work, inspect lifecycle state, retrieve exact latest settled assistant text, consume native session JSONL, restore a session-backed process, coordinate several Pi agents, or release pi-fleet management. Also use it for pi-fleet automation and troubleshooting even when the user says only “use pi-fleet,” “delegate this,” “ask the reviewer,” or “check the agents.”
+description: Use `pifleet` as a machine-first control layer for Pi agents and their native sessions. Invoke this skill whenever an agent, Pi extension, orchestration workflow, or AI factory needs to create Pi agents, delegate or steer work, compact idle context, inspect lifecycle state, retrieve exact latest settled assistant text, consume native session JSONL, restore a session-backed process, coordinate several Pi agents, or release pi-fleet management. Also use it for pi-fleet automation and troubleshooting even when the user says only “use pi-fleet,” “delegate this,” “ask the reviewer,” or “check the agents.”
 compatibility: Requires the `pifleet` executable on PATH and a supported pi-fleet installation.
 ---
 
@@ -145,6 +145,20 @@ Handle failed state conservatively:
 - `session_unavailable` or `session_ambiguous`: continuity cannot safely be claimed.
 
 Ask for policy or user direction before semantically retrying uncertain work. A new send is a new instruction, not evidence that earlier work did nothing.
+
+## Compact idle context
+
+Use Pi's native typed compaction only when the agent is idle:
+
+```bash
+pifleet compact NAME
+```
+
+`compact` restores an absent idle process when capacity allows, leaves it resident afterward, and returns bounded token metrics in `agent.compacted`. It checks authoritative Pi state immediately before invocation and rejects observed active, queued, restoring, or already-compacting work with `agent_busy`. Pi does not offer an atomic idle-only compact operation; trusted extension activity starting after that check can still encounter Pi's native abort-first behavior.
+
+Compaction does not produce a new assistant response. Use the `compact` result—not `receive`—to determine whether it completed. `receive` waits while compaction is active, and `watch` continues to emit Pi's native session JSONL, including the appended compaction record.
+
+Treat `compaction_uncertain` as potentially applied and never retry it automatically: Pi may have appended the native compaction entry before the runtime lost the result.
 
 ## Coordinate multiple agents
 

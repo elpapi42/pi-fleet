@@ -4,6 +4,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { dirname } from "node:path";
 
 import type {
+  CompactInput,
   CreateInput,
   DestroyInput,
   FleetClientError,
@@ -190,6 +191,9 @@ async function dispatch(
     case "agent.destroy":
       result = await service.destroy(asNamedInput(request.params), requireOperation(operationId));
       break;
+    case "agent.compact":
+      result = await service.compact(asNamedInput(request.params), requireOperation(operationId));
+      break;
   }
 
   writeJsonLine(
@@ -219,7 +223,9 @@ function asSendInput(params: Record<string, unknown>): SendInput {
   return { name: stringParam(params, "name"), message: stringParam(params, "message") };
 }
 
-function asNamedInput(params: Record<string, unknown>): ReceiveInput & StatusInput & DestroyInput {
+function asNamedInput(
+  params: Record<string, unknown>,
+): ReceiveInput & StatusInput & DestroyInput & CompactInput {
   return { name: stringParam(params, "name") };
 }
 

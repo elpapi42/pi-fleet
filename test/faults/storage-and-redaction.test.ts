@@ -120,6 +120,19 @@ describe("storage failure containment", () => {
 });
 
 describe("Pi RPC failure containment", () => {
+  it("returns only bounded native compaction metrics", async () => {
+    const pi = await rejectsPrompt("normal");
+    await expect(pi.compact()).resolves.toEqual({
+      tokensBefore: 1200,
+      estimatedTokensAfter: 300,
+    });
+  });
+
+  it("classifies native compact rejection without exposing its message", async () => {
+    const pi = await rejectsPrompt("reject");
+    await expect(pi.compact()).rejects.toMatchObject({ code: "compaction_failed" });
+  });
+
   it("rejects startup when Pi exits before RPC readiness", async () => {
     await expect(
       PiProcess.start({

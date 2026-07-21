@@ -61,6 +61,10 @@ describe("real Pi in-memory lifecycle", () => {
     await mkdir(agentDir, { recursive: true });
     const model = await deterministicServer();
     await writeFile(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ compaction: { reserveTokens: 100, keepRecentTokens: 10 } }),
+    );
+    await writeFile(
       join(agentDir, "models.json"),
       JSON.stringify({
         providers: {
@@ -122,10 +126,24 @@ describe("real Pi in-memory lifecycle", () => {
     });
     expect(pids).toHaveLength(1);
 
+    const compacted = await service.compact({ name: "reviewer" }, "compact-1");
+    if (!compacted.ok) throw new Error(JSON.stringify(compacted.error));
+    expect(compacted).toMatchObject({
+      ok: true,
+      value: {
+        type: "agent.compacted",
+        compaction: {
+          tokensBefore: expect.any(Number),
+          estimatedTokensAfter: expect.any(Number),
+        },
+      },
+    });
+    expect(model.count()).toBe(3);
+
     const status = await service.status({ name: "reviewer" });
     if (!status.ok || status.value.agent.session.path === null) throw new Error("missing session");
     const sessionPath = status.value.agent.session.path;
-    expect(await readFile(sessionPath, "utf8")).toContain("deterministic response 2");
+    expect(await readFile(sessionPath, "utf8")).toContain('"type":"compaction"');
 
     await service.releaseAgentProcess("reviewer");
     expect(await service.status({ name: "reviewer" })).toMatchObject({
@@ -136,15 +154,15 @@ describe("real Pi in-memory lifecycle", () => {
     await service.send({ name: "reviewer", message: "third" }, "send-3");
     expect(await service.receive({ name: "reviewer" })).toMatchObject({
       ok: true,
-      value: { response: { text: "deterministic response 3" } },
+      value: { response: { text: "deterministic response 4" } },
     });
     expect(pids).toHaveLength(2);
-    expect(model.bodies.at(-1)).toContain("deterministic response 2");
+    expect(model.bodies.at(-1)).toContain("deterministic response 3");
 
     expect(await service.destroy({ name: "reviewer" }, "destroy-1")).toMatchObject({
       ok: true,
     });
-    await expect(readFile(sessionPath, "utf8")).resolves.toContain("deterministic response 3");
+    await expect(readFile(sessionPath, "utf8")).resolves.toContain("deterministic response 4");
   }, 30_000);
 
   it("persists the latest response and restores only when addressed after runtime restart", async () => {

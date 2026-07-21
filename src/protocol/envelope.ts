@@ -19,6 +19,7 @@ export const RequestSchema = Type.Object(
       Type.Literal("agent.list"),
       Type.Literal("agent.watch"),
       Type.Literal("agent.destroy"),
+      Type.Literal("agent.compact"),
     ]),
     params: Type.Record(Type.String(), Type.Unknown()),
     operation: Type.Optional(OperationSchema),

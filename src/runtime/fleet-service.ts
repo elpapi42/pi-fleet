@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import type {
+  CompactInput,
+  CompactResult,
   CreateInput,
   CreateResult,
   DestroyInput,
@@ -16,7 +18,7 @@ import type {
 } from "../client/fleet-client.js";
 import type { PiLauncher } from "../pi/adapter.js";
 import { createLaunchProfile, observeSession } from "../pi/launch-profile.js";
-import { PiCleanupUncertainError, type PiProcess } from "../pi/process.js";
+import { PiCleanupUncertainError, PiCompactionError, type PiProcess } from "../pi/process.js";
 import { waitForProcessGroupExit } from "../platform/runtime/process-tree.js";
 import { err, ok, type Result } from "../shared/result.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../shared/runtime-limits.js";
@@ -25,7 +27,7 @@ import { AgentCoordinator } from "./agent-coordinator.js";
 import { SessionTailSubscription } from "./session-tail-subscription.js";
 
 interface RecordedOperation {
-  readonly method: "create" | "send" | "destroy";
+  readonly method: "create" | "send" | "destroy" | "compact";
   readonly fingerprint: string;
   readonly result: Result<unknown, FleetClientError>;
 }
@@ -51,6 +53,8 @@ export class FleetService {
   readonly #processSlots = new Set<string>();
   readonly #agentLanes = new Map<string, Promise<void>>();
   readonly #sendLanes = new Map<string, Promise<void>>();
+  readonly #compactingAgents = new Set<string>();
+  readonly #destroyingAgents = new Set<string>();
   readonly #launcher: PiLauncher | undefined;
   readonly #now: () => string;
   readonly #limits: RuntimeLimits;
@@ -319,6 +323,14 @@ export class FleetService {
   ): Promise<Result<SendResult, FleetClientError>> {
     const replay = await this.#operation<SendResult>(operationId, "send", input);
     if (replay !== null) return replay;
+    if (this.#destroyingAgents.has(input.name)) {
+      const result = err<FleetClientError>({
+        code: "agent_destroying",
+        message: `Agent ${input.name} is being destroyed.`,
+      });
+      await this.#remember(operationId, "send", input, result);
+      return result;
+    }
     if (Buffer.byteLength(input.message, "utf8") > this.#limits.maxMessageBytes) {
       const result = err<FleetClientError>({
         code: "invalid_arguments",
@@ -355,9 +367,243 @@ export class FleetService {
     return result;
   }
 
+  compact(
+    input: CompactInput,
+    operationId: string,
+  ): Promise<Result<CompactResult, FleetClientError>> {
+    return this.#runOperation(operationId, "compact", input, () =>
+      this.#enqueueAgent(input.name, () => this.#compactImpl(input, operationId)),
+    );
+  }
+
+  async #compactImpl(
+    input: CompactInput,
+    operationId: string,
+  ): Promise<Result<CompactResult, FleetClientError>> {
+    const replay = await this.#operation<CompactResult>(operationId, "compact", input);
+    if (replay !== null) return replay;
+    let agent = await this.store.getAgent(input.name);
+    if (agent === null) return this.#rememberNotFound(operationId, "compact", input);
+    await this.#recordOperationTarget(operationId, agent);
+    if (agent.summary.process.state === "cleanup_uncertain") {
+      const result = err<FleetClientError>({
+        code: "incarnation_cleanup_uncertain",
+        message: `pi-fleet cannot prove the previous process for ${input.name} is gone.`,
+      });
+      await this.#remember(operationId, "compact", input, result);
+      return result;
+    }
+    if (agent.summary.state !== "idle") {
+      const result = err<FleetClientError>({
+        code: "agent_busy",
+        message: `Agent ${input.name} must be idle before compaction.`,
+      });
+      await this.#remember(operationId, "compact", input, result);
+      return result;
+    }
+
+    const requestedAt = this.#now();
+    await this.store.putCompact({
+      compactId: operationId,
+      agentName: input.name,
+      state: "pending",
+      requestedAt,
+    });
+
+    let coordinator: AgentCoordinator | undefined;
+    try {
+      coordinator = await this.#ensureResidentForCompact(agent);
+      agent = coordinator?.storedAgent ?? agent;
+      const nativeCompaction = coordinator !== undefined;
+      if (nativeCompaction) this.#compactingAgents.add(input.name);
+      let compaction: CompactResult["compaction"];
+      try {
+        await this.store.putCompact({
+          compactId: operationId,
+          agentName: input.name,
+          state: "dispatching",
+          requestedAt,
+        });
+        if (coordinator === undefined && this.#launcher === undefined) {
+          compaction = { tokensBefore: 0, estimatedTokensAfter: 0 };
+        } else {
+          if (coordinator === undefined) throw new Error("Pi is unavailable for compaction");
+          compaction = await coordinator.compact();
+        }
+      } finally {
+        if (nativeCompaction) this.#compactingAgents.delete(input.name);
+      }
+      await this.store.putCompact({
+        compactId: operationId,
+        agentName: input.name,
+        state: "completed",
+        requestedAt,
+        result: compaction,
+      });
+      const result = ok<CompactResult>({
+        schemaVersion: 1,
+        type: "agent.compacted",
+        agent: { id: agent.summary.id, name: agent.summary.name },
+        compaction,
+      });
+      await this.#remember(operationId, "compact", input, result);
+      return result;
+    } catch (error: unknown) {
+      const compact = await this.store.getCompact(operationId);
+      if (compact?.state === "completed" && compact.result !== undefined) {
+        const result = ok<CompactResult>({
+          schemaVersion: 1,
+          type: "agent.compacted",
+          agent: { id: agent.summary.id, name: agent.summary.name },
+          compaction: compact.result,
+        });
+        await this.#remember(operationId, "compact", input, result);
+        return result;
+      }
+      const message = error instanceof Error ? error.message : "Pi compaction failed";
+      const busy = message === "Agent is busy";
+      const preDispatch = compact?.state === "pending";
+      const capacity = message === "Process capacity exceeded";
+      const compactionError = error instanceof PiCompactionError ? error.code : null;
+      const uncertain = !busy && !preDispatch && compactionError === null;
+      if (uncertain && coordinator !== undefined && !this.#destroyingAgents.has(input.name)) {
+        await coordinator.stop("runtime_shutdown").catch(() => undefined);
+      }
+      const cleanupUncertain =
+        (await this.store.getAgent(input.name))?.summary.process.state === "cleanup_uncertain";
+      const failure: FleetClientError = {
+        code: busy
+          ? "agent_busy"
+          : capacity
+            ? "capacity_exceeded"
+            : cleanupUncertain
+              ? "incarnation_cleanup_uncertain"
+              : preDispatch
+                ? "pi_start_failed"
+                : (compactionError ?? "compaction_uncertain"),
+        message: busy
+          ? `Agent ${input.name} must be idle before compaction.`
+          : capacity
+            ? `pi-fleet has reached its ${String(this.#limits.maxResidentProcesses)} process limit.`
+            : cleanupUncertain
+              ? `pi-fleet could not prove the failed Pi restoration for ${input.name} was removed.`
+              : preDispatch
+                ? `Pi failed to restore for ${input.name}; compaction was not dispatched.`
+                : compactionError === "nothing_to_compact"
+                  ? `Agent ${input.name} has nothing to compact.`
+                  : compactionError === "compaction_failed"
+                    ? "Pi compaction failed."
+                    : "Pi may have started compaction; pi-fleet will not replay it automatically.",
+      };
+      const result = err(failure);
+      const terminalFailure = busy || preDispatch || compactionError !== null;
+      await this.store.putCompact({
+        compactId: operationId,
+        agentName: input.name,
+        state: terminalFailure ? "failed" : "uncertain",
+        requestedAt,
+        ...(terminalFailure ? { error: failure } : {}),
+      });
+      await this.#remember(operationId, "compact", input, result);
+      return result;
+    }
+  }
+
+  async #ensureResidentForCompact(agent: StoredAgent): Promise<AgentCoordinator | undefined> {
+    let coordinator = this.#coordinators.get(agent.summary.name);
+    if (coordinator !== undefined || this.#launcher === undefined) return coordinator;
+    const reservation = this.#reserveProcessSlot(agent.summary.name);
+    if (reservation === "full") {
+      throw new Error("Process capacity exceeded");
+    }
+    if (reservation === "existing") {
+      coordinator = await this.#waitForCoordinator(agent.summary.name);
+      if (coordinator === undefined)
+        throw new Error("Pi restoration did not produce a live process");
+      return coordinator;
+    }
+
+    const restoring = await this.#markRestoring(agent);
+    const incarnationId = randomUUID();
+    let process: PiProcess | null = null;
+    try {
+      await this.store.putIncarnation({
+        incarnationId,
+        agentName: agent.summary.name,
+        pid: null,
+        state: "starting",
+      });
+      process = await this.#launcher.start(restoring.launch, true, async (pid) => {
+        await this.store.putIncarnation({
+          incarnationId,
+          agentName: agent.summary.name,
+          pid,
+          state: "starting",
+        });
+      });
+      await this.store.putIncarnation({
+        incarnationId,
+        agentName: agent.summary.name,
+        pid: process.pid,
+        state: "live",
+      });
+      const state = await process.getState();
+      const restored: StoredAgent = {
+        ...restoring,
+        launch: observeSession(restoring.launch, {
+          path: state.sessionFile ?? null,
+          id: state.sessionId,
+        }),
+        summary: {
+          ...restoring.summary,
+          state: "idle",
+          process: { state: "resident" },
+          session: { path: state.sessionFile ?? null, id: state.sessionId },
+          error: undefined,
+        },
+      };
+      await this.store.putAgent(restored);
+      return this.#attachCoordinator(restored, process, incarnationId);
+    } catch (error: unknown) {
+      let cleanupUncertain = error instanceof PiCleanupUncertainError;
+      let pid = error instanceof PiCleanupUncertainError ? error.pid : null;
+      if (process !== null) {
+        pid = process.pid;
+        try {
+          await process.stop();
+        } catch {
+          cleanupUncertain = true;
+        }
+      }
+      await this.store.putAgent({
+        ...restoring,
+        summary: {
+          ...restoring.summary,
+          state: "failed",
+          process: { state: cleanupUncertain ? "cleanup_uncertain" : "absent" },
+          error: { code: cleanupUncertain ? "incarnation_cleanup_uncertain" : "pi_start_failed" },
+        },
+      });
+      await this.store.putIncarnation({
+        incarnationId,
+        agentName: agent.summary.name,
+        pid,
+        state: cleanupUncertain ? "cleanup_uncertain" : "gone",
+      });
+      if (!cleanupUncertain) this.#releaseProcessSlot(agent.summary.name);
+      throw error;
+    }
+  }
+
   async reconcile(): Promise<void> {
+    const nonterminalCompacts = await this.store.listNonterminalCompacts();
     const nonterminalSends = await this.store.listNonterminalSends();
-    const activeSendAgents = new Set(nonterminalSends.map((send) => send.agentName));
+    const activeWorkAgents = new Set([
+      ...nonterminalSends.map((send) => send.agentName),
+      ...nonterminalCompacts
+        .filter((compact) => compact.state === "dispatching")
+        .map((compact) => compact.agentName),
+    ]);
     for (const incarnation of await this.store.listActiveIncarnations()) {
       if (incarnation.state !== "cleanup_uncertain") continue;
       this.#processSlots.add(incarnation.agentName);
@@ -367,7 +613,7 @@ export class FleetService {
       const agent = await this.store.getAgent(incarnation.agentName);
       if (agent?.summary.process.state !== "cleanup_uncertain") continue;
       const interrupted =
-        activeSendAgents.has(incarnation.agentName) ||
+        activeWorkAgents.has(incarnation.agentName) ||
         agent.summary.error?.code === "runtime_interrupted";
       await this.store.putAgent({
         ...agent,
@@ -378,6 +624,20 @@ export class FleetService {
           error: interrupted ? { code: "runtime_interrupted" } : undefined,
         },
       });
+    }
+
+    for (const compact of nonterminalCompacts) {
+      const input = { name: compact.agentName };
+      if (compact.state === "dispatching") {
+        const result = err<FleetClientError>({
+          code: "compaction_uncertain",
+          message: "Pi may have started compaction; pi-fleet will not replay it automatically.",
+        });
+        await this.store.putCompact({ ...compact, state: "uncertain" });
+        await this.#remember(compact.compactId, "compact", input, result);
+      } else {
+        await this.compact(input, compact.compactId);
+      }
     }
 
     for (const send of nonterminalSends) {
@@ -416,8 +676,10 @@ export class FleetService {
       const payload = JSON.parse(operation.fingerprint) as CreateInput | DestroyInput;
       if (operation.method === "create") {
         await this.create(payload as CreateInput, operation.operationId);
-      } else {
+      } else if (operation.method === "destroy") {
         await this.destroy(payload as DestroyInput, operation.operationId);
+      } else if (operation.method === "compact") {
+        await this.compact(payload as CompactInput, operation.operationId);
       }
     }
   }
@@ -526,9 +788,26 @@ export class FleetService {
     input: DestroyInput,
     operationId: string,
   ): Promise<Result<DestroyResult, FleetClientError>> {
-    return this.#runOperation(operationId, "destroy", input, () =>
-      this.#enqueueAgent(input.name, () => this.#destroyImpl(input, operationId)),
-    );
+    return this.#runOperation(operationId, "destroy", input, async () => {
+      if (this.#compactingAgents.has(input.name)) {
+        const replay = await this.#operation<DestroyResult>(operationId, "destroy", input);
+        if (replay !== null) return replay;
+        const agent = await this.store.getAgent(input.name);
+        if (agent !== null) await this.#recordOperationTarget(operationId, agent);
+      }
+      this.#destroyingAgents.add(input.name);
+      try {
+        if (this.#compactingAgents.has(input.name)) {
+          await this.#coordinators
+            .get(input.name)
+            ?.stop("destroy")
+            .catch(() => undefined);
+        }
+        return await this.#enqueueAgent(input.name, () => this.#destroyImpl(input, operationId));
+      } finally {
+        this.#destroyingAgents.delete(input.name);
+      }
+    });
   }
 
   async #destroyImpl(
@@ -848,7 +1127,7 @@ export class FleetService {
 
   async #rememberNotFound<T>(
     operationId: string,
-    method: "send" | "destroy",
+    method: "send" | "destroy" | "compact",
     payload: object,
   ): Promise<Result<T, FleetClientError>> {
     const result = this.#notFound<T>(String("name" in payload ? payload.name : "unknown"));
@@ -951,7 +1230,7 @@ export class FleetService {
           }
           // Resume the singular destroy operation against the surviving agent.
           return null;
-        } else {
+        } else if (method === "send") {
           const send = await this.store.getSend(operationId);
           if (send === null) {
             // The operation exists but no send record was committed, so Pi could not have been
@@ -970,6 +1249,48 @@ export class FleetService {
             code: "operation_in_progress",
             message: `Operation ${operationId} is still pending.`,
           });
+        } else {
+          const compact = await this.store.getCompact(operationId);
+          if (compact?.state === "completed" && compact.result !== undefined) {
+            const target = stored.targetAgent;
+            if (target === undefined) {
+              return err({ code: "state_corrupt", message: "Compaction target is missing." });
+            }
+            const result = ok<CompactResult>({
+              schemaVersion: 1,
+              type: "agent.compacted",
+              agent: target,
+              compaction: compact.result,
+            });
+            await this.#remember(operationId, method, payload, result);
+            return result as Result<T, FleetClientError>;
+          }
+          if (compact?.state === "failed" && compact.error !== undefined) {
+            const result = err<FleetClientError>(compact.error);
+            await this.#remember(operationId, method, payload, result);
+            return result;
+          }
+          if (compact?.state === "dispatching" || compact?.state === "uncertain") {
+            const result = err<FleetClientError>({
+              code: "compaction_uncertain",
+              message: "Pi may have started compaction; pi-fleet will not replay it automatically.",
+            });
+            await this.#remember(operationId, method, payload, result);
+            return result;
+          }
+          if (
+            stored.targetAgent !== undefined &&
+            (agent === null || agent.summary.id !== stored.targetAgent.id)
+          ) {
+            const result = err<FleetClientError>({
+              code: "agent_not_found",
+              message: `The agent targeted by operation ${operationId} no longer exists.`,
+            });
+            await this.#remember(operationId, method, payload, result);
+            return result;
+          }
+          if (compact === null || compact.state === "pending") return null;
+          return err({ code: "state_corrupt", message: "Compaction state is incomplete." });
         }
       }
       await this.store.putOperation({

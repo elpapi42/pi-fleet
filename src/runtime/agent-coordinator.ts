@@ -1,4 +1,4 @@
-import type { PiProcess } from "../pi/process.js";
+import { PiCompactionError, type PiCompactionResult, type PiProcess } from "../pi/process.js";
 import { waitForProcessGroupExit } from "../platform/runtime/process-tree.js";
 import type { FleetStore, StoredAgent } from "../store/fleet-store.js";
 
@@ -53,6 +53,41 @@ export class AgentCoordinator {
     });
   }
 
+  compact(): Promise<PiCompactionResult> {
+    return this.#enqueue(async () => {
+      const state = await this.process.getState();
+      if (
+        this.#mayBeWorking ||
+        this.agent.summary.state !== "idle" ||
+        state.isStreaming ||
+        state.isCompacting ||
+        state.pendingMessageCount !== 0
+      ) {
+        throw new Error("Agent is busy");
+      }
+      this.#mayBeWorking = true;
+      this.agent = {
+        ...this.agent,
+        summary: {
+          ...this.agent.summary,
+          state: "working",
+          process: { state: "resident" },
+          error: undefined,
+        },
+      };
+      await this.store.putAgent(this.agent);
+      try {
+        const result = await this.process.compact();
+        await this.#markIdle();
+        return result;
+      } catch (error: unknown) {
+        this.#mayBeWorking = false;
+        if (error instanceof PiCompactionError) await this.#markIdle();
+        throw error;
+      }
+    });
+  }
+
   async waitForIdle(signal?: AbortSignal): Promise<StoredAgent> {
     let wait: Promise<void> | null = null;
     await this.#enqueue(async () => {
@@ -85,7 +120,7 @@ export class AgentCoordinator {
       if (!this.#idleWaiters.has(waiter)) return;
 
       const state = await this.process.getState();
-      if (!state.isStreaming && state.pendingMessageCount === 0) {
+      if (!state.isStreaming && !state.isCompacting && state.pendingMessageCount === 0) {
         await this.#markIdle();
       }
     });
