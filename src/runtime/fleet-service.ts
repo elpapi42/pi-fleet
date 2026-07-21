@@ -382,27 +382,28 @@ export class FleetService {
   ): Promise<Result<CompactResult, FleetClientError>> {
     const replay = await this.#operation<CompactResult>(operationId, "compact", input);
     if (replay !== null) return replay;
+    const requestedAt = this.#now();
     let agent = await this.store.getAgent(input.name);
-    if (agent === null) return this.#rememberNotFound(operationId, "compact", input);
+    if (agent === null) {
+      return this.#rememberCompactFailure(operationId, input, requestedAt, {
+        code: "agent_not_found",
+        message: `Agent ${input.name} was not found.`,
+      });
+    }
     await this.#recordOperationTarget(operationId, agent);
     if (agent.summary.process.state === "cleanup_uncertain") {
-      const result = err<FleetClientError>({
+      return this.#rememberCompactFailure(operationId, input, requestedAt, {
         code: "incarnation_cleanup_uncertain",
         message: `pi-fleet cannot prove the previous process for ${input.name} is gone.`,
       });
-      await this.#remember(operationId, "compact", input, result);
-      return result;
     }
     if (agent.summary.state !== "idle") {
-      const result = err<FleetClientError>({
+      return this.#rememberCompactFailure(operationId, input, requestedAt, {
         code: "agent_busy",
         message: `Agent ${input.name} must be idle before compaction.`,
       });
-      await this.#remember(operationId, "compact", input, result);
-      return result;
     }
 
-    const requestedAt = this.#now();
     await this.store.putCompact({
       compactId: operationId,
       agentName: input.name,
@@ -789,14 +790,14 @@ export class FleetService {
     operationId: string,
   ): Promise<Result<DestroyResult, FleetClientError>> {
     return this.#runOperation(operationId, "destroy", input, async () => {
-      if (this.#compactingAgents.has(input.name)) {
-        const replay = await this.#operation<DestroyResult>(operationId, "destroy", input);
-        if (replay !== null) return replay;
-        const agent = await this.store.getAgent(input.name);
-        if (agent !== null) await this.#recordOperationTarget(operationId, agent);
-      }
       this.#destroyingAgents.add(input.name);
       try {
+        if (this.#compactingAgents.has(input.name)) {
+          const replay = await this.#operation<DestroyResult>(operationId, "destroy", input);
+          if (replay !== null) return replay;
+          const agent = await this.store.getAgent(input.name);
+          if (agent !== null) await this.#recordOperationTarget(operationId, agent);
+        }
         if (this.#compactingAgents.has(input.name)) {
           await this.#coordinators
             .get(input.name)
@@ -1123,6 +1124,24 @@ export class FleetService {
 
   #notFound<T>(name: string): Result<T, FleetClientError> {
     return err({ code: "agent_not_found", message: `Agent ${name} was not found.` });
+  }
+
+  async #rememberCompactFailure(
+    operationId: string,
+    input: CompactInput,
+    requestedAt: string,
+    failure: FleetClientError,
+  ): Promise<Result<CompactResult, FleetClientError>> {
+    await this.store.putCompact({
+      compactId: operationId,
+      agentName: input.name,
+      state: "failed",
+      requestedAt,
+      error: failure,
+    });
+    const result: Result<CompactResult, FleetClientError> = err(failure);
+    await this.#remember(operationId, "compact", input, result);
+    return result;
   }
 
   async #rememberNotFound<T>(

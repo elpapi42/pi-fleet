@@ -140,6 +140,29 @@ class OneShotCompactResultFailureStore extends MemoryFleetStore {
   }
 }
 
+class BlockingDestroyIntentStore extends MemoryFleetStore {
+  #block: { readonly started: () => void; readonly wait: Promise<void> } | null = null;
+
+  holdDestroyIntent(): { readonly started: Promise<void>; release(): void } {
+    let markStarted!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => (markStarted = resolve));
+    const wait = new Promise<void>((resolve) => (release = resolve));
+    this.#block = { started: markStarted, wait };
+    return { started, release };
+  }
+
+  override async putOperation(operation: StoredOperation): Promise<void> {
+    const block = this.#block;
+    if (block !== null && operation.method === "destroy" && operation.state === "pending") {
+      this.#block = null;
+      block.started();
+      await block.wait;
+    }
+    await super.putOperation(operation);
+  }
+}
+
 describe("compact lifecycle", () => {
   it("uses native Pi compaction and returns bounded token metrics", async () => {
     const controlled = controlledProcess(41_001);
@@ -250,6 +273,29 @@ describe("compact lifecycle", () => {
       ok: true,
       value: { response: { text: "previous response" } },
     });
+    await service.close();
+  });
+
+  it("blocks queued sends while destroy intent is being persisted", async () => {
+    const controlled = controlledProcess(41_024);
+    const compactGate = controlled.holdCompaction();
+    const store = new BlockingDestroyIntentStore();
+    const destroyIntent = store.holdDestroyIntent();
+    const service = new FleetService(store, { launcher: launcherFor(controlled) });
+    await service.create({ name: "reviewer", cwd: "/tmp", piArgv: [] }, "create-1");
+    const compact = service.compact({ name: "reviewer" }, "compact-held");
+    await compactGate.started;
+    const send = service.send({ name: "reviewer", message: "must not run" }, "queued-send");
+    const destroy = service.destroy({ name: "reviewer" }, "destroy-blocked");
+    await destroyIntent.started;
+
+    compactGate.release();
+    expect(await compact).toMatchObject({ ok: true });
+    expect(await send).toMatchObject({ ok: false, error: { code: "agent_destroying" } });
+    expect(controlled.promptCalls()).toBe(0);
+
+    destroyIntent.release();
+    expect(await destroy).toMatchObject({ ok: true });
     await service.close();
   });
 
@@ -481,6 +527,47 @@ describe("compact lifecycle", () => {
     expect(await destroy).toMatchObject({ ok: true });
     expect(controlled.promptCalls()).toBe(0);
     await service.close();
+  });
+
+  it("replays an actual busy result after operation-result persistence fails", async () => {
+    const store = new OneShotCompactResultFailureStore();
+    const service = new FleetService(store);
+    await service.create({ name: "reviewer", cwd: "/tmp", piArgv: [] }, "create-1");
+    const agent = await store.getAgent("reviewer");
+    if (agent === null) throw new Error("missing agent");
+    await store.putAgent({
+      ...agent,
+      summary: { ...agent.summary, state: "working" },
+    });
+
+    await expect(service.compact({ name: "reviewer" }, "compact-busy-crash")).rejects.toThrow(
+      "injected operation result failure",
+    );
+    const restarted = new FleetService(store);
+    expect(await restarted.compact({ name: "reviewer" }, "compact-busy-crash")).toEqual({
+      ok: false,
+      error: {
+        code: "agent_busy",
+        message: "Agent reviewer must be idle before compaction.",
+      },
+    });
+    await restarted.close();
+  });
+
+  it("does not retarget an actual missing-agent result after persistence failure", async () => {
+    const store = new OneShotCompactResultFailureStore();
+    const service = new FleetService(store);
+    await expect(service.compact({ name: "reviewer" }, "compact-missing-crash")).rejects.toThrow(
+      "injected operation result failure",
+    );
+
+    const restarted = new FleetService(store);
+    await restarted.create({ name: "reviewer", cwd: "/tmp", piArgv: [] }, "create-later");
+    expect(await restarted.compact({ name: "reviewer" }, "compact-missing-crash")).toEqual({
+      ok: false,
+      error: { code: "agent_not_found", message: "Agent reviewer was not found." },
+    });
+    await restarted.close();
   });
 
   it.each([
