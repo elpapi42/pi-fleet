@@ -57,13 +57,20 @@ Typical callers include:
 
 If your primary requirement is watching one or two agents in terminal panes, a terminal multiplexer such as tmux, cmux, or Herdr will probably fit better. pi-fleet is for builders ready to move control and observability into software.
 
-## Programmatic quick start
+## Installation
 
-pi-fleet currently supports Linux x64 with Node.js `^22.19.0 || ^24.0.0` and normal Pi provider credentials/configuration.
+pi-fleet currently supports Linux x64 with Node.js `^22.19.0 || ^24.0.0`.
 
 ```bash
 npm install --global @elpapi42/pi-fleet@beta
+pifleet --version
+```
 
+Configure normal Pi provider credentials before the first operational command. pi-fleet commands start or reuse a persistent runtime, so environment variables added only to later invocations do not change that runtime's environment. Use normal Pi credential configuration or configure the persistent runtime/service environment.
+
+## Programmatic quick start
+
+```bash
 # Create an agent with the stable programmatic address "reviewer".
 pifleet create reviewer --cwd "$PWD" > created.json
 
@@ -83,8 +90,6 @@ pifleet watch reviewer > live-session.jsonl
 Finite commands emit one compact JSON object on stdout. Expected failures emit one structured JSON error object on stderr. Exit status `0` means success, `1` means error, and receive timeout uses `124`. `watch` reserves stdout exclusively for native Pi session JSONL.
 
 `--human` exists as a debugging convenience for the six finite commands; programmatic callers should use the default JSON output.
-
-Configure provider credentials before the first operational pi-fleet command. Commands start or reuse a persistent runtime, so a variable added only to a later invocation does not change the runtime environment. Use normal Pi credential configuration or the persistent runtime/service environment.
 
 ## Your sessions are the data layer
 
