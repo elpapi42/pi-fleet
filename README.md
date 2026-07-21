@@ -25,17 +25,22 @@ pi-fleet is specialized for Pi. It gives up bundled terminal UX in exchange for 
 
 ## Infrastructure for orchestration
 
-```text
-Pi extensions · agents · orchestrators · AI software factories
-                              │
-                         pifleet CLI
-                              │
-                    local pi-fleet runtime
-                       ├── Pi agent ── native session
-                       ├── Pi agent ── native session
-                       └── Pi agent ── native session
+```mermaid
+flowchart TB
+  callers["Pi extensions · calling agents · orchestrators · AI software factories"]
+  cli["pifleet CLI"]
+  runtime["local pi-fleet runtime"]
+  agent1["Pi agent"]
+  agent2["Pi agent"]
+  agent3["Pi agent"]
+  session1["native user-controlled session"]
+  session2["native user-controlled session"]
+  session3["native user-controlled session"]
 
-                 sessions remain user-controlled
+  callers --> cli --> runtime
+  runtime --> agent1 --> session1
+  runtime --> agent2 --> session2
+  runtime --> agent3 --> session3
 ```
 
 pi-fleet is infrastructure **for orchestration**, not an orchestration framework. It owns execution lifecycle, process availability, ordered communication, restoration references, exact result retrieval, and explicit failure state.
