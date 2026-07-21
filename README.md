@@ -10,9 +10,9 @@ pi-fleet is a local, machine-first runtime for software that controls Pi process
 
 A terminal pane is useful observability for one Pi process. It is not an observability model for dozens or hundreds of them.
 
-Terminal supervisors expose processes, panes, and rendered output. Agent software needs Pi-aware state: whether Pi is working or idle, whether input was accepted, which native session is active, what the exact latest settled assistant response was, and whether interrupted work can be retried safely.
+Terminal multiplexers such as tmux, cmux, and Herdr expose processes, panes, and rendered output. Agent software needs Pi-aware state: whether Pi is working or idle, whether input was accepted, which native session is active, what the exact latest settled assistant response was, and whether interrupted work can be retried safely.
 
-| Terminal supervisors                       | pi-fleet                                   |
+| Terminal multiplexers (tmux, cmux, Herdr)  | pi-fleet                                   |
 | ------------------------------------------ | ------------------------------------------ |
 | Human-facing panes                         | Machine-readable lifecycle control         |
 | Rendered stdout and scrollback             | Native Pi session JSONL                    |
@@ -49,7 +49,7 @@ Typical callers include:
 - an AI software factory implementing its own scheduling and quality gates;
 - observability, audit, or knowledge systems consuming native Pi sessions.
 
-If your primary requirement is watching one or two agents in terminal panes, a terminal-oriented tool will probably fit better. pi-fleet is for builders ready to move control and observability into software.
+If your primary requirement is watching one or two agents in terminal panes, a terminal multiplexer such as tmux, cmux, or Herdr will probably fit better. pi-fleet is for builders ready to move control and observability into software.
 
 ## Programmatic quick start
 
