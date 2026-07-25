@@ -120,6 +120,25 @@ describe("storage failure containment", () => {
 });
 
 describe("Pi RPC failure containment", () => {
+  it("tees exact Pi stdout bytes before RPC parsing", async () => {
+    const observed: Buffer[] = [];
+    const pi = await PiProcess.start({
+      executable: processExecutable(),
+      argvPrefix: [scriptedPiPath],
+      piArgv: [],
+      cwd: tmpdir(),
+      env: { PIFLEET_TEST_PI_MODE: "invalid-utf8" },
+      onStdoutBytes: (bytes) => observed.push(Buffer.from(bytes)),
+    });
+    cleanups.push(() => pi.stop().catch(() => undefined));
+    observed.length = 0;
+
+    await expect(pi.request({ type: "prompt", message: "hello" }, 500)).rejects.toThrow();
+    expect(Buffer.concat(observed)).toEqual(
+      Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d, 0x0a]),
+    );
+  });
+
   it("returns only bounded native compaction metrics", async () => {
     const pi = await rejectsPrompt("normal");
     await expect(pi.compact()).resolves.toEqual({

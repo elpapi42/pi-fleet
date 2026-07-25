@@ -18,6 +18,7 @@ import { MAX_PROTOCOL_FRAME_BYTES, PROTOCOL_VERSION } from "../protocol/version.
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../shared/runtime-limits.js";
 import { err, type Result } from "../shared/result.js";
 import type { FleetService } from "./fleet-service.js";
+import { RpcWatchError } from "./rpc-watch-hub.js";
 
 export interface ControlServer {
   readonly socketPath: string;
@@ -172,16 +173,17 @@ async function dispatch(
           });
           socket.end();
         }
-      } catch {
+      } catch (error: unknown) {
         if (!socket.destroyed) {
+          const watchError =
+            error instanceof RpcWatchError
+              ? { code: error.code, message: error.message }
+              : { code: "internal_error", message: "Raw Pi RPC watch failed." };
           writeJsonLine(socket, {
             v: PROTOCOL_VERSION,
             requestId: request.requestId,
             stream: "error",
-            error: {
-              code: "session_changed",
-              message: "Pi session changed while watching.",
-            },
+            error: watchError,
           });
           socket.end();
         }

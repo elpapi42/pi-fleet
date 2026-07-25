@@ -6,8 +6,8 @@ export interface RuntimeLimits {
   readonly maxMessageBytes: number;
   readonly maxProtocolFrameBytes: number;
   readonly maxPiFrameBytes: number;
-  readonly maxSessionRecordBytes: number;
   readonly maxWatchers: number;
+  readonly maxWatchQueuedBytes: number;
 }
 
 export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = Object.freeze({
@@ -15,8 +15,8 @@ export const DEFAULT_RUNTIME_LIMITS: RuntimeLimits = Object.freeze({
   maxMessageBytes: 512 * KIBIBYTE,
   maxProtocolFrameBytes: MEBIBYTE,
   maxPiFrameBytes: 8 * MEBIBYTE,
-  maxSessionRecordBytes: 8 * MEBIBYTE,
   maxWatchers: 128,
+  maxWatchQueuedBytes: MEBIBYTE,
 });
 
 const ENV_KEYS: Readonly<Record<keyof RuntimeLimits, string>> = {
@@ -24,8 +24,8 @@ const ENV_KEYS: Readonly<Record<keyof RuntimeLimits, string>> = {
   maxMessageBytes: "PIFLEET_MAX_MESSAGE_BYTES",
   maxProtocolFrameBytes: "PIFLEET_MAX_PROTOCOL_FRAME_BYTES",
   maxPiFrameBytes: "PIFLEET_MAX_PI_FRAME_BYTES",
-  maxSessionRecordBytes: "PIFLEET_MAX_SESSION_RECORD_BYTES",
   maxWatchers: "PIFLEET_MAX_WATCHERS",
+  maxWatchQueuedBytes: "PIFLEET_MAX_WATCH_QUEUED_BYTES",
 };
 
 export function runtimeLimitsFromEnv(env: NodeJS.ProcessEnv = process.env): RuntimeLimits {
@@ -34,8 +34,8 @@ export function runtimeLimitsFromEnv(env: NodeJS.ProcessEnv = process.env): Runt
     maxMessageBytes: positiveInteger(env, "maxMessageBytes"),
     maxProtocolFrameBytes: positiveInteger(env, "maxProtocolFrameBytes"),
     maxPiFrameBytes: positiveInteger(env, "maxPiFrameBytes"),
-    maxSessionRecordBytes: positiveInteger(env, "maxSessionRecordBytes"),
     maxWatchers: positiveInteger(env, "maxWatchers"),
+    maxWatchQueuedBytes: positiveInteger(env, "maxWatchQueuedBytes"),
   };
 }
 

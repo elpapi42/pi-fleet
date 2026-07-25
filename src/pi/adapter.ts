@@ -1,12 +1,15 @@
 import type { AgentLaunchProfile } from "./launch-profile.js";
 import { PiProcess } from "./process.js";
 
+export type PiStdoutSink = (bytes: Buffer) => void;
+
 export interface PiLauncher {
   readonly artifactId: string;
   start(
     profile: AgentLaunchProfile,
     restore: boolean,
     onSpawn?: (pid: number) => Promise<void>,
+    onStdoutBytes?: PiStdoutSink,
   ): Promise<PiProcess>;
 }
 
@@ -30,6 +33,7 @@ export class RealPiLauncher implements PiLauncher {
     profile: AgentLaunchProfile,
     restore: boolean,
     onSpawn?: (pid: number) => Promise<void>,
+    onStdoutBytes?: PiStdoutSink,
   ): Promise<PiProcess> {
     const piArgv = restore ? profile.restorePiArgv : profile.userPiArgv;
     if (piArgv === null) throw new Error("Agent has no observed Pi session to restore");
@@ -43,6 +47,7 @@ export class RealPiLauncher implements PiLauncher {
         ? {}
         : { maxStdoutFrameBytes: this.options.maxStdoutFrameBytes }),
       ...(onSpawn === undefined ? {} : { onSpawn }),
+      ...(onStdoutBytes === undefined ? {} : { onStdoutBytes }),
     });
     this.options.onStart?.(process.pid);
     return process;

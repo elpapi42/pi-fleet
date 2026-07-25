@@ -12,7 +12,7 @@ export const unavailableFleetClient: FleetClient = {
   receive: async () => err(unavailable()),
   status: async () => err(unavailable()),
   list: async () => err(unavailable()),
-  watchSession: async function* () {
+  watch: async function* () {
     yield err(unavailable());
   },
   destroy: async () => err(unavailable()),

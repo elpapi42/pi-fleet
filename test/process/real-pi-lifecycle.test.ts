@@ -14,6 +14,16 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
+async function collectUntil(iterator: AsyncIterator<Buffer>, marker: string): Promise<Buffer> {
+  let received = Buffer.alloc(0);
+  while (!received.includes(marker)) {
+    const next = await iterator.next();
+    if (next.done) throw new Error(`Pi RPC watch ended before ${marker}`);
+    received = Buffer.concat([received, next.value]);
+  }
+  return received;
+}
+
 async function deterministicServer() {
   let requestCount = 0;
   const bodies: string[] = [];
@@ -114,7 +124,21 @@ describe("real Pi in-memory lifecycle", () => {
     });
     expect(pids).toHaveLength(1);
 
+    const watchAbort = new AbortController();
+    const watch = await service.openWatch({ name: "reviewer" }, watchAbort.signal);
+    if (!watch.ok) throw new Error(JSON.stringify(watch.error));
+    const watchedUntilSettled = collectUntil(
+      watch.value[Symbol.asyncIterator](),
+      '"type":"agent_settled"',
+    );
     await service.send({ name: "reviewer", message: "first" }, "send-1");
+    const rpcText = (await watchedUntilSettled).toString("utf8");
+    expect(rpcText).toContain('"command":"prompt"');
+    expect(rpcText).toContain('"type":"message_update"');
+    expect(rpcText).toContain('"type":"text_delta"');
+    expect(rpcText).toContain('"type":"agent_settled"');
+    watchAbort.abort();
+
     expect(await service.receive({ name: "reviewer" })).toMatchObject({
       ok: true,
       value: { response: { text: "deterministic response 1" } },

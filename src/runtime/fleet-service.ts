@@ -24,7 +24,7 @@ import { err, ok, type Result } from "../shared/result.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../shared/runtime-limits.js";
 import type { FleetStore, StoredAgent } from "../store/fleet-store.js";
 import { AgentCoordinator } from "./agent-coordinator.js";
-import { SessionTailSubscription } from "./session-tail-subscription.js";
+import { RpcWatchError, RpcWatchHub } from "./rpc-watch-hub.js";
 
 interface RecordedOperation {
   readonly method: "create" | "send" | "destroy" | "compact";
@@ -49,7 +49,6 @@ export class FleetService {
     }
   >();
   readonly #coordinators = new Map<string, AgentCoordinator>();
-  readonly #watchers = new Map<string, Set<AbortController>>();
   readonly #processSlots = new Set<string>();
   readonly #agentLanes = new Map<string, Promise<void>>();
   readonly #sendLanes = new Map<string, Promise<void>>();
@@ -58,6 +57,7 @@ export class FleetService {
   readonly #launcher: PiLauncher | undefined;
   readonly #now: () => string;
   readonly #limits: RuntimeLimits;
+  readonly #watchHub: RpcWatchHub;
 
   constructor(
     private readonly store: FleetStore,
@@ -70,6 +70,10 @@ export class FleetService {
       ...DEFAULT_RUNTIME_LIMITS,
       ...(typeof options === "function" ? {} : options.limits),
     };
+    this.#watchHub = new RpcWatchHub({
+      maxWatchers: this.#limits.maxWatchers,
+      maxQueuedBytes: this.#limits.maxWatchQueuedBytes,
+    });
   }
 
   create(input: CreateInput, operationId: string): Promise<Result<CreateResult, FleetClientError>> {
@@ -152,14 +156,20 @@ export class FleetService {
           pid: null,
           state: "starting",
         });
-        const process = await this.#launcher.start(profile, false, async (pid) => {
-          await this.store.putIncarnation({
-            incarnationId: incarnationId!,
-            agentName: input.name,
-            pid,
-            state: "starting",
-          });
-        });
+        const publishStdout = this.#watchHub.beginIncarnation(input.name, incarnationId);
+        const process = await this.#launcher.start(
+          profile,
+          false,
+          async (pid) => {
+            await this.store.putIncarnation({
+              incarnationId: incarnationId!,
+              agentName: input.name,
+              pid,
+              state: "starting",
+            });
+          },
+          publishStdout,
+        );
         await this.store.putIncarnation({
           incarnationId,
           agentName: input.name,
@@ -246,6 +256,13 @@ export class FleetService {
       return result;
     } catch (error: unknown) {
       const coordinator = this.#coordinators.get(input.name);
+      if (incarnationId !== null && coordinator === undefined) {
+        this.#watchHub.endIncarnation(
+          input.name,
+          incarnationId,
+          new RpcWatchError("pi_start_failed", "Pi failed to start"),
+        );
+      }
       const deliveryAmbiguous =
         (await this.store.getSend(`${operationId}:initial`))?.state === "uncertain";
       let cleanupUncertain = error instanceof PiCleanupUncertainError;
@@ -534,14 +551,20 @@ export class FleetService {
         pid: null,
         state: "starting",
       });
-      process = await this.#launcher.start(restoring.launch, true, async (pid) => {
-        await this.store.putIncarnation({
-          incarnationId,
-          agentName: agent.summary.name,
-          pid,
-          state: "starting",
-        });
-      });
+      const publishStdout = this.#watchHub.beginIncarnation(agent.summary.name, incarnationId);
+      process = await this.#launcher.start(
+        restoring.launch,
+        true,
+        async (pid) => {
+          await this.store.putIncarnation({
+            incarnationId,
+            agentName: agent.summary.name,
+            pid,
+            state: "starting",
+          });
+        },
+        publishStdout,
+      );
       await this.store.putIncarnation({
         incarnationId,
         agentName: agent.summary.name,
@@ -566,6 +589,11 @@ export class FleetService {
       await this.store.putAgent(restored);
       return this.#attachCoordinator(restored, process, incarnationId);
     } catch (error: unknown) {
+      this.#watchHub.endIncarnation(
+        agent.summary.name,
+        incarnationId,
+        new RpcWatchError("pi_start_failed", "Pi failed to start"),
+      );
       let cleanupUncertain = error instanceof PiCleanupUncertainError;
       let pid = error instanceof PiCleanupUncertainError ? error.pid : null;
       if (process !== null) {
@@ -753,36 +781,17 @@ export class FleetService {
   ): Promise<Result<AsyncIterable<Buffer>, FleetClientError>> {
     const agent = await this.store.getAgent(input.name);
     if (agent === null) return this.#notFound(input.name);
-    const sessionPath = agent.summary.session.path;
-    if (sessionPath === null) {
-      return err({
-        code: "session_unavailable",
-        message: `Agent ${input.name} has no session path.`,
-      });
+    try {
+      return ok(this.#watchHub.subscribe(input.name, connectionSignal));
+    } catch (error: unknown) {
+      if (error instanceof RpcWatchError && error.code === "watcher_capacity_exceeded") {
+        return err({
+          code: "capacity_exceeded",
+          message: `pi-fleet has reached its ${String(this.#limits.maxWatchers)} watcher limit.`,
+        });
+      }
+      throw error;
     }
-    if (this.#watcherCount() >= this.#limits.maxWatchers) {
-      return err({
-        code: "capacity_exceeded",
-        message: `pi-fleet has reached its ${String(this.#limits.maxWatchers)} watcher limit.`,
-      });
-    }
-
-    const abort = new AbortController();
-    const onConnectionAbort = () => abort.abort();
-    connectionSignal.addEventListener("abort", onConnectionAbort, { once: true });
-    const watchers = this.#watchers.get(input.name) ?? new Set<AbortController>();
-    watchers.add(abort);
-    this.#watchers.set(input.name, watchers);
-    const subscription = new SessionTailSubscription(sessionPath, {
-      signal: abort.signal,
-      maxRecordBytes: this.#limits.maxSessionRecordBytes,
-    });
-    const cleanup = () => {
-      connectionSignal.removeEventListener("abort", onConnectionAbort);
-      watchers.delete(abort);
-      if (watchers.size === 0) this.#watchers.delete(input.name);
-    };
-    return ok(watchWithCleanup(subscription, cleanup));
   }
 
   destroy(
@@ -827,8 +836,7 @@ export class FleetService {
       return result;
     }
     if (stored !== null) await this.#recordOperationTarget(operationId, stored);
-    for (const watcher of this.#watchers.get(input.name) ?? []) watcher.abort();
-    this.#watchers.delete(input.name);
+    this.#watchHub.closeAgent(input.name);
     const coordinator = this.#coordinators.get(input.name);
     if (coordinator !== undefined) await coordinator.stop("destroy");
     this.#coordinators.delete(input.name);
@@ -851,10 +859,9 @@ export class FleetService {
   }
 
   async close(): Promise<void> {
-    for (const watchers of this.#watchers.values()) {
-      for (const watcher of watchers) watcher.abort();
-    }
-    this.#watchers.clear();
+    this.#watchHub.closeAll(
+      new RpcWatchError("runtime_unavailable", "pi-fleet runtime is shutting down"),
+    );
     await Promise.all(
       [...this.#coordinators.values()].map((coordinator) => coordinator.stop("runtime_shutdown")),
     );
@@ -905,14 +912,20 @@ export class FleetService {
             pid: null,
             state: "starting",
           });
-          startingProcess = await this.#launcher.start(agent.launch, true, async (pid) => {
-            await this.store.putIncarnation({
-              incarnationId: incarnationId!,
-              agentName: input.name,
-              pid,
-              state: "starting",
-            });
-          });
+          const publishStdout = this.#watchHub.beginIncarnation(input.name, incarnationId);
+          startingProcess = await this.#launcher.start(
+            agent.launch,
+            true,
+            async (pid) => {
+              await this.store.putIncarnation({
+                incarnationId: incarnationId!,
+                agentName: input.name,
+                pid,
+                state: "starting",
+              });
+            },
+            publishStdout,
+          );
           const process = startingProcess;
           await this.store.putIncarnation({
             incarnationId,
@@ -986,6 +999,11 @@ export class FleetService {
           }
         }
         const code = cleanupUncertain ? "incarnation_cleanup_uncertain" : "pi_start_failed";
+        this.#watchHub.endIncarnation(
+          input.name,
+          incarnationId,
+          new RpcWatchError("pi_start_failed", "Pi failed to restore"),
+        );
         agent = {
           ...agent,
           summary: {
@@ -1064,6 +1082,14 @@ export class FleetService {
       incarnationId,
       this.#now,
       () => {
+        const interrupted = coordinator.storedAgent.summary.state === "failed";
+        this.#watchHub.endIncarnation(
+          agent.summary.name,
+          incarnationId,
+          interrupted
+            ? new RpcWatchError("runtime_interrupted", "Pi process was interrupted")
+            : null,
+        );
         if (this.#coordinators.get(agent.summary.name) === coordinator) {
           this.#coordinators.delete(agent.summary.name);
           this.#releaseProcessSlot(agent.summary.name);
@@ -1114,12 +1140,6 @@ export class FleetService {
 
   #releaseProcessSlot(name: string): void {
     this.#processSlots.delete(name);
-  }
-
-  #watcherCount(): number {
-    let count = 0;
-    for (const watchers of this.#watchers.values()) count += watchers.size;
-    return count;
   }
 
   #notFound<T>(name: string): Result<T, FleetClientError> {
@@ -1373,15 +1393,4 @@ function enqueueNamed<T>(
     if (lanes.get(name) === settled) lanes.delete(name);
   });
   return result;
-}
-
-async function* watchWithCleanup(
-  subscription: AsyncIterable<Buffer>,
-  cleanup: () => void,
-): AsyncIterable<Buffer> {
-  try {
-    yield* subscription;
-  } finally {
-    cleanup();
-  }
 }

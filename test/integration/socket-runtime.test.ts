@@ -1,10 +1,12 @@
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createConnection, createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { frameIterator, SocketFleetClient } from "../../src/client/socket-fleet-client.js";
+import type { PiLauncher } from "../../src/pi/adapter.js";
+import type { PiProcess } from "../../src/pi/process.js";
 import { PROTOCOL_VERSION } from "../../src/protocol/version.js";
 import { startControlServer, type ControlServer } from "../../src/runtime/control-server.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
@@ -16,13 +18,14 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
-async function harness(limits?: Partial<RuntimeLimits>) {
+async function harness(limits?: Partial<RuntimeLimits>, launcher?: PiLauncher) {
   const root = await mkdtemp(join(tmpdir(), "pifleet-socket-test-"));
   const socketPath = join(root, "control.sock");
   const store = new MemoryFleetStore();
   const service = new FleetService(store, {
     now: () => "2026-01-01T00:00:00.000Z",
     ...(limits === undefined ? {} : { limits }),
+    ...(launcher === undefined ? {} : { launcher }),
   });
   const server: ControlServer = await startControlServer({
     socketPath,
@@ -64,6 +67,53 @@ async function protocolFixture(
     ).finally(() => rm(root, { recursive: true, force: true })),
   );
   return { client: new SocketFleetClient({ socketPath }), closed };
+}
+
+function streamingLauncher(): {
+  readonly launcher: PiLauncher;
+  emit(bytes: Buffer): void;
+} {
+  let sink: ((bytes: Buffer) => void) | undefined;
+  let exitListener: ((error: Error | null) => void) | undefined;
+  const process = {
+    pid: 51_000,
+    async getState() {
+      return {
+        isStreaming: false,
+        isCompacting: false,
+        pendingMessageCount: 0,
+        sessionFile: "/tmp/rpc-session.jsonl",
+        sessionId: "rpc-session",
+      };
+    },
+    async prompt() {},
+    async getLastAssistantText() {
+      return null;
+    },
+    onFrame() {
+      return () => undefined;
+    },
+    onExit(listener: (error: Error | null) => void) {
+      exitListener = listener;
+      return () => undefined;
+    },
+    async stop() {
+      exitListener?.(null);
+    },
+  } as unknown as PiProcess;
+  return {
+    launcher: {
+      artifactId: "streaming-pi",
+      async start(_profile, _restore, _onSpawn, onStdoutBytes) {
+        sink = onStdoutBytes;
+        return process;
+      },
+    },
+    emit(bytes) {
+      if (sink === undefined) throw new Error("Pi stdout sink is not installed");
+      sink(bytes);
+    },
+  };
 }
 
 const signal = new AbortController().signal;
@@ -192,66 +242,82 @@ describe("private socket runtime", () => {
     ).toMatchObject({ ok: false, error: { code: "operation_conflict" } });
   });
 
-  it("streams only decoded session bytes after the private ready frame", async () => {
-    const { client, store, root } = await harness();
+  it("exposes readiness separately and streams exact raw Pi RPC bytes", async () => {
+    const streaming = streamingLauncher();
+    const { client } = await harness(undefined, streaming.launcher);
     await client.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, { signal, operation });
-    const stored = await store.getAgent("reviewer");
-    if (stored === null) throw new Error("missing stored agent");
-    const sessionPath = join(root, "session.jsonl");
-    await writeFile(sessionPath, '{"type":"session"}\n');
-    await store.putAgent({
-      ...stored,
-      summary: { ...stored.summary, session: { path: sessionPath, id: "session-1" } },
-    });
 
     const abort = new AbortController();
-    const stream = client.watchSession({ name: "reviewer" }, { signal: abort.signal });
+    const stream = client.watch({ name: "reviewer" }, { signal: abort.signal });
     const iterator = stream[Symbol.asyncIterator]();
+    const ready = await iterator.next();
+    expect(ready).toMatchObject({
+      value: { ok: true, value: { type: "ready" } },
+    });
     const next = iterator.next();
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 30));
-    await appendFile(sessionPath, '{"type":"message"}\n');
+    const raw = Buffer.from([
+      ...Buffer.from(
+        '{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","delta":"{\\"path\\":"}}\r\n',
+      ),
+      0xff,
+      0x00,
+    ]);
+
+    streaming.emit(raw);
 
     const frame = await next;
-    expect(frame.value).toMatchObject({ ok: true });
-    if (frame.value?.ok !== true) throw new Error("watch failed");
-    expect(Buffer.from(frame.value.value.bytes).toString()).toBe('{"type":"message"}\n');
+    if (frame.value?.ok !== true || frame.value.value.type !== "chunk") {
+      throw new Error("watch failed");
+    }
+    expect(Buffer.from(frame.value.value.bytes)).toEqual(raw);
     abort.abort();
     await iterator.return?.();
   });
 
-  it("chunks a complete session record through bounded private frames without changing bytes", async () => {
-    const { client, store, root } = await harness({
-      maxProtocolFrameBytes: 1_200,
-      maxSessionRecordBytes: 4_096,
-    });
+  it("chunks oversized raw RPC writes through private frames without changing bytes", async () => {
+    const streaming = streamingLauncher();
+    const { client } = await harness({ maxProtocolFrameBytes: 1_200 }, streaming.launcher);
     await client.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, { signal, operation });
-    const stored = await store.getAgent("reviewer");
-    if (stored === null) throw new Error("missing stored agent");
-    const sessionPath = join(root, "large-session.jsonl");
-    await writeFile(sessionPath, '{"type":"session"}\n');
-    await store.putAgent({
-      ...stored,
-      summary: { ...stored.summary, session: { path: sessionPath, id: "session-1" } },
-    });
 
     const abort = new AbortController();
-    const stream = client.watchSession({ name: "reviewer" }, { signal: abort.signal });
+    const stream = client.watch({ name: "reviewer" }, { signal: abort.signal });
     const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next();
+    const raw = Buffer.from(
+      `${JSON.stringify({ type: "message_update", opaque: "x".repeat(1_500) })}\npartial`,
+    );
+    let received = Buffer.alloc(0);
     let nextFrame = iterator.next();
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 30));
-    const record = `${JSON.stringify({ type: "message", text: "x".repeat(1_500) })}\n`;
-    await appendFile(sessionPath, record);
 
-    let received = "";
-    while (!received.endsWith("\n")) {
+    streaming.emit(raw);
+
+    while (received.length < raw.length) {
       const frame = await nextFrame;
-      if (frame.value?.ok !== true) throw new Error("watch failed");
-      received += Buffer.from(frame.value.value.bytes).toString();
-      if (!received.endsWith("\n")) nextFrame = iterator.next();
+      if (frame.value?.ok !== true || frame.value.value.type !== "chunk") {
+        throw new Error("watch failed");
+      }
+      received = Buffer.concat([received, Buffer.from(frame.value.value.bytes)]);
+      if (received.length < raw.length) nextFrame = iterator.next();
     }
-    expect(received).toBe(record);
+    expect(received).toEqual(raw);
     abort.abort();
     await iterator.return?.();
+  });
+
+  it("reports a lagging raw RPC watcher without filtering or blocking Pi", async () => {
+    const streaming = streamingLauncher();
+    const { client } = await harness({ maxWatchQueuedBytes: 4 }, streaming.launcher);
+    await client.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, { signal, operation });
+    const iterator = client.watch({ name: "reviewer" }, { signal })[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { ok: true, value: { type: "ready" } },
+    });
+
+    streaming.emit(Buffer.from("12345"));
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { ok: false, error: { code: "watcher_lagged" } },
+    });
   });
 
   it("pauses and resumes watch input when the client frame queue reaches its byte bound", async () => {
@@ -312,11 +378,12 @@ describe("private socket runtime", () => {
     );
 
     const client = new SocketFleetClient({ socketPath });
-    const stream = client.watchSession({ name: "reviewer" }, { signal });
-    const result = await stream[Symbol.asyncIterator]().next();
-    expect(result.value).toMatchObject({
-      ok: false,
-      error: { code: "runtime_unavailable" },
+    const iterator = client.watch({ name: "reviewer" }, { signal })[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { ok: true, value: { type: "ready" } },
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { ok: false, error: { code: "runtime_unavailable" } },
     });
   });
 
@@ -360,7 +427,7 @@ describe("private socket runtime", () => {
       stream: "ready",
     }));
 
-    const iterator = client.watchSession({ name: "reviewer" }, { signal })[Symbol.asyncIterator]();
+    const iterator = client.watch({ name: "reviewer" }, { signal })[Symbol.asyncIterator]();
     await expect(iterator.next()).resolves.toMatchObject({
       value: {
         ok: false,

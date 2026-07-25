@@ -96,7 +96,7 @@ export function createProgram(
 
   program
     .command("watch")
-    .description("Stream native Pi session JSONL records")
+    .description("Stream live raw Pi RPC JSONL")
     .argument("<name>")
     .action(async (name: string) => {
       setExitCode(await runWatch(name, context));

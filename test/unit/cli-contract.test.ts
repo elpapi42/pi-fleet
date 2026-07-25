@@ -47,7 +47,7 @@ function fakeClient(overrides: Partial<FleetClient> = {}): FleetClient {
     receive: unavailable,
     status: unavailable,
     list: unavailable,
-    watchSession: async function* () {
+    watch: async function* () {
       yield err<FleetClientError>({ code: "internal_error", message: "unexpected" });
     },
     destroy: unavailable,
@@ -149,19 +149,26 @@ describe("public CLI contract", () => {
     expect(harness.output()).toEqual({ stderr: "", stdout: "latest response\n" });
   });
 
-  it("writes watch bytes without a pi-fleet wrapper", async () => {
+  it("writes readiness only to stderr and raw Pi RPC bytes only to stdout", async () => {
     const client = fakeClient({
-      watchSession: async function* () {
-        yield ok({ bytes: new TextEncoder().encode('{"type":"session"}\n') });
-        yield ok({ bytes: new TextEncoder().encode('{"type":"message"}\n') });
+      watch: async function* () {
+        yield ok({ type: "ready" });
+        yield ok({
+          type: "chunk",
+          bytes: new TextEncoder().encode(
+            '{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"why"}}\n',
+          ),
+        });
+        yield ok({ type: "chunk", bytes: Buffer.from("partial") });
       },
     });
     const harness = createHarness(client);
 
     expect(await runCli(["watch", "reviewer"], harness.dependencies)).toBe(0);
     expect(harness.output()).toEqual({
-      stderr: "",
-      stdout: '{"type":"session"}\n{"type":"message"}\n',
+      stderr: `${JSON.stringify({ schemaVersion: 1, type: "watch.ready", agent: { name: "reviewer" } })}\n`,
+      stdout:
+        '{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"why"}}\npartial',
     });
   });
 

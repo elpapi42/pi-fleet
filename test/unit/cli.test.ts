@@ -1,6 +1,7 @@
 import { Readable, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
 
+import type { FleetClient } from "../../src/client/fleet-client.js";
 import { unavailableFleetClient } from "../../src/client/unavailable-client.js";
 import { runCli, type CliDependencies } from "../../src/entry/cli.js";
 import { PRODUCT_VERSION } from "../../src/shared/product-identity.js";
@@ -56,14 +57,17 @@ describe("runCli", () => {
         callback(error);
       },
     });
-    const client = {
+    const client: FleetClient = {
       ...unavailableFleetClient,
-      watchSession: async function* () {
-        yield ok({ bytes: Buffer.from('{"type":"message"}\n') });
+      watch: async function* () {
+        yield ok({ type: "ready" });
+        yield ok({ type: "chunk", bytes: Buffer.from('{"type":"message"}\n') });
       },
     };
 
     expect(await runCli(["watch", "agent"], { ...harness.dependencies, client, stdout })).toBe(0);
-    expect(harness.read().stderr).toBe("");
+    expect(harness.read().stderr).toBe(
+      `${JSON.stringify({ schemaVersion: 1, type: "watch.ready", agent: { name: "agent" } })}\n`,
+    );
   });
 });

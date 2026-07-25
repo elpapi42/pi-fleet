@@ -114,9 +114,9 @@ export interface CompactResult {
   };
 }
 
-export interface RawSessionChunk {
-  readonly bytes: Uint8Array;
-}
+export type WatchStreamItem =
+  | { readonly type: "ready" }
+  | { readonly type: "chunk"; readonly bytes: Uint8Array };
 
 export interface FleetClient {
   create(
@@ -133,10 +133,10 @@ export interface FleetClient {
     options: RequestOptions,
   ): Promise<Result<StatusResult, FleetClientError>>;
   list(options: RequestOptions): Promise<Result<ListResult, FleetClientError>>;
-  watchSession(
+  watch(
     input: WatchInput,
     options: RequestOptions,
-  ): AsyncIterable<Result<RawSessionChunk, FleetClientError>>;
+  ): AsyncIterable<Result<WatchStreamItem, FleetClientError>>;
   destroy(
     input: DestroyInput,
     options: MutationOptions,

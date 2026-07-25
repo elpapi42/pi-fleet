@@ -24,6 +24,10 @@ export function writeResult(stream: Writable, result: FiniteResult, human: boole
   stream.write(human ? `${renderHuman(result)}\n` : `${JSON.stringify(result)}\n`);
 }
 
+export function writeWatchReady(stream: Writable, name: string): void {
+  stream.write(`${JSON.stringify({ schemaVersion: 1, type: "watch.ready", agent: { name } })}\n`);
+}
+
 export function writeError(stream: Writable, error: FleetClientError, human: boolean): void {
   if (human) {
     stream.write(`${error.message}\n`);

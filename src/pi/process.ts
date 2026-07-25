@@ -62,6 +62,7 @@ export interface PiProcessStartOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly maxStdoutFrameBytes?: number;
   readonly onSpawn?: (pid: number) => Promise<void>;
+  readonly onStdoutBytes?: (bytes: Buffer) => void;
 }
 
 interface ResponseWaiter {
@@ -99,7 +100,10 @@ export class PiProcess {
       },
     );
     this.#child.stderr.setEncoding("utf8");
-    this.#child.stdout.on("data", (chunk: Buffer) => this.#consumeStdout(chunk));
+    this.#child.stdout.on("data", (chunk: Buffer) => {
+      options.onStdoutBytes?.(chunk);
+      this.#consumeStdout(chunk);
+    });
     this.#child.stderr.on("data", (chunk: string) => {
       this.#stderr = `${this.#stderr}${chunk}`.slice(-65_536);
     });

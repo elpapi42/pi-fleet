@@ -4,18 +4,22 @@
 
 ### Added
 
-- Added `pifleet compact NAME [--human]`, backed by Pi's typed native compaction RPC. It restores an absent idle agent when capacity allows, checks authoritative state immediately before invocation, returns bounded token metrics, keeps raw session watchers attached, and never replays ambiguous compaction after a crash. Pi does not currently provide an atomic idle-only compact primitive, so a narrow trusted-extension activity race remains documented.
+- Added `pifleet compact NAME [--human]`, backed by Pi's typed native compaction RPC. It restores an absent idle agent when capacity allows, checks authoritative state immediately before invocation, returns bounded token metrics, emits native compaction activity through raw RPC watchers, and never replays ambiguous compaction after a crash. Pi does not currently provide an atomic idle-only compact primitive, so a narrow trusted-extension activity race remains documented.
+
+### Changed
+
+- Replaced `watch` session-file tailing with a live, unfiltered, byte-exact stream of one Pi RPC process incarnation's stdout. Stdout carries only Pi bytes; stderr reports subscription readiness and typed stream failures. Watching remains passive, bounded, and live-only, and never silently concatenates restored process streams.
 
 ### Documentation
 
 - Reframed pi-fleet as Pi-native, machine-first execution infrastructure for agent systems operating beyond terminal scale rather than a human-facing background terminal tool.
-- Reworked the README and operator skill around programmatic lifecycle control, exact latest-response retrieval, native session JSONL, orchestration boundaries, and user-owned sessions.
+- Reworked the README and operator skill around programmatic lifecycle control, exact latest-response retrieval, live Pi RPC JSONL, orchestration boundaries, and user-owned sessions.
 - Clarified that `create` creates an agent whose local name is its stable programmatic address, while its process residency and user-controlled native session remain separate concerns.
 - Removed superseded internal implementation, testing, and release-planning documents to keep repository documentation focused on the README, operator skill, and changelog.
 
 ### Reliability
 
-- Added deterministic fault-injection coverage for receive timeout/cancellation, delivery recovery, runtime crashes, Pi RPC failures, SQLite worker/storage failures, protocol framing, command races, raw session boundaries, and public-error redaction.
+- Added deterministic fault-injection coverage for receive timeout/cancellation, delivery recovery, runtime crashes, Pi RPC failures, SQLite worker/storage failures, protocol framing, command races, raw RPC byte boundaries, and public-error redaction.
 - Serialized create, send, and destroy transitions per agent so cross-command races cannot orphan or resurrect an agent generation.
 - Made SQLite-worker failures terminal for current and future calls and made send recovery safe when an operation exists but no send record was committed.
 - Redacted Pi stderr and unexpected internal exceptions from public errors while retaining stable typed error codes.

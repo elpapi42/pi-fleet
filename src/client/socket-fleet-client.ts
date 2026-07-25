@@ -15,7 +15,7 @@ import type {
   FleetClientError,
   ListResult,
   MutationOptions,
-  RawSessionChunk,
+  WatchStreamItem,
   ReceiveInput,
   ReceiveResult,
   RequestOptions,
@@ -63,10 +63,10 @@ export class SocketFleetClient implements FleetClient {
     return this.#request("agent.list", {}, options);
   }
 
-  async *watchSession(
+  async *watch(
     input: WatchInput,
     options: RequestOptions,
-  ): AsyncIterable<Result<RawSessionChunk, FleetClientError>> {
+  ): AsyncIterable<Result<WatchStreamItem, FleetClientError>> {
     let socket: Socket;
     try {
       await this.options.beforeConnect?.();
@@ -96,13 +96,16 @@ export class SocketFleetClient implements FleetClient {
           });
           return;
         }
-        if (frame.stream === "ready") continue;
+        if (frame.stream === "ready") {
+          yield ok({ type: "ready" });
+          continue;
+        }
         if (frame.stream === "end") {
           endedExplicitly = true;
           return;
         }
         if (frame.stream === "chunk" && typeof frame.data === "string") {
-          yield ok({ bytes: Buffer.from(frame.data, "base64") });
+          yield ok({ type: "chunk", bytes: Buffer.from(frame.data, "base64") });
           continue;
         }
         if (frame.stream === "error" && isErrorRecord(frame.error)) {

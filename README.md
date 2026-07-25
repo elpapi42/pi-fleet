@@ -2,7 +2,7 @@
 
 **Pi orchestration beyond terminal scale.**
 
-pi-fleet is a local, machine-first runtime for software that orchestrates Pi agents and their native sessions. It provides precise lifecycle control, exact latest-response retrieval, and native structured session data without scraping terminals.
+pi-fleet is a local, machine-first runtime for software that orchestrates Pi agents and their native sessions. It provides precise lifecycle control, exact latest-response retrieval, and live raw Pi RPC JSONL without scraping terminals.
 
 **Control execution. Own the session. Build the orchestration above it.**
 
@@ -15,7 +15,7 @@ Terminal multiplexers such as tmux, cmux, and Herdr expose processes, panes, and
 | Terminal multiplexers (tmux, cmux, Herdr)  | pi-fleet                                   |
 | ------------------------------------------ | ------------------------------------------ |
 | Human-facing panes                         | Machine-readable lifecycle control         |
-| Rendered stdout and scrollback             | Native Pi session JSONL                    |
+| Rendered stdout and scrollback             | Live raw Pi RPC JSONL                      |
 | Last _n_ terminal lines                    | Exact latest settled assistant response    |
 | Generic terminal input                     | Pi-native prompt and steering semantics    |
 | Caller-defined recovery                    | Explicit restoration and failure state     |
@@ -83,13 +83,13 @@ pifleet status reviewer > status.json
 # Wait for idle and retrieve the exact latest assistant response.
 pifleet receive reviewer --timeout 10m > result.json
 
-# Feed newly appended native session records to your own tooling.
-pifleet watch reviewer > live-session.jsonl
+# Stream Pi's live RPC stdout to your own tooling.
+pifleet watch reviewer > pi-rpc.jsonl 2> watch-control.jsonl
 ```
 
-Finite commands emit one compact JSON object on stdout. Expected failures emit one structured JSON error object on stderr. Exit status `0` means success, `1` means error, and receive timeout uses `124`. `watch` reserves stdout exclusively for native Pi session JSONL.
+Finite commands emit one compact JSON object on stdout. Expected failures emit one structured JSON error object on stderr. Exit status `0` means success, `1` means error, and receive timeout uses `124`. `watch` reserves stdout exclusively for Pi's raw RPC byte stream and writes pi-fleet readiness or errors to stderr.
 
-`--human` exists as a debugging convenience for the six finite commands; programmatic callers should use the default JSON output.
+`--human` exists as a debugging convenience for the seven finite commands; programmatic callers should use the default JSON output.
 
 ## Your sessions are the data layer
 
@@ -104,7 +104,7 @@ The agent's session is not opaque pi-fleet data. It remains a native, user-contr
 - pi-fleet never copies, relocates, normalizes, wraps, or deletes session files.
 - `destroy` removes pi-fleet management and its process; it never removes the Pi session.
 - External tools may read or analyze the same session without a pi-fleet-specific data format.
-- Deliberate concurrent writers remain under user control, but they can invalidate restoration and live-tailing guarantees. pi-fleet fails visibly rather than silently taking ownership or substituting a copy.
+- Deliberate concurrent writers remain under user control, but they can invalidate restoration guarantees. pi-fleet fails visibly rather than silently taking ownership or substituting a copy.
 
 Pass compatible native Pi selectors after the first literal `--`:
 
@@ -152,7 +152,7 @@ pifleet destroy NAME [--human]
 | Communicate            | `send`           | Start ordinary work while idle or steer active work at Pi's next decision |
 | Retrieve exact results | `receive`        | Wait for idle and return Pi's latest assistant text                       |
 | Inspect lifecycle      | `status`, `list` | Observe logical and process state without restoring Pi                    |
-| Observe session data   | `watch`          | Stream newly appended native session JSONL records                        |
+| Observe live Pi RPC    | `watch`          | Stream one Pi process incarnation's unfiltered RPC stdout                 |
 | Compact context        | `compact`        | Compact an idle agent with Pi's native compaction RPC                     |
 | Release execution      | `destroy`        | Stop pi-fleet management without deleting the Pi session                  |
 
@@ -175,7 +175,7 @@ pifleet create researcher - --cwd "$PWD" < instructions.md
 
 ### Lifecycle and recovery
 
-`compact` is an explicit process-starting action for an idle absent agent. It restores the exact native session when capacity allows, then uses Pi's typed compaction RPC and returns bounded token metrics. It checks authoritative Pi state immediately before invocation and refuses observed active, queued, restoring, or already-compacting work. Pi does not provide an atomic idle-only compact operation, so trusted extension activity beginning in the narrow interval after that check can still encounter Pi's native abort-first compaction behavior. During compaction the agent is not idle; `receive` waits, and `watch` remains a raw native session tail containing Pi's appended compaction record. Treat `compaction_uncertain` as potentially applied and never retry it automatically.
+`compact` is an explicit process-starting action for an idle absent agent. It restores the exact native session when capacity allows, then uses Pi's typed compaction RPC and returns bounded token metrics. It checks authoritative Pi state immediately before invocation and refuses observed active, queued, restoring, or already-compacting work. Pi does not provide an atomic idle-only compact operation, so trusted extension activity beginning in the narrow interval after that check can still encounter Pi's native abort-first compaction behavior. During compaction the agent is not idle; `receive` waits, and `watch` streams Pi's native `compaction_start`, `compaction_end`, command response, and any other RPC stdout unchanged. Treat `compaction_uncertain` as potentially applied and never retry it automatically.
 
 An idle agent's Pi process normally remains resident. If the process is absent, a later `send` restores the agent from its concrete native session when safe. `status`, `list`, `watch`, and retrieval of an already settled response do not restore the process.
 
@@ -188,13 +188,13 @@ Inspect failed state before deciding what the orchestrator should do:
 
 A new explicit send is new work, not evidence that uncertain earlier work did nothing. Semantic retry policy belongs to the calling orchestrator.
 
-### Native session stream
+### Live raw Pi RPC stream
 
-`watch` is a live, byte-faithful tail of complete LF-terminated records from the persistent Pi session JSONL. It emits no pi-fleet wrappers, lifecycle records, history, or transient RPC events, and it never wakes or steers Pi.
+`watch` is a live, byte-faithful copy of one Pi RPC process incarnation's stdout from attachment until that process exits. It forwards every byte without parsing, filtering, aggregation, normalization, or reserialization. That includes command responses, text and thinking deltas, tool-call deltas, tool execution, lifecycle, queue, retry, compaction, extension UI, unknown future records, and even malformed or partial output exactly as Pi emitted it.
 
-For an existing file, `watch` starts at the current EOF. For an unmaterialized session, it waits and begins at byte zero when the file appears. Detectable replacement, truncation, lag, path changes, or runtime loss fail visibly on stderr instead of being guessed or replayed.
+The stream is live-only: it has no history or replay. A resident agent attaches immediately to future bytes. An absent idle agent remains unwoken and the watcher waits for its next incarnation, binding before startup RPC traffic. Once bound, the watcher ends with that incarnation and never silently concatenates a restored process.
 
-Lifecycle and status are available through pi-fleet's finite JSON commands. `watch` is the native session-data surface; it is not terminal output and not a public stream of raw transient Pi RPC traffic.
+Stdout contains only Pi bytes. Stderr emits one `watch.ready` JSON record after atomic subscription registration and carries any later pi-fleet error. Private transport may split or coalesce chunks, so clients must treat concatenated bytes as authoritative and buffer through LF themselves when parsing JSONL. A lagging watcher fails with `watcher_lagged` without blocking Pi or healthy watchers.
 
 ## Runtime, data, and maintenance
 

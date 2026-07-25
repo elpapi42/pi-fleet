@@ -120,6 +120,126 @@ function settleDuringReceiveLauncher(): PiLauncher {
 }
 
 describe("runtime admission limits", () => {
+  it("streams exact RPC stdout to a watcher attached before restoration", async () => {
+    const raw = Buffer.from(
+      '{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"why"}}\n',
+    );
+    let starts = 0;
+    const launcher: PiLauncher = {
+      artifactId: "streaming-pi",
+      async start(_profile, _restore, _onSpawn, onStdoutBytes): Promise<PiProcess> {
+        starts += 1;
+        if (starts === 2) onStdoutBytes?.(raw);
+        return fakeProcess(40_000 + starts);
+      },
+    };
+    const service = new FleetService(new MemoryFleetStore(), { launcher });
+    await service.create({ name: "reviewer", cwd: "/tmp", piArgv: [] }, "create-reviewer");
+    await service.releaseAgentProcess("reviewer");
+    const abort = new AbortController();
+    const watch = await service.openWatch({ name: "reviewer" }, abort.signal);
+    expect(watch.ok).toBe(true);
+    if (!watch.ok) throw new Error("watch failed");
+    const iterator = watch.value[Symbol.asyncIterator]();
+
+    await service.send({ name: "reviewer", message: "continue" }, "send-reviewer");
+
+    expect((await iterator.next()).value).toEqual(raw);
+    abort.abort();
+    await service.close();
+  });
+
+  it("streams future RPC stdout from an already resident incarnation", async () => {
+    let publish: ((bytes: Buffer) => void) | undefined;
+    const launcher: PiLauncher = {
+      artifactId: "resident-streaming-pi",
+      async start(_profile, _restore, _onSpawn, onStdoutBytes): Promise<PiProcess> {
+        publish = onStdoutBytes;
+        return fakeProcess(41_000);
+      },
+    };
+    const service = new FleetService(new MemoryFleetStore(), { launcher });
+    await service.create({ name: "reviewer", cwd: "/tmp", piArgv: [] }, "create-reviewer");
+    const abort = new AbortController();
+    const watch = await service.openWatch({ name: "reviewer" }, abort.signal);
+    expect(watch.ok).toBe(true);
+    if (!watch.ok) throw new Error("watch failed");
+    const iterator = watch.value[Symbol.asyncIterator]();
+    const raw = Buffer.from("not-json\r\n");
+
+    publish?.(raw);
+
+    expect((await iterator.next()).value).toEqual(raw);
+    abort.abort();
+    await service.close();
+  });
+
+  it("allows passive watch before a native session file exists", async () => {
+    const service = new FleetService(new MemoryFleetStore());
+    await service.create({ name: "promptless", cwd: "/tmp", piArgv: [] }, "create-promptless");
+    const abort = new AbortController();
+
+    const watch = await service.openWatch({ name: "promptless" }, abort.signal);
+
+    expect(watch.ok).toBe(true);
+    abort.abort();
+    await service.close();
+  });
+
+  it("ends a watch at its bound Pi incarnation instead of rebinding it", async () => {
+    let publish: ((bytes: Buffer) => void) | undefined;
+    const launcher: PiLauncher = {
+      artifactId: "incarnation-pi",
+      async start(_profile, _restore, _onSpawn, onStdoutBytes): Promise<PiProcess> {
+        publish = onStdoutBytes;
+        return fakeProcess(42_000);
+      },
+    };
+    const service = new FleetService(new MemoryFleetStore(), { launcher });
+    await service.create({ name: "reviewer", cwd: "/tmp", piArgv: [] }, "create-reviewer");
+    const watch = await service.openWatch({ name: "reviewer" }, new AbortController().signal);
+    expect(watch.ok).toBe(true);
+    if (!watch.ok) throw new Error("watch failed");
+    const iterator = watch.value[Symbol.asyncIterator]();
+    publish?.(Buffer.from("last bytes"));
+
+    await service.releaseAgentProcess("reviewer");
+
+    expect((await iterator.next()).value?.toString()).toBe("last bytes");
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    await service.send({ name: "reviewer", message: "restore" }, "send-reviewer");
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    await service.close();
+  });
+
+  it("fails a pre-start watch when restoration cannot start Pi", async () => {
+    let starts = 0;
+    const launcher: PiLauncher = {
+      artifactId: "failed-streaming-pi",
+      async start(): Promise<PiProcess> {
+        starts += 1;
+        if (starts > 1) throw new Error("spawn failed");
+        return fakeProcess(43_000);
+      },
+    };
+    const service = new FleetService(new MemoryFleetStore(), { launcher });
+    await service.create({ name: "reviewer", cwd: "/tmp", piArgv: [] }, "create-reviewer");
+    await service.releaseAgentProcess("reviewer");
+    const watch = await service.openWatch({ name: "reviewer" }, new AbortController().signal);
+    expect(watch.ok).toBe(true);
+    if (!watch.ok) throw new Error("watch failed");
+    const next = watch.value[Symbol.asyncIterator]().next();
+
+    expect(
+      await service.send({ name: "reviewer", message: "restore" }, "send-reviewer"),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "pi_start_failed" },
+    });
+    await expect(next).rejects.toMatchObject({ code: "pi_start_failed" });
+    await service.close();
+  });
+
   it("returns and remembers invalid Pi startup arguments as a domain error", async () => {
     const store = new MemoryFleetStore();
     const service = new FleetService(store, { launcher: fakeLauncher() });

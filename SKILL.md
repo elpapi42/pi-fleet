@@ -1,6 +1,6 @@
 ---
 name: pi-fleet-operator
-description: Use `pifleet` as a machine-first control layer for Pi agents and their native sessions. Invoke this skill whenever an agent, Pi extension, orchestration workflow, or AI factory needs to create Pi agents, delegate or steer work, compact idle context, inspect lifecycle state, retrieve exact latest settled assistant text, consume native session JSONL, restore a session-backed process, coordinate several Pi agents, or release pi-fleet management. Also use it for pi-fleet automation and troubleshooting even when the user says only “use pi-fleet,” “delegate this,” “ask the reviewer,” or “check the agents.”
+description: Use `pifleet` as a machine-first control layer for Pi agents and their native sessions. Invoke this skill whenever an agent, Pi extension, orchestration workflow, or AI factory needs to create Pi agents, delegate or steer work, compact idle context, inspect lifecycle state, retrieve exact latest settled assistant text, consume live Pi RPC JSONL, restore a session-backed process, coordinate several Pi agents, or release pi-fleet management. Also use it for pi-fleet automation and troubleshooting even when the user says only “use pi-fleet,” “delegate this,” “ask the reviewer,” or “check the agents.”
 compatibility: Requires the `pifleet` executable on PATH and a supported pi-fleet installation.
 ---
 
@@ -22,7 +22,7 @@ The governing boundary is: **pi-fleet controls execution; the user controls the 
 2. Do not install, upgrade, repair, or restart pi-fleet unless the user asks for maintenance.
 3. Use the default compact JSON output for every finite command. Capture stdout, stderr, and exit status separately, and parse JSON rather than matching prose.
 4. Do not use `--human` for orchestration. If a person needs a result, parse the machine response and present the relevant information yourself.
-5. Treat `watch` differently from finite commands: its stdout is native Pi session JSONL, not pi-fleet response JSON.
+5. Treat `watch` differently from finite commands: stdout is Pi's unfiltered RPC byte stream, while readiness and errors are pi-fleet JSON on stderr.
 
 Operational commands may start the central runtime. Passive inspection must not wake an individual Pi process: `status`, `list`, `watch`, and retrieval of an already settled response remain passive with respect to Pi.
 
@@ -78,7 +78,7 @@ pifleet create NAME --cwd /absolute/project/path -- --continue
 
 pi-fleet records the concrete selected session for restoration and observation. It never copies, relocates, normalizes, or deletes the session.
 
-Do not hide, replace, or take ownership of session files in orchestration code. External observability and knowledge-mining systems should consume the native files or `watch` stream directly. Deliberate concurrent writers are allowed at the user's risk; never imply that arbitrary concurrent mutation preserves restoration or live-tail correctness.
+Do not hide, replace, or take ownership of session files in orchestration code. External observability and knowledge-mining systems may read the native files directly; `watch` is instead the live transient Pi RPC stream. Deliberate concurrent writers are allowed at the user's risk; never imply that arbitrary concurrent mutation preserves restoration correctness.
 
 ## Submit and steer work
 
@@ -156,7 +156,7 @@ pifleet compact NAME
 
 `compact` restores an absent idle process when capacity allows, leaves it resident afterward, and returns bounded token metrics in `agent.compacted`. It checks authoritative Pi state immediately before invocation and rejects observed active, queued, restoring, or already-compacting work with `agent_busy`. Pi does not offer an atomic idle-only compact operation; trusted extension activity starting after that check can still encounter Pi's native abort-first behavior.
 
-Compaction does not produce a new assistant response. Use the `compact` result—not `receive`—to determine whether it completed. `receive` waits while compaction is active, and `watch` continues to emit Pi's native session JSONL, including the appended compaction record.
+Compaction does not produce a new assistant response. Use the `compact` result—not `receive`—to determine whether it completed. `receive` waits while compaction is active, and `watch` forwards Pi's compaction RPC events and command response unchanged.
 
 Treat `compaction_uncertain` as potentially applied and never retry it automatically: Pi may have appended the native compaction entry before the runtime lost the result.
 
@@ -174,21 +174,21 @@ When orchestrating several Pi agents:
 
 pi-fleet has no scheduler queue or idle-process eviction. A process-starting operation can return `capacity_exceeded`; callers must reduce fan-out or deliberately destroy another agent rather than assuming hidden queueing.
 
-## Consume native session records
+## Consume live Pi RPC output
 
-`watch` is a live, byte-faithful tail of complete LF-terminated records from the persistent Pi session JSONL:
+`watch` is a live, byte-faithful copy of one Pi process incarnation's RPC stdout:
 
 ```bash
-pifleet watch NAME
+pifleet watch NAME > pi-rpc.jsonl 2> watch-control.jsonl
 ```
 
-Use it as an input to custom observability, indexing, auditing, debugging, or knowledge-mining systems. It is not terminal output and not a public stream of transient Pi RPC traffic.
+Stdout contains exactly Pi's byte stream: command responses, text and thinking deltas, tool-call deltas, tool execution, lifecycle, queue, retry, compaction, extension UI, unknown records, and malformed or partial output are never filtered or reconstructed. Stderr receives one `watch.ready` record after registration and any later pi-fleet error.
 
-`watch` emits no pi-fleet wrappers, lifecycle records, readiness markers, or history. For an existing session it begins at the current EOF; for an unmaterialized session it waits and begins at byte zero when the file appears.
+Treat concatenated bytes as authoritative because process and socket chunk boundaries may differ. Buffer through LF before parsing JSONL. Do not assume every emitted chunk is one record or valid UTF-8 by itself.
 
-Keep watching decoupled from sending. Starting or canceling a watcher must not wake, steer, cancel, or otherwise change Pi. Treat replacement, truncation, path changes, lag, runtime loss, or unexpected EOF as visible failures rather than guessing or replaying bytes.
+`watch` is live-only and has no replay. It attaches to a resident incarnation or waits passively for the next one without waking Pi. Once bound, it ends when that process exits and never silently follows a restored process. Start a new watch for the next incarnation.
 
-Use `status` and `list` for lifecycle information. Never infer lifecycle solely from session records.
+Starting or canceling a watcher must not wake, steer, cancel, or otherwise change Pi. A lagging watcher fails independently with `watcher_lagged`; runtime or process failures remain visible rather than dropping bytes silently. Continue to use `status`, `list`, and `receive` for authoritative lifecycle and latest-result semantics.
 
 ## Release management deliberately
 
