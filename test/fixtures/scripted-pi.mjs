@@ -12,7 +12,7 @@ function response(id, command, data = {}) {
 lines.on("line", (line) => {
   const request = JSON.parse(line);
   requests += 1;
-  if (requests === 1 && request.type === "get_state") {
+  if ((requests === 1 || mode === "idle") && request.type === "get_state") {
     process.stdout.write(
       `${response(request.id, "get_state", {
         isStreaming: false,

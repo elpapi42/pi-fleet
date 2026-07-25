@@ -47,9 +47,9 @@ export async function runRuntime(): Promise<void> {
     const shutdown = () => {
       if (closing) return;
       closing = true;
-      void server
-        .close()
-        .then(() => service.close())
+      const serviceClosing = service.close();
+      const serverClosing = server.close();
+      void Promise.allSettled([serviceClosing, serverClosing])
         .then(() => store.close(true))
         .finally(resolveShutdown);
     };

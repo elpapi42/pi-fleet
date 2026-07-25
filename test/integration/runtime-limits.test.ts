@@ -186,6 +186,118 @@ describe("runtime admission limits", () => {
     await service.close();
   });
 
+  it("forwards Pi stdout emitted during destroy before ending the watch", async () => {
+    const shutdownBytes = Buffer.from(
+      '{"type":"extension_ui_request","method":"setStatus","statusText":"stopping"}\n',
+    );
+    let exitListener: ((error: Error | null) => void) | undefined;
+    const launcher: PiLauncher = {
+      artifactId: "shutdown-streaming-pi",
+      async start(_profile, _restore, _onSpawn, onStdoutBytes): Promise<PiProcess> {
+        return {
+          pid: 41_500,
+          async getState() {
+            return {
+              isStreaming: false,
+              isCompacting: false,
+              pendingMessageCount: 0,
+              sessionFile: "/tmp/shutdown-stream.jsonl",
+              sessionId: "shutdown-stream",
+            };
+          },
+          async prompt() {},
+          async getLastAssistantText() {
+            return null;
+          },
+          onFrame() {
+            return () => undefined;
+          },
+          onExit(listener: (error: Error | null) => void) {
+            exitListener = listener;
+            return () => undefined;
+          },
+          async stop() {
+            onStdoutBytes?.(shutdownBytes);
+            exitListener?.(null);
+            await Promise.resolve();
+          },
+        } as unknown as PiProcess;
+      },
+    };
+    const service = new FleetService(new MemoryFleetStore(), { launcher });
+    const created = await service.create(
+      { name: "reviewer", cwd: "/tmp", piArgv: [] },
+      "create-reviewer",
+    );
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    const watch = await service.openWatch({ name: "reviewer" }, new AbortController().signal);
+    expect(watch.ok).toBe(true);
+    if (!watch.ok) throw new Error("watch failed");
+    const iterator = watch.value[Symbol.asyncIterator]();
+
+    await expect(service.destroy({ name: "reviewer" }, "destroy-reviewer")).resolves.toMatchObject({
+      ok: true,
+    });
+
+    expect((await iterator.next()).value).toEqual(shutdownBytes);
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    await service.close();
+  });
+
+  it("does not admit an orphan watch after destroy has started", async () => {
+    let exitListener: ((error: Error | null) => void) | undefined;
+    let releaseStop!: () => void;
+    let markStopping!: () => void;
+    const stopping = new Promise<void>((resolve) => (markStopping = resolve));
+    const stopGate = new Promise<void>((resolve) => (releaseStop = resolve));
+    const launcher: PiLauncher = {
+      artifactId: "destroy-race-pi",
+      async start(): Promise<PiProcess> {
+        return {
+          ...fakeProcess(41_600),
+          onExit(listener: (error: Error | null) => void) {
+            exitListener = listener;
+            return () => undefined;
+          },
+          async stop() {
+            markStopping();
+            await stopGate;
+            exitListener?.(null);
+          },
+        } as unknown as PiProcess;
+      },
+    };
+    const service = new FleetService(new MemoryFleetStore(), { launcher });
+    await service.create({ name: "reviewer", cwd: "/tmp", piArgv: [] }, "create-reviewer");
+    const destroying = service.destroy({ name: "reviewer" }, "destroy-reviewer");
+    await stopping;
+
+    await expect(
+      service.openWatch({ name: "reviewer" }, new AbortController().signal),
+    ).resolves.toMatchObject({ ok: false, error: { code: "agent_destroying" } });
+
+    releaseStop();
+    await expect(destroying).resolves.toMatchObject({ ok: true });
+    await expect(
+      service.openWatch({ name: "reviewer" }, new AbortController().signal),
+    ).resolves.toMatchObject({ ok: false, error: { code: "agent_not_found" } });
+    await service.close();
+  });
+
+  it("closes a registered watch when destroy wins after registration", async () => {
+    const service = new FleetService(new MemoryFleetStore(), { launcher: fakeLauncher() });
+    await service.create({ name: "reviewer", cwd: "/tmp", piArgv: [] }, "create-reviewer");
+    const watch = await service.openWatch({ name: "reviewer" }, new AbortController().signal);
+    expect(watch.ok).toBe(true);
+    if (!watch.ok) throw new Error("watch failed");
+    const iterator = watch.value[Symbol.asyncIterator]();
+
+    await service.destroy({ name: "reviewer" }, "destroy-reviewer");
+
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    await service.close();
+  });
+
   it("ends a watch at its bound Pi incarnation instead of rebinding it", async () => {
     let publish: ((bytes: Buffer) => void) | undefined;
     const launcher: PiLauncher = {
@@ -465,6 +577,17 @@ describe("runtime admission limits", () => {
         error: undefined,
       },
     });
+  });
+
+  it("rejects watch registration after runtime shutdown begins", async () => {
+    const service = new FleetService(new MemoryFleetStore());
+    await service.create({ name: "reviewer", cwd: "/tmp", piArgv: [] }, "create-reviewer");
+
+    await service.close();
+
+    await expect(
+      service.openWatch({ name: "reviewer" }, new AbortController().signal),
+    ).resolves.toMatchObject({ ok: false, error: { code: "runtime_unavailable" } });
   });
 
   it("marks active work interrupted during orderly runtime shutdown", async () => {

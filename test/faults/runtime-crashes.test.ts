@@ -66,6 +66,56 @@ function activePiPid(databasePath: string): number | null {
 }
 
 describe("compiled runtime crash recovery", () => {
+  it("completes orderly shutdown while a watch connection is held", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-runtime-watch-shutdown-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const wrapper = join(root, "scripted-pi");
+    const fixture = new URL("../fixtures/scripted-pi.mjs", import.meta.url).pathname;
+    await writeFile(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${fixture}" "$@"\n`);
+    await chmod(wrapper, 0o700);
+    const sessionPath = join(root, "session.jsonl");
+    await writeFile(sessionPath, '{"type":"session","id":"watch-shutdown"}\n');
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: root,
+      PIFLEET_STATE_ROOT: join(root, "state"),
+      PIFLEET_APPLICATION_ROOT: join(root, "application"),
+      PIFLEET_DISABLE_REGISTERED_SERVICE: "1",
+      PIFLEET_PI_EXECUTABLE: wrapper,
+      PIFLEET_PI_ARTIFACT_ID: "scripted-pi",
+      PIFLEET_TEST_PI_MODE: "idle",
+      PIFLEET_TEST_SESSION_PATH: sessionPath,
+    };
+    const runtime = await startRuntime(env);
+    cleanups.push(() => runtime.stop());
+    const client = new SocketFleetClient({ socketPath: resolveFleetPaths(env).socketPath });
+    const signal = new AbortController().signal;
+    const created = await client.create(
+      { name: "watched", cwd: root, piArgv: [] },
+      {
+        signal,
+        operation: { operationId: "create-watched", createdAt: new Date().toISOString() },
+      },
+    );
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    const iterator = client.watch({ name: "watched" }, { signal })[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { ok: true, value: { type: "ready" } },
+    });
+
+    const exited = once(runtime.child, "exit");
+    runtime.child.kill("SIGTERM");
+    await expect(
+      Promise.race([
+        exited,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("runtime shutdown timed out")), 5_000),
+        ),
+      ]),
+    ).resolves.toBeDefined();
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
   it("fails held clients, preserves the session, and never starts a second writer after SIGKILL", async () => {
     const root = await mkdtemp(join(tmpdir(), "pifleet-runtime-crash-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));

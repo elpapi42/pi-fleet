@@ -58,6 +58,7 @@ export class FleetService {
   readonly #now: () => string;
   readonly #limits: RuntimeLimits;
   readonly #watchHub: RpcWatchHub;
+  #closing = false;
 
   constructor(
     private readonly store: FleetStore,
@@ -775,23 +776,30 @@ export class FleetService {
     });
   }
 
-  async openWatch(
+  openWatch(
     input: { readonly name: string },
     connectionSignal: AbortSignal,
   ): Promise<Result<AsyncIterable<Buffer>, FleetClientError>> {
-    const agent = await this.store.getAgent(input.name);
-    if (agent === null) return this.#notFound(input.name);
-    try {
-      return ok(this.#watchHub.subscribe(input.name, connectionSignal));
-    } catch (error: unknown) {
-      if (error instanceof RpcWatchError && error.code === "watcher_capacity_exceeded") {
-        return err({
-          code: "capacity_exceeded",
-          message: `pi-fleet has reached its ${String(this.#limits.maxWatchers)} watcher limit.`,
-        });
+    if (this.#closing) return Promise.resolve(this.#runtimeUnavailable());
+    if (this.#destroyingAgents.has(input.name))
+      return Promise.resolve(this.#agentDestroying(input.name));
+    return this.#enqueueAgent(input.name, async () => {
+      if (this.#closing) return this.#runtimeUnavailable();
+      if (this.#destroyingAgents.has(input.name)) return this.#agentDestroying(input.name);
+      const agent = await this.store.getAgent(input.name);
+      if (agent === null) return this.#notFound(input.name);
+      try {
+        return ok(this.#watchHub.subscribe(input.name, connectionSignal));
+      } catch (error: unknown) {
+        if (error instanceof RpcWatchError && error.code === "watcher_capacity_exceeded") {
+          return err({
+            code: "capacity_exceeded",
+            message: `pi-fleet has reached its ${String(this.#limits.maxWatchers)} watcher limit.`,
+          });
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
   }
 
   destroy(
@@ -836,10 +844,10 @@ export class FleetService {
       return result;
     }
     if (stored !== null) await this.#recordOperationTarget(operationId, stored);
-    this.#watchHub.closeAgent(input.name);
     const coordinator = this.#coordinators.get(input.name);
     if (coordinator !== undefined) await coordinator.stop("destroy");
     this.#coordinators.delete(input.name);
+    this.#watchHub.closeAgent(input.name);
     const agent = await this.store.deleteAgent(input.name);
     if (agent === null) return this.#rememberNotFound(operationId, "destroy", input);
     const result = ok<DestroyResult>({
@@ -859,13 +867,18 @@ export class FleetService {
   }
 
   async close(): Promise<void> {
-    this.#watchHub.closeAll(
-      new RpcWatchError("runtime_unavailable", "pi-fleet runtime is shutting down"),
-    );
-    await Promise.all(
+    this.#closing = true;
+    const stops = await Promise.allSettled(
       [...this.#coordinators.values()].map((coordinator) => coordinator.stop("runtime_shutdown")),
     );
     this.#coordinators.clear();
+    this.#watchHub.closeAll(
+      new RpcWatchError("runtime_unavailable", "pi-fleet runtime is shutting down"),
+    );
+    const failure = stops.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failure !== undefined) throw failure.reason;
   }
 
   async #dispatchSend(
@@ -1142,8 +1155,16 @@ export class FleetService {
     this.#processSlots.delete(name);
   }
 
+  #agentDestroying<T>(name: string): Result<T, FleetClientError> {
+    return err({ code: "agent_destroying", message: `Agent ${name} is being destroyed.` });
+  }
+
   #notFound<T>(name: string): Result<T, FleetClientError> {
     return err({ code: "agent_not_found", message: `Agent ${name} was not found.` });
+  }
+
+  #runtimeUnavailable<T>(): Result<T, FleetClientError> {
+    return err({ code: "runtime_unavailable", message: "pi-fleet runtime is shutting down." });
   }
 
   async #rememberCompactFailure(

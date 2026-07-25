@@ -234,7 +234,7 @@ Known limits:
 - Disposable systemd/PID-1 restart and user-lingering recovery are validated; a full host logout and kernel reboot are not.
 - macOS launchd and descendant containment, real disk exhaustion, and multi-hour resource growth remain unvalidated.
 - Runtime upgrades are not automatic, and active runtimes are not silently replaced.
-- Session tails cannot promise exactly-once delivery under arbitrary external mutation.
+- Raw RPC watch is live-only: it provides no replay and ends with its Pi process incarnation.
 - A promptless missing session path can remain unmaterialized until Pi writes conversation content, following native Pi behavior.
 - Managed Pi `0.80.10` pins `brace-expansion@5.0.6`, affected by local glob-input denial-of-service advisory `GHSA-3jxr-9vmj-r5cp`. Beta.9 permits only that exact package/version/path/advisory in the production-audit gate; every additional or changed production vulnerability fails release. Tracking: [earendil-works/pi#6882](https://github.com/earendil-works/pi/issues/6882).
 
