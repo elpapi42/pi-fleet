@@ -25,3 +25,5 @@ pnpm-debug.log*
 # Secrets and local configuration
 .env*
 !.env.example
+
+pi-acp/
