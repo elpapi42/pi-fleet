@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- pi-fleet now requires a separately installed Pi and is being migrated to launch the exact Pi executable and Node interpreter selected by the invoking environment. It does not install, bundle, copy, or silently substitute Pi.
+- A runtime whose persisted Pi is unavailable still serves passive inspection, response retrieval, watching, and cleanup; `create`, `send`, and `compact` fail before dispatch.
+- Changed existing service Pi/Node selections fail closed as `runtime_upgrade_deferred` until users finish work and explicitly transition supervision. The beta.9 managed-Pi service follows the same manual transition: uninstall only pi-fleet supervision, then install from the intended Pi environment; state and native sessions remain.
+
 ### Added
 
 - Added `pifleet compact NAME [--human]`, backed by Pi's typed native compaction RPC. It restores an absent idle agent when capacity allows, checks authoritative state immediately before invocation, returns bounded token metrics, emits native compaction activity through raw RPC watchers, and never replays ambiguous compaction after a crash. Pi does not currently provide an atomic idle-only compact primitive, so a narrow trusted-extension activity race remains documented.

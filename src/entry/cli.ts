@@ -7,7 +7,9 @@ import type { CliDependencies as Dependencies } from "../cli/context.js";
 import { createProgram } from "../cli/program.js";
 import { writeError } from "../cli/output.js";
 import { SocketFleetClient } from "../client/socket-fleet-client.js";
-import { ensureRuntime } from "../platform/client/start-runtime.js";
+import { resolveExternalPiInstallation } from "../pi/external-installation.js";
+import { installationIdentity } from "../pi/external-target.js";
+import { assertRegisteredPiSelection, ensureRuntime } from "../platform/client/start-runtime.js";
 import { resolveFleetPaths } from "../platform/shared/paths.js";
 
 export type CliDependencies = Dependencies;
@@ -15,10 +17,28 @@ export type CliDependencies = Dependencies;
 function defaultDependencies(): CliDependencies {
   const abort = new AbortController();
   const paths = resolveFleetPaths();
+  let installation: ReturnType<typeof resolveExternalPiInstallation> | undefined;
+  const selectedPi = () => (installation ??= resolveExternalPiInstallation({ env: process.env }));
+  const mutationPi = async () => {
+    const selected = await selectedPi();
+    if (process.env.PIFLEET_DISABLE_REGISTERED_SERVICE !== "1") {
+      await assertRegisteredPiSelection({
+        selectedPath: selected.selectedPath,
+        nodePath: selected.nodePath,
+      });
+    }
+    return selected;
+  };
   return {
     client: new SocketFleetClient({
       socketPath: paths.socketPath,
-      beforeConnect: () => ensureRuntime({ socketPath: paths.socketPath, env: process.env }),
+      beforeConnect: () =>
+        ensureRuntime({
+          socketPath: paths.socketPath,
+          env: process.env,
+          piInstallation: selectedPi,
+        }),
+      piIdentity: async () => installationIdentity(await mutationPi()),
     }),
     cwd: process.cwd(),
     stdin: process.stdin,

@@ -1,5 +1,10 @@
 import { createInterface } from "node:readline";
 
+if (process.argv.includes("--version")) {
+  process.stdout.write("0.82.1\n");
+  process.exit(0);
+}
+
 const mode = process.env.PIFLEET_TEST_PI_MODE ?? "normal";
 if (mode === "exit-before-ready") process.exit(19);
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });

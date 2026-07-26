@@ -131,6 +131,7 @@ describe("Pi execution availability", () => {
     const mismatched: PiRuntimeIdentity = {
       mode: "external",
       selectedPath: "/tmp/pi",
+      nodePath: "/tmp/node",
       realPath: "/tmp/pi-target",
       version: "0.82.1",
       fingerprint: "different",

@@ -1,7 +1,7 @@
 ---
 name: pi-fleet-operator
 description: Use `pifleet` as a machine-first control layer for Pi agents and their native sessions. Invoke this skill whenever an agent, Pi extension, orchestration workflow, or AI factory needs to create Pi agents, delegate or steer work, compact idle context, inspect lifecycle state, retrieve exact latest settled assistant text, consume live Pi RPC JSONL, restore a session-backed process, coordinate several Pi agents, or release pi-fleet management. Also use it for pi-fleet automation and troubleshooting even when the user says only “use pi-fleet,” “delegate this,” “ask the reviewer,” or “check the agents.”
-compatibility: Requires the `pifleet` executable on PATH and a supported pi-fleet installation.
+compatibility: Requires the `pifleet` executable and a separately installed supported `pi` executable on PATH.
 ---
 
 # pi-fleet operator
@@ -12,19 +12,29 @@ The governing boundary is: **pi-fleet controls execution; the user controls the 
 
 ## Establish context safely
 
-1. Confirm the executable and version before the first operation:
+1. Confirm pi-fleet and the separately installed Pi selected by the same terminal environment before the first work-accepting operation:
 
    ```bash
    command -v pifleet
    pifleet --version
+   command -v pi
+   pi --version
    ```
+
+   pi-fleet launches that PATH-selected Pi executable and its selected Node interpreter; it does not bundle or substitute Pi. `PIFLEET_PI_EXECUTABLE` may select an explicit absolute executable. Shell aliases and functions are unsupported.
 
 2. Do not install, upgrade, repair, or restart pi-fleet unless the user asks for maintenance.
 3. Use the default compact JSON output for every finite command. Capture stdout, stderr, and exit status separately, and parse JSON rather than matching prose.
 4. Do not use `--human` for orchestration. If a person needs a result, parse the machine response and present the relevant information yourself.
 5. Treat `watch` differently from finite commands: stdout is Pi's unfiltered RPC byte stream, while readiness and errors are pi-fleet JSON on stderr.
 
-Operational commands may start the central runtime. Passive inspection must not wake an individual Pi process: `status`, `list`, `watch`, and retrieval of an already settled response remain passive with respect to Pi.
+Operational commands may start the central runtime. Passive inspection must not wake an individual Pi process: `status`, `list`, `watch`, and retrieval of an already settled response remain passive with respect to Pi. If a service's persisted Pi later disappears, those passive commands and `destroy` remain usable; `create`, `send`, and `compact` fail before dispatch.
+
+## Pi changes and supervision transition
+
+A version-manager switch, global Pi upgrade, or changed selected Node must not silently alter a live pi-fleet runtime. A work-accepting command can return `pi_service_mismatch` when the terminal selection differs from the persisted service, or `runtime_upgrade_deferred` when automatic replacement cannot prove the existing runtime is quiescent.
+
+Do not force a repair. Finish or explicitly cancel existing work first. For the beta.9 managed-Pi to external-Pi transition, or any deferred service selection change, the safe maintenance procedure is user-authorized: remove only pi-fleet supervision with the installer `uninstall`, then run installer `install` from the environment selecting the intended Pi. This preserves SQLite state and every user-owned native session; it does not delete Pi or session files.
 
 ## Choose whether to reuse or create an agent
 

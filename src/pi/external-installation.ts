@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { createReadStream } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 
 const VERSION_TIMEOUT_MS = 3_000;
 const MAX_VERSION_OUTPUT_BYTES = 4 * 1024;
@@ -49,8 +49,9 @@ export async function resolveExternalPiInstallation(
   const nodePath = options.nodePath ?? (await resolveNodePath(env));
   await inspectNode(nodePath);
 
+  const executionEnv = externalPiExecutionEnvironment(env, selectedPath, nodePath);
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const observation = await observeInstallation(selectedPath, env, options);
+    const observation = await observeInstallation(selectedPath, executionEnv, options);
     if (observation !== null) {
       return {
         selectedPath,
@@ -64,6 +65,19 @@ export async function resolveExternalPiInstallation(
     "pi_installation_changed",
     "Pi changed while its installation was being observed.",
   );
+}
+
+export function externalPiExecutionEnvironment(
+  env: NodeJS.ProcessEnv,
+  selectedPath: string,
+  nodePath: string,
+): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    PATH: [dirname(nodePath), dirname(selectedPath), env.PATH]
+      .filter((value): value is string => value !== undefined && value.length > 0)
+      .join(delimiter),
+  };
 }
 
 async function observeInstallation(

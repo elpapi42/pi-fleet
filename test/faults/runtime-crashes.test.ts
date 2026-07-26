@@ -7,6 +7,8 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SocketFleetClient } from "../../src/client/socket-fleet-client.js";
+import { resolveExternalPiInstallation } from "../../src/pi/external-installation.js";
+import { installationIdentity } from "../../src/pi/external-target.js";
 import { resolveFleetPaths } from "../../src/platform/shared/paths.js";
 
 interface RunningRuntime {
@@ -51,6 +53,17 @@ async function startRuntime(env: NodeJS.ProcessEnv): Promise<RunningRuntime> {
   };
 }
 
+async function clientFor(env: NodeJS.ProcessEnv): Promise<SocketFleetClient> {
+  const installation = await resolveExternalPiInstallation({
+    env,
+    ...(env.PIFLEET_PI_NODE === undefined ? {} : { nodePath: env.PIFLEET_PI_NODE }),
+  });
+  return new SocketFleetClient({
+    socketPath: resolveFleetPaths(env).socketPath,
+    piIdentity: installationIdentity(installation),
+  });
+}
+
 function activePiPid(databasePath: string): number | null {
   const database = new DatabaseSync(databasePath, { readOnly: true });
   try {
@@ -82,13 +95,13 @@ describe("compiled runtime crash recovery", () => {
       PIFLEET_APPLICATION_ROOT: join(root, "application"),
       PIFLEET_DISABLE_REGISTERED_SERVICE: "1",
       PIFLEET_PI_EXECUTABLE: wrapper,
-      PIFLEET_PI_ARTIFACT_ID: "scripted-pi",
+      PIFLEET_PI_NODE: process.execPath,
       PIFLEET_TEST_PI_MODE: "idle",
       PIFLEET_TEST_SESSION_PATH: sessionPath,
     };
     const runtime = await startRuntime(env);
     cleanups.push(() => runtime.stop());
-    const client = new SocketFleetClient({ socketPath: resolveFleetPaths(env).socketPath });
+    const client = await clientFor(env);
     const signal = new AbortController().signal;
     const created = await client.create(
       { name: "watched", cwd: root, piArgv: [] },
@@ -132,14 +145,14 @@ describe("compiled runtime crash recovery", () => {
       PIFLEET_APPLICATION_ROOT: join(root, "application"),
       PIFLEET_DISABLE_REGISTERED_SERVICE: "1",
       PIFLEET_PI_EXECUTABLE: wrapper,
-      PIFLEET_PI_ARTIFACT_ID: "scripted-pi",
+      PIFLEET_PI_NODE: process.execPath,
       PIFLEET_TEST_PI_MODE: "working",
       PIFLEET_TEST_SESSION_PATH: sessionPath,
     };
     const paths = resolveFleetPaths(env);
     const first = await startRuntime(env);
     cleanups.push(() => first.stop());
-    const client = new SocketFleetClient({ socketPath: paths.socketPath });
+    const client = await clientFor(env);
     const signal = new AbortController().signal;
     await expect(
       client.create(
@@ -172,7 +185,7 @@ describe("compiled runtime crash recovery", () => {
 
     const second = await startRuntime(env);
     cleanups.push(() => second.stop());
-    const recoveredClient = new SocketFleetClient({ socketPath: paths.socketPath });
+    const recoveredClient = await clientFor(env);
     await expect(recoveredClient.status({ name: "crash" }, { signal })).resolves.toMatchObject({
       ok: true,
       value: {

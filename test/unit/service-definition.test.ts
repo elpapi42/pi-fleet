@@ -27,4 +27,23 @@ describe("native service definitions", () => {
     expect(plist).toContain(`<string>${options.runtimePath}</string>`);
     expect(plist).toContain("<key>RunAtLoad</key><true/>");
   });
+
+  it("persists exact Pi and Node paths with spaces and Unicode", () => {
+    const selected = {
+      ...options,
+      piExecutablePath: "/home/user/Pi Tools/π/bin/pi",
+      piNodePath: "/home/user/Node Tools/bin/node",
+    };
+    const unit = systemdUserUnit(selected);
+    expect(unit).toContain('Environment="PIFLEET_PI_EXECUTABLE=/home/user/Pi Tools/π/bin/pi"');
+    expect(unit).toContain('Environment="PIFLEET_PI_NODE=/home/user/Node Tools/bin/node"');
+
+    const plist = launchdAgentPlist(selected);
+    expect(plist).toContain(
+      "<key>PIFLEET_PI_EXECUTABLE</key><string>/home/user/Pi Tools/π/bin/pi</string>",
+    );
+    expect(plist).toContain(
+      "<key>PIFLEET_PI_NODE</key><string>/home/user/Node Tools/bin/node</string>",
+    );
+  });
 });

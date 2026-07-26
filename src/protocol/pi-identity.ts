@@ -14,6 +14,7 @@ export const PiRuntimeIdentitySchema = Type.Union([
     {
       mode: Type.Literal("external"),
       selectedPath: Type.String({ minLength: 1 }),
+      nodePath: Type.String({ minLength: 1 }),
       realPath: Type.String({ minLength: 1 }),
       version: Type.String({ minLength: 1 }),
       fingerprint: Type.String({ minLength: 1 }),
@@ -37,6 +38,7 @@ export function samePiRuntimeIdentity(left: PiRuntimeIdentity, right: PiRuntimeI
   if (left.mode === "external" && right.mode === "external") {
     return (
       left.selectedPath === right.selectedPath &&
+      left.nodePath === right.nodePath &&
       left.realPath === right.realPath &&
       left.version === right.version &&
       left.fingerprint === right.fingerprint

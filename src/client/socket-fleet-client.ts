@@ -32,7 +32,7 @@ export class SocketFleetClient implements FleetClient {
     private readonly options: {
       readonly socketPath: string;
       readonly beforeConnect?: () => Promise<void>;
-      readonly piIdentity?: PiRuntimeIdentity;
+      readonly piIdentity?: PiRuntimeIdentity | (() => Promise<PiRuntimeIdentity>);
     },
   ) {}
 
@@ -159,6 +159,13 @@ export class SocketFleetClient implements FleetClient {
     }
 
     const requestId = randomUUID();
+    let piIdentity: PiRuntimeIdentity | undefined;
+    try {
+      piIdentity = requiresPiIdentity(method) ? await this.#piIdentity() : undefined;
+    } catch (error: unknown) {
+      socket.destroy();
+      return err(piSelectionError(error));
+    }
     const response = firstMatchingFrame(socket, requestId, options.signal);
     writeJsonLine(socket, {
       v: PROTOCOL_VERSION,
@@ -166,9 +173,7 @@ export class SocketFleetClient implements FleetClient {
       method,
       params,
       ...(isMutationOptions(options) ? { operation: options.operation } : {}),
-      ...(requiresPiIdentity(method)
-        ? { runtime: { pi: this.options.piIdentity ?? MANAGED_PI_RUNTIME_IDENTITY } }
-        : {}),
+      ...(piIdentity === undefined ? {} : { runtime: { pi: piIdentity } }),
     });
 
     try {
@@ -203,6 +208,27 @@ export class SocketFleetClient implements FleetClient {
       socket.destroy();
     }
   }
+
+  async #piIdentity(): Promise<PiRuntimeIdentity> {
+    const configured = this.options.piIdentity;
+    if (configured === undefined) return MANAGED_PI_RUNTIME_IDENTITY;
+    return typeof configured === "function" ? configured() : configured;
+  }
+}
+
+function piSelectionError(error: unknown): FleetClientError {
+  const code = (error as { code?: unknown }).code;
+  if (
+    code === "pi_not_found" ||
+    code === "pi_not_executable" ||
+    code === "pi_version_unavailable" ||
+    code === "pi_version_unsupported" ||
+    code === "pi_installation_changed" ||
+    code === "pi_service_mismatch"
+  ) {
+    return { code, message: error instanceof Error ? error.message : "Pi is unavailable." };
+  }
+  return { code: "internal_error", message: "Pi selection failed." };
 }
 
 function isMutationOptions(options: RequestOptions | MutationOptions): options is MutationOptions {

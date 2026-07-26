@@ -35,6 +35,7 @@ export interface RealPiLauncherOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly onStart?: (pid: number) => void;
   readonly maxStdoutFrameBytes?: number;
+  readonly preflight?: () => Promise<void>;
 }
 
 export class RealPiLauncher implements PiLauncher {
@@ -42,6 +43,10 @@ export class RealPiLauncher implements PiLauncher {
 
   constructor(private readonly options: RealPiLauncherOptions) {
     this.artifactId = options.artifactId;
+  }
+
+  preflight(): Promise<void> {
+    return this.options.preflight?.() ?? Promise.resolve();
   }
 
   async start(

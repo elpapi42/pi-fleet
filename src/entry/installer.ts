@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
+import { resolveExternalPiInstallation } from "../pi/external-installation.js";
 import {
   installUserService,
   uninstallUserService,
@@ -31,14 +32,18 @@ async function installMaterializedService(stateRoot: string | undefined): Promis
     sourceRoot,
     applicationRoot: resolveApplicationRoot(),
   });
+  const pi = await resolveExternalPiInstallation({ env: process.env });
   return installUserService({
     platform: process.platform,
     definition: {
       nodePath: process.execPath,
       runtimePath: join(release, "bin", "pifleet-runtime.mjs"),
+      piExecutablePath: pi.selectedPath,
+      piNodePath: pi.nodePath,
       ...(stateRoot === undefined ? {} : { stateRoot }),
     },
     executor,
+    replaceExisting: false,
   });
 }
 

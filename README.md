@@ -59,12 +59,16 @@ If your primary requirement is watching one or two agents in terminal panes, a t
 
 ## Installation
 
-pi-fleet currently supports Linux x64 with Node.js `^22.19.0 || ^24.0.0`.
+pi-fleet currently supports Linux x64 with Node.js `^22.19.0 || ^24.0.0` and a separately installed, compatibility-tested Pi executable. pi-fleet does not install, bundle, copy, or substitute Pi.
 
 ```bash
+command -v pi
+pi --version
 npm install --global @elpapi42/pi-fleet@beta
 pifleet --version
 ```
+
+pi-fleet selects the executable `pi` found on the invoking command's `PATH`, together with the `node` selected from that same PATH for Pi shims using `#!/usr/bin/env node`. Use `PIFLEET_PI_EXECUTABLE=/absolute/path/to/pi` only to select an explicit absolute executable; aliases and shell functions are not supported. A registered service persists the selected Pi and Node paths, so switching NVM, fnm, Volta, or a global Pi installation requires an explicit supervision transition rather than silently changing a live runtime.
 
 Configure normal Pi provider credentials before the first operational command. pi-fleet commands start or reuse a persistent runtime, so environment variables added only to later invocations do not change that runtime's environment. Use normal Pi credential configuration or configure the persistent runtime/service environment.
 
@@ -210,7 +214,9 @@ Runtime socket:  $XDG_RUNTIME_DIR/pifleet-$UID/control.sock
 Pi sessions:     Pi's normal ~/.pi storage or the exact selected path
 ```
 
-`PIFLEET_STATE_ROOT` and `PIFLEET_APPLICATION_ROOT` override pi-fleet-owned locations. A CLI whose state root differs from an installed service fails with repair guidance rather than connecting to the wrong database.
+`PIFLEET_STATE_ROOT` and `PIFLEET_APPLICATION_ROOT` override pi-fleet-owned locations. A CLI whose state root differs from an installed service fails with repair guidance rather than connecting to the wrong database. If a persisted Pi later disappears or becomes incompatible, the runtime still serves passive `status`, `list`, stored `receive`, `watch`, and `destroy`; only `create`, `send`, and `compact` fail before Pi dispatch.
+
+A service whose persisted Pi or Node selection differs from the terminal selection rejects new work with `pi_service_mismatch`. Automatic replacement is deliberately fail-closed as `runtime_upgrade_deferred`: finish work, stop/remove only pi-fleet supervision with the installer `uninstall`, then run installer `install` from the environment selecting the intended Pi. This preserves pi-fleet state and every native Pi session. The beta.9 managed-Pi service requires this same explicit transition; pi-fleet never kills or replaces it automatically.
 
 `npx @elpapi42/pi-fleet@beta` is suitable for evaluation; global installation is recommended for continued use. pi-fleet materializes its runtime independently of the npm cache or installation, so evaluation can leave runtime and state behind.
 
@@ -226,7 +232,7 @@ Removing the npm package does not delete Pi sessions, pi-fleet SQLite state, mat
 
 ## Beta status
 
-Beta.9 has passed deterministic Linux x64 fault, recovery, package, compatibility, systemd/PID-1 restart, and resource-stability tests with Pi `0.80.10`. Its tag workflow verifies the exact registry artifact, provenance, and a fresh global-install operational smoke.
+Beta.9 historically shipped a managed Pi `0.80.10`. The unreleased external-Pi migration has compatibility evidence for the terminal-selected Pi `0.82.1`; it is not published until its separate-Pi package and supervised-runtime gates pass.
 
 Known limits:
 
@@ -236,7 +242,7 @@ Known limits:
 - Runtime upgrades are not automatic, and active runtimes are not silently replaced.
 - Raw RPC watch is live-only: it provides no replay and ends with its Pi process incarnation.
 - A promptless missing session path can remain unmaterialized until Pi writes conversation content, following native Pi behavior.
-- Managed Pi `0.80.10` pins `brace-expansion@5.0.6`, affected by local glob-input denial-of-service advisory `GHSA-3jxr-9vmj-r5cp`. Beta.9 permits only that exact package/version/path/advisory in the production-audit gate; every additional or changed production vulnerability fails release. Tracking: [earendil-works/pi#6882](https://github.com/earendil-works/pi/issues/6882).
+- Existing beta.9 releases include managed Pi `0.80.10` and its documented audit exception. The external-Pi migration will remove that dependency from what pi-fleet distributes; it does not certify the separately installed Pi's dependency posture.
 
 For support, include `node --version`, `pifleet --version`, `pifleet list`, and `pifleet status NAME`. Never include API keys, message contents, session contents, or private paths unnecessarily. Report reproducible issues at <https://github.com/elpapi42/pi-fleet/issues>.
 

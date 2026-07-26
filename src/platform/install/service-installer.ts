@@ -13,12 +13,24 @@ export interface CommandExecutor {
   run(command: string, args: readonly string[]): Promise<void>;
 }
 
+export class ServiceRepairDeferredError extends Error {
+  readonly code = "runtime_upgrade_deferred";
+
+  constructor() {
+    super(
+      "The installed pi-fleet service differs from the requested runtime or Pi selection. Automatic replacement is deferred because runtime quiescence cannot be proven; finish active work, stop the existing service explicitly, then install or repair again.",
+    );
+    this.name = "ServiceRepairDeferredError";
+  }
+}
+
 export async function installUserService(options: {
   readonly platform: NodeJS.Platform;
   readonly definition: ServiceDefinitionOptions;
   readonly executor: CommandExecutor;
   readonly home?: string;
   readonly uid?: number;
+  readonly replaceExisting?: boolean;
 }): Promise<string> {
   const home = options.home ?? homedir();
   if (options.platform === "linux") {
@@ -26,6 +38,9 @@ export async function installUserService(options: {
     const effectiveDefinition = await preserveInstalledStateRoot(path, options.definition, "linux");
     const definition = systemdUserUnit(effectiveDefinition);
     const needsRepair = await serviceDefinitionNeedsRepair(path, definition, effectiveDefinition);
+    if (needsRepair && options.replaceExisting === false && (await exists(path))) {
+      throw new ServiceRepairDeferredError();
+    }
     if (needsRepair) {
       await atomicWrite(path, definition);
       await options.executor.run("systemctl", ["--user", "daemon-reload"]);
@@ -43,7 +58,12 @@ export async function installUserService(options: {
       options.definition,
       "darwin",
     );
-    await atomicWrite(path, launchdAgentPlist(effectiveDefinition));
+    const definition = launchdAgentPlist(effectiveDefinition);
+    const needsRepair = await serviceDefinitionNeedsRepair(path, definition, effectiveDefinition);
+    if (needsRepair && options.replaceExisting === false && (await exists(path))) {
+      throw new ServiceRepairDeferredError();
+    }
+    await atomicWrite(path, definition);
     const domain = `gui/${options.uid ?? process.getuid?.() ?? 0}`;
     await options.executor.run("launchctl", ["bootout", domain, path]).catch(() => undefined);
     await options.executor.run("launchctl", ["bootstrap", domain, path]);
@@ -122,6 +142,15 @@ async function preserveInstalledStateRoot(
           .replaceAll("&lt;", "<")
           .replaceAll("&amp;", "&");
   return { ...definition, stateRoot };
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function atomicWrite(path: string, contents: string): Promise<void> {

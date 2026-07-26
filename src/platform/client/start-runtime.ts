@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import type { PiInstallation } from "../../pi/external-installation.js";
 import { materializeRuntime } from "../install/runtime-release.js";
 import { resolveApplicationRoot, resolveFleetPaths } from "../shared/paths.js";
 
@@ -18,18 +19,30 @@ export async function ensureRuntime(options: {
   readonly sourceRoot?: string;
   readonly applicationRoot?: string;
   readonly home?: string;
+  readonly piInstallation?: () => Promise<PiInstallation>;
+  readonly registeredRuntimeStarter?: (env: NodeJS.ProcessEnv) => Promise<boolean>;
 }): Promise<void> {
   if (await canConnect(options.socketPath)) return;
 
-  const env = { ...process.env, ...options.env };
+  let env = { ...process.env, ...options.env };
   const registered =
     env.PIFLEET_DISABLE_REGISTERED_SERVICE === "1"
       ? false
-      : await startRegisteredRuntime({
-          env,
-          ...(options.home === undefined ? {} : { home: options.home }),
-        });
+      : options.registeredRuntimeStarter !== undefined
+        ? await options.registeredRuntimeStarter(env)
+        : await startRegisteredRuntime({
+            env,
+            ...(options.home === undefined ? {} : { home: options.home }),
+          });
   if (!registered) {
+    if (options.piInstallation !== undefined) {
+      const installation = await options.piInstallation();
+      env = {
+        ...env,
+        PIFLEET_PI_EXECUTABLE: installation.selectedPath,
+        PIFLEET_PI_NODE: installation.nodePath,
+      };
+    }
     const sourceRoot =
       options.sourceRoot ?? (await findPackageRoot(fileURLToPath(import.meta.url)));
     const release = await materializeRuntime({
@@ -92,6 +105,81 @@ export function installedServiceStateRoot(
     .replaceAll("&gt;", ">")
     .replaceAll("&lt;", "<")
     .replaceAll("&amp;", "&");
+}
+
+export class PiServiceMismatchError extends Error {
+  readonly code = "pi_service_mismatch";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "PiServiceMismatchError";
+  }
+}
+
+export async function assertRegisteredPiSelection(options: {
+  readonly selectedPath: string;
+  readonly nodePath: string;
+  readonly home?: string;
+}): Promise<void> {
+  const home = options.home ?? homedir();
+  const platform = process.platform;
+  if (platform !== "linux" && platform !== "darwin") return;
+  const path =
+    platform === "linux"
+      ? join(home, ".config", "systemd", "user", "pi-fleet.service")
+      : join(home, "Library", "LaunchAgents", "works.elpapi.pifleet.plist");
+  if (!(await exists(path))) return;
+  const contents = await readFile(path, "utf8");
+  const installed = installedServicePiExecutable(contents, platform);
+  const installedNode = installedServicePiNode(contents, platform);
+  if (
+    installed === undefined ||
+    installedNode === undefined ||
+    resolve(installed) !== resolve(options.selectedPath) ||
+    resolve(installedNode) !== resolve(options.nodePath)
+  ) {
+    throw new PiServiceMismatchError(
+      `The installed pi-fleet service uses a different Pi executable or Node interpreter; repair it from the environment selecting ${options.selectedPath}.`,
+    );
+  }
+}
+
+export function installedServicePiExecutable(
+  contents: string,
+  platform: "linux" | "darwin",
+): string | undefined {
+  return installedServiceEnvironmentValue(contents, platform, "PIFLEET_PI_EXECUTABLE");
+}
+
+export function installedServicePiNode(
+  contents: string,
+  platform: "linux" | "darwin",
+): string | undefined {
+  return installedServiceEnvironmentValue(contents, platform, "PIFLEET_PI_NODE");
+}
+
+function installedServiceEnvironmentValue(
+  contents: string,
+  platform: "linux" | "darwin",
+  key: "PIFLEET_PI_EXECUTABLE" | "PIFLEET_PI_NODE",
+): string | undefined {
+  const encoded =
+    platform === "linux"
+      ? new RegExp(`Environment=(?:"${key}=([^"\\\\]*(?:\\\\.[^"\\\\]*)*)"|${key}=(.+))$`, "m")
+          .exec(contents)
+          ?.slice(1)
+          .find(Boolean)
+      : new RegExp(`<key>${key}<\\/key><string>([^<]+)<\\/string>`).exec(contents)?.[1];
+  if (encoded === undefined) return undefined;
+  if (platform === "darwin") {
+    return encoded
+      .replaceAll("&apos;", "'")
+      .replaceAll("&quot;", '"')
+      .replaceAll("&gt;", ">")
+      .replaceAll("&lt;", "<")
+      .replaceAll("&amp;", "&");
+  }
+  return encoded.replaceAll('\\"', '"').replaceAll("\\\\", "\\");
 }
 
 async function assertRegisteredStateRoot(

@@ -1,7 +1,6 @@
 import { pathToFileURL } from "node:url";
 
-import { RealPiLauncher } from "../pi/adapter.js";
-import { resolveManagedPiTarget } from "../pi/managed-target.js";
+import { createExternalPiTarget } from "../pi/external-target.js";
 import { resolveFleetPaths } from "../platform/shared/paths.js";
 import { startControlServer } from "../runtime/control-server.js";
 import { FleetService } from "../runtime/fleet-service.js";
@@ -27,11 +26,10 @@ export async function runRuntime(): Promise<void> {
   let service: FleetService;
   try {
     store = new WorkerFleetStore(paths.databasePath);
+    const piTarget = await createExternalPiTarget(process.env, limits.maxPiFrameBytes);
     service = new FleetService(store, {
-      launcher: new RealPiLauncher({
-        ...resolveManagedPiTarget(),
-        maxStdoutFrameBytes: limits.maxPiFrameBytes,
-      }),
+      launcher: piTarget.launcher,
+      piIdentity: piTarget.identity,
       limits,
     });
     await service.reconcile();
