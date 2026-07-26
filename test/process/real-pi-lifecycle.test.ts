@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,6 +26,15 @@ async function collectUntil(iterator: AsyncIterator<Buffer>, marker: string): Pr
     received = Buffer.concat([received, next.value]);
   }
   return received;
+}
+
+async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+  }
+  throw new Error("condition did not become true");
 }
 
 async function deterministicServer() {
@@ -190,6 +200,118 @@ describe("real Pi in-memory lifecycle", () => {
       ok: true,
     });
     await expect(readFile(sessionPath, "utf8")).resolves.toContain("deterministic response 4");
+  }, 30_000);
+
+  it("does not replay active work when the selected external Pi process dies", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-real-pi-interrupted-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const project = join(root, "project");
+    const agentDir = join(root, "pi-agent");
+    await mkdir(project, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+
+    let receivedRequest!: () => void;
+    const requestReceived = new Promise<void>(
+      (resolveRequest) => (receivedRequest = resolveRequest),
+    );
+    let requestCount = 0;
+    const sockets = new Set<Socket>();
+    const server = createServer(async (request, response) => {
+      requestCount += 1;
+      for await (const chunk of request) {
+        void chunk;
+      }
+      if (requestCount === 1) {
+        const frame = (delta: Record<string, unknown>, finish: string | null) => ({
+          id: "interrupted-baseline",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "deterministic",
+          choices: [{ index: 0, delta, finish_reason: finish }],
+        });
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify(frame({ role: "assistant" }, null))}\n\n`);
+        response.write(`data: ${JSON.stringify(frame({ content: "settled baseline" }, null))}\n\n`);
+        response.write(`data: ${JSON.stringify(frame({}, "stop"))}\n\n`);
+        response.end("data: [DONE]\n\n");
+        return;
+      }
+      receivedRequest();
+      await new Promise<void>(() => undefined);
+    });
+    server.on("connection", (socket) => sockets.add(socket));
+    server.listen(0, "127.0.0.1");
+    await new Promise<void>((resolveListen) => server.once("listening", resolveListen));
+    cleanups.push(async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolveClose, rejectClose) =>
+        server.close((error) => (error === undefined ? resolveClose() : rejectClose(error))),
+      );
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("server failed to listen");
+
+    await writeFile(
+      join(agentDir, "models.json"),
+      JSON.stringify({
+        providers: {
+          "pifleet-probe": {
+            baseUrl: `http://127.0.0.1:${address.port}/v1`,
+            api: "openai-completions",
+            apiKey: "local-placeholder",
+            models: [{ id: "deterministic", contextWindow: 4096, maxTokens: 256 }],
+          },
+        },
+      }),
+    );
+    const pids: number[] = [];
+    const service = new FleetService(new MemoryFleetStore(), {
+      launcher: new RealPiLauncher({
+        executable: SELECTED_PI_EXECUTABLE,
+        artifactId: "external-pi",
+        env: { PI_CODING_AGENT_DIR: agentDir },
+        onStart: (pid) => pids.push(pid),
+      }),
+    });
+    cleanups.push(() => service.close());
+    const piArgv = [
+      "--provider",
+      "pifleet-probe",
+      "--model",
+      "deterministic",
+      "--no-extensions",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-tools",
+    ];
+    const created = await service.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
+    if (!created.ok || created.value.agent.session.path === null) {
+      throw new Error("failed to create external Pi agent");
+    }
+    const sessionPath = created.value.agent.session.path;
+
+    await service.send({ name: "reviewer", message: "settle first" }, "send-baseline");
+    expect(await service.receive({ name: "reviewer" })).toMatchObject({
+      ok: true,
+      value: { response: { text: "settled baseline" } },
+    });
+    await expect(readFile(sessionPath, "utf8")).resolves.toContain("settled baseline");
+
+    await service.send({ name: "reviewer", message: "do not replay" }, "send-interrupted");
+    await requestReceived;
+    expect(pids).toHaveLength(1);
+    process.kill(pids[0]!, "SIGKILL");
+
+    await waitUntil(async () => {
+      const status = await service.status({ name: "reviewer" });
+      return status.ok && status.value.agent.state === "failed";
+    });
+    expect(await service.receive({ name: "reviewer" })).toMatchObject({
+      ok: false,
+      error: { code: "runtime_interrupted" },
+    });
+    expect(requestCount).toBe(2);
+    await expect(readFile(sessionPath, "utf8")).resolves.toContain("settled baseline");
   }, 30_000);
 
   it("persists the latest response and restores only when addressed after runtime restart", async () => {
