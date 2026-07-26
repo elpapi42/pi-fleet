@@ -16,7 +16,7 @@ import type {
   StatusInput,
   StatusResult,
 } from "../client/fleet-client.js";
-import type { PiLauncher } from "../pi/adapter.js";
+import { PiExecutionUnavailableError, type PiLauncher } from "../pi/adapter.js";
 import { createLaunchProfile, observeSession } from "../pi/launch-profile.js";
 import { PiCleanupUncertainError, PiCompactionError, type PiProcess } from "../pi/process.js";
 import { waitForProcessGroupExit } from "../platform/runtime/process-tree.js";
@@ -112,6 +112,20 @@ export class FleetService {
         code: "invalid_arguments",
         message: `Initial instructions exceed the ${String(this.#limits.maxMessageBytes)} byte limit.`,
       });
+      await this.#remember(operationId, "create", input, result);
+      return result;
+    }
+    if ((await this.store.getAgent(input.name)) !== null) {
+      const result = err<FleetClientError>({
+        code: "name_taken",
+        message: `Agent ${input.name} already exists.`,
+      });
+      await this.#remember(operationId, "create", input, result);
+      return result;
+    }
+    const preflightFailure = await this.#piExecutionFailure();
+    if (preflightFailure !== null) {
+      const result = err<FleetClientError>(preflightFailure);
       await this.#remember(operationId, "create", input, result);
       return result;
     }
@@ -367,6 +381,12 @@ export class FleetService {
       await this.#remember(operationId, "send", input, result);
       return result;
     }
+    const preflightFailure = await this.#piExecutionFailure();
+    if (preflightFailure !== null) {
+      const result = err<FleetClientError>(preflightFailure);
+      await this.#remember(operationId, "send", input, result);
+      return result;
+    }
 
     const acceptedAt = this.#now();
     const result = await this.#enqueueSend(input.name, async () => {
@@ -420,6 +440,10 @@ export class FleetService {
         code: "agent_busy",
         message: `Agent ${input.name} must be idle before compaction.`,
       });
+    }
+    const preflightFailure = await this.#piExecutionFailure();
+    if (preflightFailure !== null) {
+      return this.#rememberCompactFailure(operationId, input, requestedAt, preflightFailure);
     }
 
     await this.store.putCompact({
@@ -656,6 +680,8 @@ export class FleetService {
       });
     }
 
+    const piExecutionFailure = await this.#piExecutionFailure();
+
     for (const compact of nonterminalCompacts) {
       const input = { name: compact.agentName };
       if (compact.state === "dispatching") {
@@ -665,7 +691,7 @@ export class FleetService {
         });
         await this.store.putCompact({ ...compact, state: "uncertain" });
         await this.#remember(compact.compactId, "compact", input, result);
-      } else {
+      } else if (piExecutionFailure === null) {
         await this.compact(input, compact.compactId);
       }
     }
@@ -681,6 +707,7 @@ export class FleetService {
         await this.#remember(send.sendId, "send", input, result);
         continue;
       }
+      if (piExecutionFailure !== null) continue;
       const agent = await this.store.getAgent(send.agentName);
       if (agent === null || agent.summary.process.state === "cleanup_uncertain") {
         const result = err<FleetClientError>({
@@ -705,11 +732,13 @@ export class FleetService {
       if (operation.method === "send") continue;
       const payload = JSON.parse(operation.fingerprint) as CreateInput | DestroyInput;
       if (operation.method === "create") {
-        await this.create(payload as CreateInput, operation.operationId);
+        if (piExecutionFailure === null)
+          await this.create(payload as CreateInput, operation.operationId);
       } else if (operation.method === "destroy") {
         await this.destroy(payload as DestroyInput, operation.operationId);
       } else if (operation.method === "compact") {
-        await this.compact(payload as CompactInput, operation.operationId);
+        if (piExecutionFailure === null)
+          await this.compact(payload as CompactInput, operation.operationId);
       }
     }
   }
@@ -1183,6 +1212,24 @@ export class FleetService {
     const result: Result<CompactResult, FleetClientError> = err(failure);
     await this.#remember(operationId, "compact", input, result);
     return result;
+  }
+
+  async #piExecutionFailure(): Promise<FleetClientError | null> {
+    if (this.#launcher?.preflight === undefined) return null;
+    try {
+      await this.#launcher.preflight();
+      return null;
+    } catch (error: unknown) {
+      if (!(error instanceof PiExecutionUnavailableError)) throw error;
+      const messages: Record<PiExecutionUnavailableError["code"], string> = {
+        pi_not_found: "The selected Pi executable was not found.",
+        pi_not_executable: "The selected Pi executable cannot be executed.",
+        pi_version_unavailable: "The selected Pi version could not be determined.",
+        pi_version_unsupported: "The selected Pi version is not supported.",
+        pi_installation_changed: "The selected Pi installation changed during validation.",
+      };
+      return { code: error.code, message: messages[error.code] };
+    }
   }
 
   async #rememberNotFound<T>(

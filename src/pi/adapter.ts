@@ -3,8 +3,23 @@ import { PiProcess } from "./process.js";
 
 export type PiStdoutSink = (bytes: Buffer) => void;
 
+export type PiExecutionUnavailableCode =
+  | "pi_not_found"
+  | "pi_not_executable"
+  | "pi_version_unavailable"
+  | "pi_version_unsupported"
+  | "pi_installation_changed";
+
+export class PiExecutionUnavailableError extends Error {
+  constructor(readonly code: PiExecutionUnavailableCode) {
+    super(code);
+    this.name = "PiExecutionUnavailableError";
+  }
+}
+
 export interface PiLauncher {
   readonly artifactId: string;
+  preflight?(): Promise<void>;
   start(
     profile: AgentLaunchProfile,
     restore: boolean,
