@@ -4,6 +4,7 @@ import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { PROTOCOL_VERSION } from "../../src/protocol/version.js";
 import { startControlServer, type ControlServer } from "../../src/runtime/control-server.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
@@ -93,7 +94,7 @@ describe("private protocol failure containment", () => {
 
     const valid = await exchange(
       socketPath,
-      `${JSON.stringify({ v: 1, requestId: "list", method: "agent.list", params: {} })}\n`,
+      `${JSON.stringify({ v: PROTOCOL_VERSION, requestId: "list", method: "agent.list", params: {} })}\n`,
     );
     expect(valid).toMatchObject({ ok: true, result: { type: "agent.list" } });
   });

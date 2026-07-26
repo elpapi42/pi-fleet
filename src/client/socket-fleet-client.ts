@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 
 import { readJsonLines, writeJsonLine } from "../protocol/jsonl.js";
+import { MANAGED_PI_RUNTIME_IDENTITY, type PiRuntimeIdentity } from "../protocol/pi-identity.js";
 import { PROTOCOL_VERSION } from "../protocol/version.js";
 import { err, ok, type Result } from "../shared/result.js";
 import type {
@@ -31,6 +32,7 @@ export class SocketFleetClient implements FleetClient {
     private readonly options: {
       readonly socketPath: string;
       readonly beforeConnect?: () => Promise<void>;
+      readonly piIdentity?: PiRuntimeIdentity;
     },
   ) {}
 
@@ -91,8 +93,9 @@ export class SocketFleetClient implements FleetClient {
         if (!isRecord(frame) || frame.requestId !== requestId) continue;
         if (frame.v !== PROTOCOL_VERSION) {
           yield err({
-            code: "protocol_error",
-            message: "Runtime protocol version is incompatible with this client.",
+            code: "protocol_incompatible",
+            message:
+              "The running pi-fleet runtime is incompatible with this client; repair or restart it.",
           });
           return;
         }
@@ -163,6 +166,9 @@ export class SocketFleetClient implements FleetClient {
       method,
       params,
       ...(isMutationOptions(options) ? { operation: options.operation } : {}),
+      ...(requiresPiIdentity(method)
+        ? { runtime: { pi: this.options.piIdentity ?? MANAGED_PI_RUNTIME_IDENTITY } }
+        : {}),
     });
 
     try {
@@ -172,8 +178,9 @@ export class SocketFleetClient implements FleetClient {
       }
       if (frame.v !== PROTOCOL_VERSION) {
         return err({
-          code: "protocol_error",
-          message: "Runtime protocol version is incompatible with this client.",
+          code: "protocol_incompatible",
+          message:
+            "The running pi-fleet runtime is incompatible with this client; repair or restart it.",
         });
       }
       if (frame.ok) return ok(frame.result as T);
@@ -200,6 +207,10 @@ export class SocketFleetClient implements FleetClient {
 
 function isMutationOptions(options: RequestOptions | MutationOptions): options is MutationOptions {
   return "operation" in options;
+}
+
+function requiresPiIdentity(method: string): boolean {
+  return method === "agent.create" || method === "agent.send" || method === "agent.compact";
 }
 
 function connect(socketPath: string, signal: AbortSignal): Promise<Socket> {

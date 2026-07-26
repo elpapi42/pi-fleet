@@ -15,7 +15,7 @@ import {
   type PackageArtifacts,
 } from "../helpers/package-version-harness.js";
 
-const RELEASED_VERSIONS = ["0.1.0-beta.0", "0.1.0-beta.1"] as const;
+const RELEASED_VERSIONS = ["0.1.0-beta.0", "0.1.0-beta.1", "0.1.0-beta.9"] as const;
 
 interface CompatibilityCase {
   readonly name: string;
@@ -29,6 +29,7 @@ describe.skipIf(process.platform !== "linux" || process.arch !== "x64")(
     let suiteRoot = "";
     let beta0: PackageArtifacts;
     let beta1: PackageArtifacts;
+    let beta9: PackageArtifacts;
     const current: PackageArtifacts = {
       label: "current",
       cliPath: resolve("bin/pifleet.mjs"),
@@ -44,11 +45,17 @@ describe.skipIf(process.platform !== "linux" || process.arch !== "x64")(
       );
       const installedBeta0 = installed[0];
       const installedBeta1 = installed[1];
-      if (installedBeta0 === undefined || installedBeta1 === undefined) {
-        throw new Error("Released package installation did not return both beta artifacts");
+      const installedBeta9 = installed[2];
+      if (
+        installedBeta0 === undefined ||
+        installedBeta1 === undefined ||
+        installedBeta9 === undefined
+      ) {
+        throw new Error("Released package installation did not return all beta artifacts");
       }
       beta0 = installedBeta0;
       beta1 = installedBeta1;
+      beta9 = installedBeta9;
     }, 180_000);
 
     afterAll(async () => {
@@ -66,40 +73,39 @@ describe.skipIf(process.platform !== "linux" || process.arch !== "x64")(
         cli: () => beta1,
         runtime: () => beta0,
       },
-      {
-        name: "current CLI communicates with a beta.0 runtime",
-        cli: () => current,
-        runtime: () => beta0,
-      },
-      {
-        name: "current CLI communicates with a beta.1 runtime",
-        cli: () => current,
-        runtime: () => beta1,
-      },
     ];
 
-    it("fails compact explicitly against an older runtime without replacing it", async () => {
-      const caseRoot = await mkdtemp(join(suiteRoot, "compact-skew-"));
-      const environment = await createCompatibilityEnvironment(caseRoot);
-      const running = await startRuntime(beta1, environment);
-      try {
-        const inodeBefore = await socketInode(environment.socketPath);
-        const error = await invokeJsonError(current, ["compact", "reviewer"], environment);
-        const inodeAfter = await socketInode(environment.socketPath);
+    it.each([
+      ["beta.0", () => beta0],
+      ["beta.1", () => beta1],
+      ["beta.9", () => beta9],
+    ] as const)(
+      "current CLI rejects a %s runtime without replacing it",
+      async (_label, runtime) => {
+        const caseRoot = await mkdtemp(join(suiteRoot, "protocol-skew-"));
+        const environment = await createCompatibilityEnvironment(caseRoot);
+        const running = await startRuntime(runtime(), environment);
+        try {
+          const inodeBefore = await socketInode(environment.socketPath);
+          const error = await invokeJsonError(current, ["create", "reviewer"], environment);
+          const inodeAfter = await socketInode(environment.socketPath);
 
-        expect(error).toMatchObject({
-          schemaVersion: 1,
-          type: "error",
-          error: { code: "protocol_incompatible" },
-        });
-        expect(inodeAfter).toBe(inodeBefore);
-        expect(() => process.kill(running.pid, 0)).not.toThrow();
-        expect(await pathExists(environment.applicationRoot)).toBe(false);
-      } finally {
-        await running.stop();
-        await removeCompatibilityRoot(caseRoot);
-      }
-    }, 60_000);
+          expect(error).toMatchObject({
+            schemaVersion: 1,
+            type: "error",
+            error: { code: "protocol_incompatible" },
+          });
+          expect(inodeAfter).toBe(inodeBefore);
+          expect(() => process.kill(running.pid, 0)).not.toThrow();
+          expect(await pathExists(environment.applicationRoot)).toBe(false);
+          expect(await invokeList(runtime(), environment)).toMatchObject({ agents: [] });
+        } finally {
+          await running.stop();
+          await removeCompatibilityRoot(caseRoot);
+        }
+      },
+      60_000,
+    );
 
     it.each(cases)(
       "$name without replacing the active runtime",

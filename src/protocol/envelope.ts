@@ -1,5 +1,6 @@
 import { Type, type Static } from "@sinclair/typebox";
 
+import { PiRuntimeIdentitySchema } from "./pi-identity.js";
 import { PROTOCOL_VERSION } from "./version.js";
 
 export const OperationSchema = Type.Object(
@@ -23,6 +24,9 @@ export const RequestSchema = Type.Object(
     ]),
     params: Type.Record(Type.String(), Type.Unknown()),
     operation: Type.Optional(OperationSchema),
+    runtime: Type.Optional(
+      Type.Object({ pi: PiRuntimeIdentitySchema }, { additionalProperties: false }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -30,14 +34,14 @@ export const RequestSchema = Type.Object(
 export type ProtocolRequest = Static<typeof RequestSchema>;
 
 export interface ProtocolSuccess {
-  readonly v: 1;
+  readonly v: typeof PROTOCOL_VERSION;
   readonly requestId: string;
   readonly ok: true;
   readonly result: unknown;
 }
 
 export interface ProtocolFailure {
-  readonly v: 1;
+  readonly v: typeof PROTOCOL_VERSION;
   readonly requestId: string;
   readonly ok: false;
   readonly error: {
@@ -50,11 +54,16 @@ export interface ProtocolFailure {
 export type ProtocolResponse = ProtocolSuccess | ProtocolFailure;
 
 export type ProtocolStreamFrame =
-  | { readonly v: 1; readonly requestId: string; readonly stream: "ready" }
-  | { readonly v: 1; readonly requestId: string; readonly stream: "chunk"; readonly data: string }
-  | { readonly v: 1; readonly requestId: string; readonly stream: "end" }
+  | { readonly v: typeof PROTOCOL_VERSION; readonly requestId: string; readonly stream: "ready" }
   | {
-      readonly v: 1;
+      readonly v: typeof PROTOCOL_VERSION;
+      readonly requestId: string;
+      readonly stream: "chunk";
+      readonly data: string;
+    }
+  | { readonly v: typeof PROTOCOL_VERSION; readonly requestId: string; readonly stream: "end" }
+  | {
+      readonly v: typeof PROTOCOL_VERSION;
       readonly requestId: string;
       readonly stream: "error";
       readonly error: { readonly code: string; readonly message: string };

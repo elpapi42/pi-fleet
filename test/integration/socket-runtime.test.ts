@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { frameIterator, SocketFleetClient } from "../../src/client/socket-fleet-client.js";
 import type { PiLauncher } from "../../src/pi/adapter.js";
 import type { PiProcess } from "../../src/pi/process.js";
+import type { PiRuntimeIdentity } from "../../src/protocol/pi-identity.js";
 import { PROTOCOL_VERSION } from "../../src/protocol/version.js";
 import { startControlServer, type ControlServer } from "../../src/runtime/control-server.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
@@ -364,7 +365,9 @@ describe("private socket runtime", () => {
     const server = createServer((socket) => {
       socket.once("data", (chunk) => {
         const request = JSON.parse(chunk.toString().trim()) as { requestId: string };
-        socket.end(`${JSON.stringify({ v: 1, requestId: request.requestId, stream: "ready" })}\n`);
+        socket.end(
+          `${JSON.stringify({ v: PROTOCOL_VERSION, requestId: request.requestId, stream: "ready" })}\n`,
+        );
       });
     });
     await new Promise<void>((resolve, reject) => {
@@ -384,6 +387,41 @@ describe("private socket runtime", () => {
     });
     await expect(iterator.next()).resolves.toMatchObject({
       value: { ok: false, error: { code: "runtime_unavailable" } },
+    });
+  });
+
+  it("persists a new Pi identity mismatch but replays an earlier completed operation", async () => {
+    const { client, socketPath, store } = await harness();
+    const input = { name: "reviewer", cwd: "/workspace", piArgv: [] } as const;
+    const stableOperation = {
+      operationId: "identity-stable",
+      createdAt: operation.createdAt,
+    };
+    const first = await client.create(input, { signal, operation: stableOperation });
+    expect(first).toMatchObject({ ok: true });
+
+    const externalIdentity: PiRuntimeIdentity = {
+      mode: "external",
+      selectedPath: "/tmp/pi",
+      realPath: "/tmp/pi-target",
+      version: "0.82.1",
+      fingerprint: "different",
+    };
+    const mismatched = new SocketFleetClient({ socketPath, piIdentity: externalIdentity });
+
+    expect(await mismatched.create(input, { signal, operation: stableOperation })).toEqual(first);
+    const rejected = await mismatched.create(
+      { name: "other", cwd: "/workspace", piArgv: [] },
+      {
+        signal,
+        operation: { operationId: "identity-mismatch", createdAt: operation.createdAt },
+      },
+    );
+    expect(rejected).toMatchObject({ ok: false, error: { code: "pi_runtime_mismatch" } });
+    expect(await store.getAgent("other")).toBeNull();
+    expect(await store.getOperation("identity-mismatch")).toMatchObject({
+      state: "completed",
+      result: rejected,
     });
   });
 
@@ -413,8 +451,9 @@ describe("private socket runtime", () => {
     await expect(client.list({ signal })).resolves.toEqual({
       ok: false,
       error: {
-        code: "protocol_error",
-        message: "Runtime protocol version is incompatible with this client.",
+        code: "protocol_incompatible",
+        message:
+          "The running pi-fleet runtime is incompatible with this client; repair or restart it.",
       },
     });
     await expect(closed).resolves.toBeUndefined();
@@ -432,8 +471,9 @@ describe("private socket runtime", () => {
       value: {
         ok: false,
         error: {
-          code: "protocol_error",
-          message: "Runtime protocol version is incompatible with this client.",
+          code: "protocol_incompatible",
+          message:
+            "The running pi-fleet runtime is incompatible with this client; repair or restart it.",
         },
       },
     });

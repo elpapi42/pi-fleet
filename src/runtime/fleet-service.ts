@@ -20,6 +20,11 @@ import { PiExecutionUnavailableError, type PiLauncher } from "../pi/adapter.js";
 import { createLaunchProfile, observeSession } from "../pi/launch-profile.js";
 import { PiCleanupUncertainError, PiCompactionError, type PiProcess } from "../pi/process.js";
 import { waitForProcessGroupExit } from "../platform/runtime/process-tree.js";
+import {
+  MANAGED_PI_RUNTIME_IDENTITY,
+  samePiRuntimeIdentity,
+  type PiRuntimeIdentity,
+} from "../protocol/pi-identity.js";
 import { err, ok, type Result } from "../shared/result.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../shared/runtime-limits.js";
 import type { FleetStore, StoredAgent } from "../store/fleet-store.js";
@@ -36,6 +41,7 @@ export interface FleetServiceOptions {
   readonly launcher?: PiLauncher;
   readonly now?: () => string;
   readonly limits?: Partial<RuntimeLimits>;
+  readonly piIdentity?: PiRuntimeIdentity;
 }
 
 export class FleetService {
@@ -58,6 +64,7 @@ export class FleetService {
   readonly #now: () => string;
   readonly #limits: RuntimeLimits;
   readonly #watchHub: RpcWatchHub;
+  readonly #piIdentity: PiRuntimeIdentity;
   #closing = false;
 
   constructor(
@@ -67,6 +74,10 @@ export class FleetService {
     this.#launcher = typeof options === "function" ? undefined : options.launcher;
     this.#now =
       typeof options === "function" ? options : (options.now ?? (() => new Date().toISOString()));
+    this.#piIdentity =
+      typeof options === "function"
+        ? MANAGED_PI_RUNTIME_IDENTITY
+        : (options.piIdentity ?? MANAGED_PI_RUNTIME_IDENTITY);
     this.#limits = {
       ...DEFAULT_RUNTIME_LIMITS,
       ...(typeof options === "function" ? {} : options.limits),
@@ -77,15 +88,20 @@ export class FleetService {
     });
   }
 
-  create(input: CreateInput, operationId: string): Promise<Result<CreateResult, FleetClientError>> {
+  create(
+    input: CreateInput,
+    operationId: string,
+    callerPiIdentity?: PiRuntimeIdentity,
+  ): Promise<Result<CreateResult, FleetClientError>> {
     return this.#runOperation(operationId, "create", input, () =>
-      this.#enqueueAgent(input.name, () => this.#createImpl(input, operationId)),
+      this.#enqueueAgent(input.name, () => this.#createImpl(input, operationId, callerPiIdentity)),
     );
   }
 
   async #createImpl(
     input: CreateInput,
     operationId: string,
+    callerPiIdentity?: PiRuntimeIdentity,
   ): Promise<Result<CreateResult, FleetClientError>> {
     const replay = await this.#operation<CreateResult>(operationId, "create", input);
     if (replay !== null) return replay;
@@ -120,6 +136,12 @@ export class FleetService {
         code: "name_taken",
         message: `Agent ${input.name} already exists.`,
       });
+      await this.#remember(operationId, "create", input, result);
+      return result;
+    }
+    const identityFailure = this.#piIdentityFailure(callerPiIdentity);
+    if (identityFailure !== null) {
+      const result = err<FleetClientError>(identityFailure);
       await this.#remember(operationId, "create", input, result);
       return result;
     }
@@ -343,15 +365,20 @@ export class FleetService {
     }
   }
 
-  send(input: SendInput, operationId: string): Promise<Result<SendResult, FleetClientError>> {
+  send(
+    input: SendInput,
+    operationId: string,
+    callerPiIdentity?: PiRuntimeIdentity,
+  ): Promise<Result<SendResult, FleetClientError>> {
     return this.#runOperation(operationId, "send", input, () =>
-      this.#enqueueAgent(input.name, () => this.#sendImpl(input, operationId)),
+      this.#enqueueAgent(input.name, () => this.#sendImpl(input, operationId, callerPiIdentity)),
     );
   }
 
   async #sendImpl(
     input: SendInput,
     operationId: string,
+    callerPiIdentity?: PiRuntimeIdentity,
   ): Promise<Result<SendResult, FleetClientError>> {
     const replay = await this.#operation<SendResult>(operationId, "send", input);
     if (replay !== null) return replay;
@@ -378,6 +405,12 @@ export class FleetService {
         code: "incarnation_cleanup_uncertain",
         message: `pi-fleet cannot prove the previous process for ${input.name} is gone.`,
       });
+      await this.#remember(operationId, "send", input, result);
+      return result;
+    }
+    const identityFailure = this.#piIdentityFailure(callerPiIdentity);
+    if (identityFailure !== null) {
+      const result = err<FleetClientError>(identityFailure);
       await this.#remember(operationId, "send", input, result);
       return result;
     }
@@ -408,15 +441,17 @@ export class FleetService {
   compact(
     input: CompactInput,
     operationId: string,
+    callerPiIdentity?: PiRuntimeIdentity,
   ): Promise<Result<CompactResult, FleetClientError>> {
     return this.#runOperation(operationId, "compact", input, () =>
-      this.#enqueueAgent(input.name, () => this.#compactImpl(input, operationId)),
+      this.#enqueueAgent(input.name, () => this.#compactImpl(input, operationId, callerPiIdentity)),
     );
   }
 
   async #compactImpl(
     input: CompactInput,
     operationId: string,
+    callerPiIdentity?: PiRuntimeIdentity,
   ): Promise<Result<CompactResult, FleetClientError>> {
     const replay = await this.#operation<CompactResult>(operationId, "compact", input);
     if (replay !== null) return replay;
@@ -440,6 +475,10 @@ export class FleetService {
         code: "agent_busy",
         message: `Agent ${input.name} must be idle before compaction.`,
       });
+    }
+    const identityFailure = this.#piIdentityFailure(callerPiIdentity);
+    if (identityFailure !== null) {
+      return this.#rememberCompactFailure(operationId, input, requestedAt, identityFailure);
     }
     const preflightFailure = await this.#piExecutionFailure();
     if (preflightFailure !== null) {
@@ -1212,6 +1251,17 @@ export class FleetService {
     const result: Result<CompactResult, FleetClientError> = err(failure);
     await this.#remember(operationId, "compact", input, result);
     return result;
+  }
+
+  #piIdentityFailure(callerIdentity: PiRuntimeIdentity | undefined): FleetClientError | null {
+    if (callerIdentity === undefined || samePiRuntimeIdentity(callerIdentity, this.#piIdentity)) {
+      return null;
+    }
+    return {
+      code: "pi_runtime_mismatch",
+      message:
+        "The running pi-fleet runtime uses a different Pi installation; repair or restart it.",
+    };
   }
 
   async #piExecutionFailure(): Promise<FleetClientError | null> {

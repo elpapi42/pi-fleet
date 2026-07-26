@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { PiExecutionUnavailableError, type PiLauncher } from "../../src/pi/adapter.js";
 import type { PiProcess } from "../../src/pi/process.js";
+import type { PiRuntimeIdentity } from "../../src/protocol/pi-identity.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
 
@@ -118,6 +119,35 @@ describe("Pi execution availability", () => {
     abort.abort();
     expect(await service.destroy({ name: "resident" }, "destroy-resident")).toMatchObject({
       ok: true,
+    });
+    await service.close();
+  });
+
+  it("rejects a mismatched Pi identity before prompting a resident agent", async () => {
+    const controlled = controlledLauncher();
+    const store = new MemoryFleetStore();
+    const service = new FleetService(store, { launcher: controlled.launcher });
+    await service.create({ name: "resident", cwd: "/tmp", piArgv: [] }, "create-resident");
+    const mismatched: PiRuntimeIdentity = {
+      mode: "external",
+      selectedPath: "/tmp/pi",
+      realPath: "/tmp/pi-target",
+      version: "0.82.1",
+      fingerprint: "different",
+    };
+
+    const result = await service.send(
+      { name: "resident", message: "must not prompt" },
+      "send-mismatch",
+      mismatched,
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "pi_runtime_mismatch" } });
+    expect(controlled.counts()).toEqual({ starts: 1, prompts: 0, compactions: 0 });
+    expect(await store.getSend("send-mismatch")).toBeNull();
+    expect(await store.getOperation("send-mismatch")).toMatchObject({
+      state: "completed",
+      result,
     });
     await service.close();
   });

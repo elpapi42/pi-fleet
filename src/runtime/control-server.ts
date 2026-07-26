@@ -14,6 +14,7 @@ import type {
 } from "../client/fleet-client.js";
 import { parseProtocolRequest } from "../protocol/validation.js";
 import { readJsonLines, writeJsonLine } from "../protocol/jsonl.js";
+import type { PiRuntimeIdentity } from "../protocol/pi-identity.js";
 import { MAX_PROTOCOL_FRAME_BYTES, PROTOCOL_VERSION } from "../protocol/version.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../shared/runtime-limits.js";
 import { err, type Result } from "../shared/result.js";
@@ -118,10 +119,18 @@ async function dispatch(
 
   switch (request.method) {
     case "agent.create":
-      result = await service.create(asCreateInput(request.params), requireOperation(operationId));
+      result = await service.create(
+        asCreateInput(request.params),
+        requireOperation(operationId),
+        requirePiIdentity(request.runtime?.pi),
+      );
       break;
     case "agent.send":
-      result = await service.send(asSendInput(request.params), requireOperation(operationId));
+      result = await service.send(
+        asSendInput(request.params),
+        requireOperation(operationId),
+        requirePiIdentity(request.runtime?.pi),
+      );
       break;
     case "agent.receive":
       result = await receiveWithTimeout(
@@ -194,7 +203,11 @@ async function dispatch(
       result = await service.destroy(asNamedInput(request.params), requireOperation(operationId));
       break;
     case "agent.compact":
-      result = await service.compact(asNamedInput(request.params), requireOperation(operationId));
+      result = await service.compact(
+        asNamedInput(request.params),
+        requireOperation(operationId),
+        requirePiIdentity(request.runtime?.pi),
+      );
       break;
   }
 
@@ -280,6 +293,12 @@ function requireOperation(operationId: string | undefined): string {
   if (operationId === undefined)
     throw new InvalidRequestError("Mutation requires operation identity");
   return operationId;
+}
+
+function requirePiIdentity(identity: PiRuntimeIdentity | undefined): PiRuntimeIdentity {
+  if (identity === undefined)
+    throw new InvalidRequestError("Mutation requires Pi runtime identity");
+  return identity;
 }
 
 class InvalidRequestError extends Error {
