@@ -99,7 +99,7 @@ describe("external Pi runtime target", () => {
     });
 
     const process = await target.launcher.start(
-      createLaunchProfile({ cwd: directory, piArgv: [], piArtifactId: "test" }),
+      createLaunchProfile({ cwd: directory, piArgv: [] }),
       false,
     );
     await expect(process.getState()).resolves.toMatchObject({ sessionId: "shim" });

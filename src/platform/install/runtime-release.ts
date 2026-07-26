@@ -22,9 +22,9 @@ interface RuntimeClosure {
 }
 
 interface RuntimeManifest {
-  readonly schemaVersion: 3;
+  readonly schemaVersion: 4;
   readonly package: { readonly name: string; readonly version: string };
-  readonly managedPi: string;
+  readonly piRuntime: { readonly mode: "external" };
   readonly files: readonly RuntimeManifestFile[];
   readonly dependencies: readonly RuntimeDependency[];
   readonly closure?: RuntimeClosure;
@@ -227,14 +227,15 @@ async function parseRuntimeManifest(bytes: Buffer, root: string): Promise<Runtim
 }
 
 async function validateRuntimeManifest(candidate: unknown, root: string): Promise<void> {
-  if (!isRecord(candidate) || candidate.schemaVersion !== 3) {
+  if (!isRecord(candidate) || candidate.schemaVersion !== 4) {
     throw new Error("Runtime manifest has an unsupported schema version");
   }
   if (
     !isRecord(candidate.package) ||
     typeof candidate.package.name !== "string" ||
     typeof candidate.package.version !== "string" ||
-    typeof candidate.managedPi !== "string"
+    !isRecord(candidate.piRuntime) ||
+    candidate.piRuntime.mode !== "external"
   ) {
     throw new Error("Runtime manifest has an invalid package identity");
   }

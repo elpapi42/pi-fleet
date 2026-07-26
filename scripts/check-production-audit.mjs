@@ -1,50 +1,28 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-const ALLOWED_ADVISORY = "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp";
-const ALLOWED_NODE = "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion";
+const SEVERITY_KEYS = ["info", "low", "moderate", "high", "critical", "total"];
 
-export function validateProductionAudit(report, installed) {
+export function validateProductionAudit(report) {
   const totals = report?.metadata?.vulnerabilities;
-  if (totals?.total === 0) return { exceptionUsed: false };
-
   const vulnerabilities = report?.vulnerabilities;
+  const zeroCount = (value) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value === 0;
   if (
-    totals?.total !== 1 ||
-    totals?.high !== 1 ||
-    totals?.critical !== 0 ||
+    typeof totals !== "object" ||
+    totals === null ||
+    Array.isArray(totals) ||
     typeof vulnerabilities !== "object" ||
     vulnerabilities === null ||
-    Object.keys(vulnerabilities).length !== 1
+    Array.isArray(vulnerabilities) ||
+    Object.keys(vulnerabilities).length !== 0 ||
+    !SEVERITY_KEYS.every((key) => zeroCount(totals[key])) ||
+    !Object.values(totals).every(zeroCount)
   ) {
-    throw new Error("Production audit contains vulnerabilities outside the approved exception");
+    throw new Error("Production audit must contain zero vulnerabilities");
   }
-
-  const vulnerability = vulnerabilities["brace-expansion"];
-  const advisories = Array.isArray(vulnerability?.via)
-    ? vulnerability.via.filter((entry) => typeof entry === "object" && entry !== null)
-    : [];
-  if (
-    installed.piVersion !== "0.80.10" ||
-    installed.braceExpansionVersion !== "5.0.6" ||
-    vulnerability?.severity !== "high" ||
-    !Array.isArray(vulnerability?.via) ||
-    vulnerability.via.length !== 1 ||
-    advisories.length !== 1 ||
-    advisories[0].source !== 1123898 ||
-    advisories[0].url !== ALLOWED_ADVISORY ||
-    !Array.isArray(vulnerability?.nodes) ||
-    vulnerability.nodes.length !== 1 ||
-    vulnerability.nodes[0] !== ALLOWED_NODE
-  ) {
-    throw new Error(
-      "Production audit no longer matches the narrowly approved Pi 0.80.10 exception",
-    );
-  }
-
-  return { exceptionUsed: true };
+  return { exceptionUsed: false };
 }
 
 async function main() {
@@ -64,26 +42,8 @@ async function main() {
     }
     stdout = error.stdout;
   }
-
-  const [piManifest, braceManifest] = await Promise.all([
-    readFile("node_modules/@earendil-works/pi-coding-agent/package.json", "utf8"),
-    readFile(
-      "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/package.json",
-      "utf8",
-    ),
-  ]);
-  const result = validateProductionAudit(JSON.parse(stdout), {
-    piVersion: JSON.parse(piManifest).version,
-    braceExpansionVersion: JSON.parse(braceManifest).version,
-  });
-
-  if (result.exceptionUsed) {
-    process.stderr.write(
-      `WARNING: allowing only ${ALLOWED_ADVISORY} in managed Pi 0.80.10; upstream issue: https://github.com/earendil-works/pi/issues/6882\n`,
-    );
-  } else {
-    process.stdout.write("Production dependency audit passed with no vulnerabilities.\n");
-  }
+  validateProductionAudit(JSON.parse(stdout));
+  process.stdout.write("Production dependency audit passed with no vulnerabilities.\n");
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {

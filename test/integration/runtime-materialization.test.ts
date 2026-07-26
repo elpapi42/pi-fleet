@@ -9,7 +9,7 @@ import { materializeRuntime, verifyRuntime } from "../../src/platform/install/ru
 interface Manifest {
   schemaVersion: number;
   package: { name: string; version: string };
-  managedPi: string;
+  piRuntime: { mode: "external" };
   files: Array<{ path: string; bytes: number; sha256: string }>;
   dependencies: Array<{ path: string; name: string; version: string }>;
 }
@@ -63,9 +63,9 @@ async function fixture(applicationRoot?: string): Promise<{
   await writeFile(join(dependencyRoot, "index.js"), "export default 'fixture';\n");
 
   const manifest: Manifest = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     package: { name: "@elpapi42/pi-fleet", version: "9.9.9" },
-    managedPi: "fixture-dep@1.0.0",
+    piRuntime: { mode: "external" },
     files,
     dependencies: [{ path: "node_modules/fixture-dep", name: "fixture-dep", version: "1.0.0" }],
   };

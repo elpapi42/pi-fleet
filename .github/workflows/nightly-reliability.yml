@@ -22,6 +22,12 @@ jobs:
           package-manager-cache: false
 
       - run: npm ci
+      - name: Install tested external Pi
+        shell: bash
+        run: |
+          npm install --global @earendil-works/pi-coding-agent@0.82.1
+          echo "PIFLEET_PI_EXECUTABLE=$(command -v pi)" >> "$GITHUB_ENV"
+          echo "PIFLEET_PI_NODE=$(command -v node)" >> "$GITHUB_ENV"
       - run: npm run audit:production
       - run: npm run typecheck
       - run: npm run lint

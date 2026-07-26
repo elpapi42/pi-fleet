@@ -77,7 +77,6 @@
     "vitest": "4.1.10"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.10",
     "@sinclair/typebox": "0.34.52",
     "commander": "15.0.0"
   }

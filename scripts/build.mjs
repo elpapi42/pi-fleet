@@ -56,11 +56,9 @@ await writeFile(
   "dist/runtime-manifest.json",
   `${JSON.stringify(
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       package: { name: packageJson.name, version: packageJson.version },
-      managedPi: `@earendil-works/pi-coding-agent@${String(
-        packageJson.dependencies["@earendil-works/pi-coding-agent"],
-      )}`,
+      piRuntime: { mode: "external" },
       files,
       dependencies,
     },

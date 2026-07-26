@@ -232,7 +232,7 @@ Removing the npm package does not delete Pi sessions, pi-fleet SQLite state, mat
 
 ## Beta status
 
-Beta.9 historically shipped a managed Pi `0.80.10`. The unreleased external-Pi migration has compatibility evidence for the terminal-selected Pi `0.82.1`; it is not published until its separate-Pi package and supervised-runtime gates pass.
+Beta.9 historically shipped a managed Pi `0.80.10`. Current source has removed Pi from pi-fleet's package and immutable runtime, and has compatibility evidence for the terminal-selected Pi `0.82.1`; this correction is not published until its supervised-runtime and fresh-registry gates pass.
 
 Known limits:
 
@@ -242,7 +242,7 @@ Known limits:
 - Runtime upgrades are not automatic, and active runtimes are not silently replaced.
 - Raw RPC watch is live-only: it provides no replay and ends with its Pi process incarnation.
 - A promptless missing session path can remain unmaterialized until Pi writes conversation content, following native Pi behavior.
-- Existing beta.9 releases include managed Pi `0.80.10` and its documented audit exception. The external-Pi migration will remove that dependency from what pi-fleet distributes; it does not certify the separately installed Pi's dependency posture.
+- Existing beta.9 releases include managed Pi `0.80.10` and its historical audit exception. Current source requires zero known vulnerabilities in pi-fleet's own production closure. That audit does not certify the separately installed Pi's dependency posture.
 
 For support, include `node --version`, `pifleet --version`, `pifleet list`, and `pifleet status NAME`. Never include API keys, message contents, session contents, or private paths unnecessarily. Report reproducible issues at <https://github.com/elpapi42/pi-fleet/issues>.
 

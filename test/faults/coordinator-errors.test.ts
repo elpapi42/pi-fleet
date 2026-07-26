@@ -31,7 +31,6 @@ describe("coordinator event failure containment", () => {
         selector: { kind: "session", value: "/tmp/session.jsonl" },
         observedSession: { path: "/tmp/session.jsonl", id: "session" },
         restorePiArgv: ["--session", "/tmp/session.jsonl"],
-        piArtifactId: "fake-pi",
       },
       latestAssistantText: null,
       responseObservedAt: null,

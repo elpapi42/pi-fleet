@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { resolveExternalPiInstallation } from "../../src/pi/external-installation.js";
 import { verifyRuntime } from "../../src/platform/install/runtime-release.js";
 import { PRODUCT_VERSION } from "../../src/shared/product-identity.js";
 
@@ -99,8 +100,8 @@ describe("packed and materialized runtime", () => {
     const installedClosureDifference = join(
       installedRoot,
       "node_modules",
-      "@earendil-works",
-      "pi-coding-agent",
+      "@sinclair",
+      "typebox",
       "pifleet-install-layout-difference.txt",
     );
     await writeFile(installedClosureDifference, "legitimate installed closure difference\n");
@@ -136,12 +137,15 @@ describe("packed and materialized runtime", () => {
         cwd: project,
       })}\n`,
     );
+    const selectedPi = await resolveExternalPiInstallation({ env: process.env });
     const clientEnv = {
       ...process.env,
       PIFLEET_APPLICATION_ROOT: applicationRoot,
       PIFLEET_STATE_ROOT: stateRoot,
       PIFLEET_DISABLE_REGISTERED_SERVICE: "1",
       PI_CODING_AGENT_DIR: agentDir,
+      PIFLEET_PI_EXECUTABLE: selectedPi.selectedPath,
+      PIFLEET_PI_NODE: selectedPi.nodePath,
     };
     let release = "";
     let cliPath = "";
@@ -180,12 +184,17 @@ describe("packed and materialized runtime", () => {
       release = join(applicationRoot, "releases", releases[0] ?? "missing");
       cliPath = join(release, "bin", "pifleet.mjs");
       await expect(
+        (await import("node:fs/promises")).access(
+          join(release, "node_modules", "@earendil-works", "pi-coding-agent"),
+        ),
+      ).rejects.toBeDefined();
+      await expect(
         readFile(
           join(
             release,
             "node_modules",
-            "@earendil-works",
-            "pi-coding-agent",
+            "@sinclair",
+            "typebox",
             "pifleet-install-layout-difference.txt",
           ),
           "utf8",

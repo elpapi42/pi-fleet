@@ -110,7 +110,6 @@ export class FleetService {
       profile = createLaunchProfile({
         cwd: input.cwd,
         piArgv: input.piArgv,
-        piArtifactId: this.#launcher?.artifactId ?? "fake-pi",
       });
     } catch (error: unknown) {
       const result = err<FleetClientError>({

@@ -38,6 +38,12 @@ jobs:
           esac
 
       - run: npm ci
+      - name: Install tested external Pi
+        shell: bash
+        run: |
+          npm install --global @earendil-works/pi-coding-agent@0.82.1
+          echo "PIFLEET_PI_EXECUTABLE=$(command -v pi)" >> "$GITHUB_ENV"
+          echo "PIFLEET_PI_NODE=$(command -v node)" >> "$GITHUB_ENV"
       - run: npm run audit:production
       - run: npm run typecheck
       - run: npm run lint
@@ -86,7 +92,9 @@ jobs:
           done
 
           mkdir -p "$root"/{home,runtime,state,application,pi-agent}
+          npm install --global --prefix "$root/pi-npm" --ignore-scripts @earendil-works/pi-coding-agent@0.82.1
           npm install --global --prefix "$root/npm" --ignore-scripts "$package_name@$package_version"
+          pi="$root/pi-npm/bin/pi"
           cli="$root/npm/bin/pifleet"
           test "$("$cli" --version)" = "$package_version"
 
@@ -97,6 +105,8 @@ jobs:
             PIFLEET_APPLICATION_ROOT="$root/application" \
             PIFLEET_DISABLE_REGISTERED_SERVICE=1 \
             PI_CODING_AGENT_DIR="$root/pi-agent" \
+            PIFLEET_PI_EXECUTABLE="$pi" \
+            PIFLEET_PI_NODE="$(command -v node)" \
             "$cli" list >"$root/list.json" 2>"$root/list.stderr"
           test ! -s "$root/list.stderr"
           node -e '
@@ -108,3 +118,7 @@ jobs:
               value.agents.length !== 0
             ) process.exit(1);
           ' "$root/list.json"
+          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" create registry-smoke >"$root/create.json"
+          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" status registry-smoke >"$root/status.json"
+          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" destroy registry-smoke >"$root/destroy.json"
+          test ! -e "$root/application/releases"/*/node_modules/@earendil-works/pi-coding-agent

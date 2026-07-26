@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { RealPiLauncher, type PiLauncher } from "../../src/pi/adapter.js";
@@ -342,11 +342,9 @@ describe("real Pi in-memory lifecycle", () => {
       }),
     });
     cleanups.push(() => service.close());
-    const extensionPath = resolve(
-      process.cwd(),
-      "node_modules",
-      "@earendil-works",
-      "pi-coding-agent",
+    const selectedPiTarget = await realpath(SELECTED_PI_EXECUTABLE);
+    const extensionPath = join(
+      dirname(dirname(selectedPiTarget)),
       "examples",
       "extensions",
       "rpc-demo.ts",

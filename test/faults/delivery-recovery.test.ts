@@ -52,7 +52,6 @@ function absentAgent(name: string): StoredAgent {
   const profile = createLaunchProfile({
     cwd: "/tmp",
     piArgv: ["--session", "/tmp/delivery-session.jsonl"],
-    piArtifactId: "counting-pi",
   });
   return {
     summary: {

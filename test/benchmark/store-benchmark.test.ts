@@ -27,7 +27,7 @@ it("records the main-thread SQLite baseline", async () => {
           process: { state: "absent" },
           session: { path: null, id: null },
         },
-        launch: createLaunchProfile({ cwd: root, piArgv: [], piArtifactId: "benchmark" }),
+        launch: createLaunchProfile({ cwd: root, piArgv: [] }),
         latestAssistantText: null,
         responseObservedAt: null,
       });

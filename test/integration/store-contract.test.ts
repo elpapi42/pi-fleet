@@ -37,10 +37,10 @@ function downgradeDatabaseToSchemaV1(path: string): void {
 }
 
 function agent(): StoredAgent {
-  const launch = observeSession(
-    createLaunchProfile({ cwd: "/workspace", piArgv: [], piArtifactId: "pi@0.80.10" }),
-    { path: "/home/user/.pi/agent/sessions/session.jsonl", id: "session-1" },
-  );
+  const launch = observeSession(createLaunchProfile({ cwd: "/workspace", piArgv: [] }), {
+    path: "/home/user/.pi/agent/sessions/session.jsonl",
+    id: "session-1",
+  });
   return {
     summary: {
       id: "agent-1",

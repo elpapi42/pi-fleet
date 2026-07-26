@@ -11,13 +11,11 @@ export interface AgentLaunchProfile {
   readonly selector: NativeSessionSelector;
   readonly observedSession: ObservedSession | null;
   readonly restorePiArgv: readonly string[] | null;
-  readonly piArtifactId: string;
 }
 
 export interface CreateLaunchProfileInput {
   readonly cwd: string;
   readonly piArgv: readonly string[];
-  readonly piArtifactId: string;
 }
 
 export function createLaunchProfile(input: CreateLaunchProfileInput): AgentLaunchProfile {
@@ -28,7 +26,6 @@ export function createLaunchProfile(input: CreateLaunchProfileInput): AgentLaunc
     selector: analyzeSessionSelector(input.piArgv),
     observedSession: null,
     restorePiArgv: null,
-    piArtifactId: input.piArtifactId,
   };
 }
 

@@ -36,7 +36,7 @@
 - Align explicit stdin input with the runtime's 512 KiB message limit and document credential-environment and receive-timeout behavior before the quick start.
 - Install native services without forcing the default persistent state directory into `PIFLEET_STATE_ROOT`, preserving the default split between durable SQLite state and the private runtime socket.
 - Validated systemd user lingering, idle reboot restoration, active reboot interruption without replay, single-writer restoration, and session preservation in a disposable privileged systemd container.
-- Added a fail-closed production-audit policy that permits only `GHSA-3jxr-9vmj-r5cp` at the exact `brace-expansion@5.0.6` path pinned by managed Pi `0.80.10`; every changed or additional vulnerability still blocks release.
+- Removed Pi from pi-fleet's production dependency and immutable runtime closure, restored a zero-exception production audit for what pi-fleet distributes, and moved real/process/package/CI validation to a separately installed Pi `0.82.1`. The audit does not certify the user's external Pi installation.
 
 ## 0.1.0-beta.9 — 2026-07-20
 
