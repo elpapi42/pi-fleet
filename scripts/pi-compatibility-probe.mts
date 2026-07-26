@@ -1,9 +1,9 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { createServer, type Server } from "node:http";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 interface JsonFrame {
@@ -25,7 +25,8 @@ interface RpcState {
 export interface PiCompatibilityProfile {
   readonly schemaVersion: 1;
   readonly artifact: {
-    readonly executable: string;
+    readonly selectedPath: string;
+    readonly realPath: string;
     readonly version: string;
   };
   readonly runtime: {
@@ -61,7 +62,8 @@ export interface PiCompatibilityProfile {
   readonly limitations: readonly string[];
 }
 
-const DEFAULT_PI_EXECUTABLE = process.env.PIFLEET_PI_EXECUTABLE ?? "pi";
+const DEFAULT_PI_EXECUTABLE =
+  process.env.PIFLEET_PI_EXECUTABLE ?? resolve(process.cwd(), "node_modules", ".bin", "pi");
 const BASE_ARGS = ["--mode", "rpc", "--no-skills", "--no-prompt-templates", "--no-tools"];
 const RESPONSE_TIMEOUT_MS = 10_000;
 
@@ -342,9 +344,19 @@ async function piVersion(executable: string): Promise<string> {
   return result.stdout.trim();
 }
 
+async function observeArtifact(executable: string): Promise<PiCompatibilityProfile["artifact"]> {
+  const selectedPath = resolve(executable);
+  return {
+    selectedPath,
+    realPath: await realpath(selectedPath),
+    version: await piVersion(selectedPath),
+  };
+}
+
 export async function runCompatibilityProbe(
   executable = DEFAULT_PI_EXECUTABLE,
 ): Promise<PiCompatibilityProfile> {
+  const artifact = await observeArtifact(executable);
   const root = await mkdtemp(join(tmpdir(), "pifleet-pi-probe-"));
   const cwd = join(root, "project");
   await mkdir(cwd, { recursive: true });
@@ -421,7 +433,7 @@ export async function runCompatibilityProbe(
 
     return {
       schemaVersion: 1,
-      artifact: { executable: basename(executable), version: await piVersion(executable) },
+      artifact,
       runtime: {
         node: process.versions.node,
         platform: process.platform,

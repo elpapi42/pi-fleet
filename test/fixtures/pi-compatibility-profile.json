@@ -1,8 +1,9 @@
 {
   "schemaVersion": 1,
   "artifact": {
-    "executable": "pi",
-    "version": "0.80.10"
+    "selectedPath": "/home/elpapi/.nvm/versions/node/v24.16.0/bin/pi",
+    "realPath": "/home/elpapi/.nvm/versions/node/v24.16.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+    "version": "0.82.1"
   },
   "runtime": {
     "node": "24.16.0",

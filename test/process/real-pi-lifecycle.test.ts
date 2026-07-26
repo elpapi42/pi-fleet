@@ -1,13 +1,16 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { RealPiLauncher } from "../../src/pi/adapter.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
 import { SqliteFleetStore } from "../../src/store/sqlite-store.js";
+
+const SELECTED_PI_EXECUTABLE =
+  process.env.PIFLEET_PI_EXECUTABLE ?? resolve(process.cwd(), "node_modules", ".bin", "pi");
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -90,8 +93,8 @@ describe("real Pi in-memory lifecycle", () => {
 
     const pids: number[] = [];
     const launcher = new RealPiLauncher({
-      executable: "pi",
-      artifactId: "pi@0.80.10",
+      executable: SELECTED_PI_EXECUTABLE,
+      artifactId: "external-pi",
       env: { PI_CODING_AGENT_DIR: agentDir },
       onStart: (pid) => pids.push(pid),
     });
@@ -213,8 +216,8 @@ describe("real Pi in-memory lifecycle", () => {
     const pids: number[] = [];
     const launcher = () =>
       new RealPiLauncher({
-        executable: "pi",
-        artifactId: "pi@0.80.10",
+        executable: SELECTED_PI_EXECUTABLE,
+        artifactId: "external-pi",
         env: { PI_CODING_AGENT_DIR: agentDir },
         onStart: (pid) => pids.push(pid),
       });
