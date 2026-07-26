@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { RealPiLauncher } from "../../src/pi/adapter.js";
+import { RealPiLauncher, type PiLauncher } from "../../src/pi/adapter.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
 import { SqliteFleetStore } from "../../src/store/sqlite-store.js";
@@ -35,6 +35,22 @@ async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5_000): Prom
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
   }
   throw new Error("condition did not become true");
+}
+
+function recordRawStdout(
+  launcher: RealPiLauncher,
+  isRecording: () => boolean,
+  chunks: Buffer[],
+): PiLauncher {
+  return {
+    artifactId: launcher.artifactId,
+    start(profile, restore, onSpawn, onStdoutBytes) {
+      return launcher.start(profile, restore, onSpawn, (bytes) => {
+        if (isRecording()) chunks.push(Buffer.from(bytes));
+        onStdoutBytes?.(bytes);
+      });
+    },
+  };
 }
 
 async function deterministicServer() {
@@ -102,12 +118,18 @@ describe("real Pi in-memory lifecycle", () => {
     );
 
     const pids: number[] = [];
-    const launcher = new RealPiLauncher({
-      executable: SELECTED_PI_EXECUTABLE,
-      artifactId: "external-pi",
-      env: { PI_CODING_AGENT_DIR: agentDir },
-      onStart: (pid) => pids.push(pid),
-    });
+    let recordingRawStdout = false;
+    const rawStdout: Buffer[] = [];
+    const launcher = recordRawStdout(
+      new RealPiLauncher({
+        executable: SELECTED_PI_EXECUTABLE,
+        artifactId: "external-pi",
+        env: { PI_CODING_AGENT_DIR: agentDir },
+        onStart: (pid) => pids.push(pid),
+      }),
+      () => recordingRawStdout,
+      rawStdout,
+    );
     const service = new FleetService(new MemoryFleetStore(), {
       launcher,
       now: () => "2026-01-01T00:00:00.000Z",
@@ -144,8 +166,12 @@ describe("real Pi in-memory lifecycle", () => {
       watch.value[Symbol.asyncIterator](),
       '"type":"agent_settled"',
     );
+    recordingRawStdout = true;
     await service.send({ name: "reviewer", message: "first" }, "send-1");
-    const rpcText = (await watchedUntilSettled).toString("utf8");
+    const watchedBytes = await watchedUntilSettled;
+    recordingRawStdout = false;
+    expect(watchedBytes).toEqual(Buffer.concat(rawStdout));
+    const rpcText = watchedBytes.toString("utf8");
     expect(rpcText).toContain('"command":"prompt"');
     expect(rpcText).toContain('"type":"message_update"');
     expect(rpcText).toContain('"type":"text_delta"');
@@ -200,6 +226,163 @@ describe("real Pi in-memory lifecycle", () => {
       ok: true,
     });
     await expect(readFile(sessionPath, "utf8")).resolves.toContain("deterministic response 4");
+  }, 30_000);
+
+  it("restores one writer on the same session only after an idle external Pi dies and is addressed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-real-pi-idle-death-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const project = join(root, "project");
+    const agentDir = join(root, "pi-agent");
+    await mkdir(project, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const model = await deterministicServer();
+    await writeFile(
+      join(agentDir, "models.json"),
+      JSON.stringify({
+        providers: {
+          "pifleet-probe": {
+            baseUrl: `http://127.0.0.1:${model.port}/v1`,
+            api: "openai-completions",
+            apiKey: "local-placeholder",
+            models: [{ id: "deterministic", contextWindow: 4096, maxTokens: 256 }],
+          },
+        },
+      }),
+    );
+    const pids: number[] = [];
+    const service = new FleetService(new MemoryFleetStore(), {
+      launcher: new RealPiLauncher({
+        executable: SELECTED_PI_EXECUTABLE,
+        artifactId: "external-pi",
+        env: { PI_CODING_AGENT_DIR: agentDir },
+        onStart: (pid) => pids.push(pid),
+      }),
+    });
+    cleanups.push(() => service.close());
+    const piArgv = [
+      "--provider",
+      "pifleet-probe",
+      "--model",
+      "deterministic",
+      "--no-extensions",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-tools",
+    ];
+
+    await service.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
+    await service.send({ name: "reviewer", message: "baseline" }, "send-baseline");
+    await service.receive({ name: "reviewer" });
+    const before = await service.status({ name: "reviewer" });
+    if (!before.ok || before.value.agent.session.path === null) {
+      throw new Error("external Pi did not materialize a session");
+    }
+    const session = before.value.agent.session;
+    const firstPid = pids[0]!;
+
+    process.kill(firstPid, "SIGKILL");
+    await waitUntil(async () => {
+      const status = await service.status({ name: "reviewer" });
+      return (
+        status.ok &&
+        status.value.agent.state === "failed" &&
+        status.value.agent.process.state === "absent"
+      );
+    });
+    expect(pids).toEqual([firstPid]);
+    expect(() => process.kill(firstPid, 0)).toThrow();
+
+    await service.send({ name: "reviewer", message: "restore once" }, "send-restore");
+    expect(await service.receive({ name: "reviewer" })).toMatchObject({
+      ok: true,
+      value: { response: { text: "deterministic response 2" } },
+    });
+    expect(pids).toHaveLength(2);
+    expect(model.count()).toBe(2);
+    expect(await service.status({ name: "reviewer" })).toMatchObject({
+      ok: true,
+      value: {
+        agent: {
+          state: "idle",
+          process: { state: "resident" },
+          session,
+        },
+      },
+    });
+    await service.destroy({ name: "reviewer" }, "destroy-1");
+    await expect(readFile(session.path!, "utf8")).resolves.toContain("deterministic response 2");
+  }, 30_000);
+
+  it("cancels blocking extension UI headlessly without invoking the provider", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-real-pi-extension-ui-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const project = join(root, "project");
+    const agentDir = join(root, "pi-agent");
+    await mkdir(project, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    const model = await deterministicServer();
+    await writeFile(
+      join(agentDir, "models.json"),
+      JSON.stringify({
+        providers: {
+          "pifleet-probe": {
+            baseUrl: `http://127.0.0.1:${model.port}/v1`,
+            api: "openai-completions",
+            apiKey: "local-placeholder",
+            models: [{ id: "deterministic", contextWindow: 4096, maxTokens: 256 }],
+          },
+        },
+      }),
+    );
+    const service = new FleetService(new MemoryFleetStore(), {
+      launcher: new RealPiLauncher({
+        executable: SELECTED_PI_EXECUTABLE,
+        artifactId: "external-pi",
+        env: { PI_CODING_AGENT_DIR: agentDir },
+      }),
+    });
+    cleanups.push(() => service.close());
+    const extensionPath = resolve(
+      process.cwd(),
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+      "examples",
+      "extensions",
+      "rpc-demo.ts",
+    );
+    const piArgv = [
+      "--provider",
+      "pifleet-probe",
+      "--model",
+      "deterministic",
+      "--extension",
+      extensionPath,
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-tools",
+    ];
+
+    await service.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
+    const watchAbort = new AbortController();
+    const watch = await service.openWatch({ name: "reviewer" }, watchAbort.signal);
+    if (!watch.ok) throw new Error(JSON.stringify(watch.error));
+    const uiRequest = collectUntil(
+      watch.value[Symbol.asyncIterator](),
+      '"type":"extension_ui_request"',
+    );
+
+    expect(
+      await service.send({ name: "reviewer", message: "/rpc-input" }, "send-ui"),
+    ).toMatchObject({ ok: true });
+    expect((await uiRequest).toString("utf8")).toContain('"method":"input"');
+    expect(await service.receive({ name: "reviewer" })).toMatchObject({
+      ok: false,
+      error: { code: "no_response" },
+    });
+    expect(model.count()).toBe(0);
+    watchAbort.abort();
+    await service.destroy({ name: "reviewer" }, "destroy-1");
   }, 30_000);
 
   it("does not replay active work when the selected external Pi process dies", async () => {
