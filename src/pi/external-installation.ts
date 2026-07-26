@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
-import { access, readFile, realpath, stat } from "node:fs/promises";
-import { constants } from "node:fs";
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { createReadStream } from "node:fs";
+import { access, realpath, stat } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
 
 const VERSION_TIMEOUT_MS = 3_000;
@@ -11,7 +12,8 @@ export type ExternalPiResolutionErrorCode =
   | "invalid_arguments"
   | "pi_not_found"
   | "pi_not_executable"
-  | "pi_version_unavailable";
+  | "pi_version_unavailable"
+  | "pi_installation_changed";
 
 export class ExternalPiResolutionError extends Error {
   constructor(
@@ -35,6 +37,8 @@ export interface ExternalPiResolverOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly nodePath?: string;
   readonly versionCommand?: (executable: string) => Promise<string>;
+  readonly versionTimeoutMs?: number;
+  readonly maxVersionOutputBytes?: number;
 }
 
 export async function resolveExternalPiInstallation(
@@ -42,17 +46,51 @@ export async function resolveExternalPiInstallation(
 ): Promise<PiInstallation> {
   const env = options.env ?? process.env;
   const selectedPath = await resolveSelectedPath(env);
-  const realPath = await inspectExecutable(selectedPath);
-  const nodePath = options.nodePath ?? process.execPath;
+  const nodePath = options.nodePath ?? (await resolveNodePath(env));
   await inspectNode(nodePath);
-  const versionOutput = await (options.versionCommand ?? readVersion)(selectedPath);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const observation = await observeInstallation(selectedPath, env, options);
+    if (observation !== null) {
+      return {
+        selectedPath,
+        nodePath,
+        ...observation,
+      };
+    }
+  }
+
+  throw new ExternalPiResolutionError(
+    "pi_installation_changed",
+    "Pi changed while its installation was being observed.",
+  );
+}
+
+async function observeInstallation(
+  selectedPath: string,
+  env: NodeJS.ProcessEnv,
+  options: ExternalPiResolverOptions,
+): Promise<Omit<PiInstallation, "selectedPath" | "nodePath"> | null> {
+  const beforeRealPath = await inspectExecutable(selectedPath, "Pi");
+  const beforeHash = await hashFile(beforeRealPath);
+  const versionOutput = await (
+    options.versionCommand ??
+    ((executable: string) =>
+      readVersion(executable, env, options.versionTimeoutMs, options.maxVersionOutputBytes))
+  )(selectedPath);
   const version = parseVersion(versionOutput);
-  const targetBytes = await readFile(realPath);
-  const fingerprint = createHash("sha256")
-    .update(JSON.stringify([selectedPath, realPath, version]))
-    .update(targetBytes)
-    .digest("hex");
-  return { selectedPath, realPath, version, nodePath, fingerprint };
+  const afterRealPath = await inspectExecutable(selectedPath, "Pi");
+  const afterHash = await hashFile(afterRealPath);
+
+  if (beforeRealPath !== afterRealPath || beforeHash !== afterHash) return null;
+
+  return {
+    realPath: afterRealPath,
+    version,
+    fingerprint: createHash("sha256")
+      .update(JSON.stringify([selectedPath, afterRealPath, version, afterHash]))
+      .digest("hex"),
+  };
 }
 
 async function resolveSelectedPath(env: NodeJS.ProcessEnv): Promise<string> {
@@ -66,21 +104,33 @@ async function resolveSelectedPath(env: NodeJS.ProcessEnv): Promise<string> {
     }
     return explicit;
   }
+  return resolvePathExecutable(env, "pi", "Pi", "pi_not_found");
+}
 
+async function resolveNodePath(env: NodeJS.ProcessEnv): Promise<string> {
+  return resolvePathExecutable(env, "node", "Node", "pi_not_executable");
+}
+
+async function resolvePathExecutable(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  label: "Pi" | "Node",
+  missingCode: "pi_not_found" | "pi_not_executable",
+): Promise<string> {
   const path = env.PATH;
   if (path === undefined || path.length === 0) {
-    throw new ExternalPiResolutionError("pi_not_found", "Pi was not found on PATH.");
+    throw new ExternalPiResolutionError(missingCode, `${label} was not found on PATH.`);
   }
   for (const directory of path.split(delimiter)) {
     if (!isAbsolute(directory)) {
       throw new ExternalPiResolutionError(
         "invalid_arguments",
-        "PATH entries used to select Pi must be absolute paths.",
+        `PATH entries used to select ${label} must be absolute paths.`,
       );
     }
-    const candidate = join(directory, "pi");
+    const candidate = join(directory, name);
     try {
-      await inspectExecutable(candidate);
+      await inspectExecutable(candidate, label);
       return candidate;
     } catch (error: unknown) {
       if (
@@ -91,24 +141,24 @@ async function resolveSelectedPath(env: NodeJS.ProcessEnv): Promise<string> {
       }
     }
   }
-  throw new ExternalPiResolutionError("pi_not_found", "Pi was not found on PATH.");
+  throw new ExternalPiResolutionError(missingCode, `${label} was not found on PATH.`);
 }
 
-async function inspectExecutable(path: string): Promise<string> {
+async function inspectExecutable(path: string, label: "Pi" | "Node"): Promise<string> {
   try {
     const target = await realpath(path);
     const metadata = await stat(target);
     if (!metadata.isFile()) {
-      throw new ExternalPiResolutionError("pi_not_executable", `Pi is not a file: ${path}`);
+      throw new ExternalPiResolutionError("pi_not_executable", `${label} is not a file: ${path}`);
     }
     await access(path, constants.X_OK);
     return target;
   } catch (error: unknown) {
     if (error instanceof ExternalPiResolutionError) throw error;
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new ExternalPiResolutionError("pi_not_found", `Pi was not found: ${path}`);
+      throw new ExternalPiResolutionError("pi_not_found", `${label} was not found: ${path}`);
     }
-    throw new ExternalPiResolutionError("pi_not_executable", `Pi is not executable: ${path}`);
+    throw new ExternalPiResolutionError("pi_not_executable", `${label} is not executable: ${path}`);
   }
 }
 
@@ -117,77 +167,105 @@ async function inspectNode(nodePath: string): Promise<void> {
     throw new ExternalPiResolutionError("invalid_arguments", "Node must be an absolute path.");
   }
   try {
-    const metadata = await stat(nodePath);
-    if (!metadata.isFile()) throw new Error("not a file");
-    await access(nodePath, constants.X_OK);
+    await inspectExecutable(nodePath, "Node");
   } catch {
     throw new ExternalPiResolutionError("pi_not_executable", `Node is not executable: ${nodePath}`);
   }
 }
 
-async function readVersion(executable: string): Promise<string> {
+async function hashFile(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await new Promise<void>((resolveHash, rejectHash) => {
+    const stream = createReadStream(path);
+    stream.on("data", (chunk: string | Buffer) => hash.update(chunk));
+    stream.once("error", rejectHash);
+    stream.once("end", resolveHash);
+  });
+  return hash.digest("hex");
+}
+
+async function readVersion(
+  executable: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs = VERSION_TIMEOUT_MS,
+  maxOutputBytes = MAX_VERSION_OUTPUT_BYTES,
+): Promise<string> {
   const child = spawn(executable, ["--version"], {
+    detached: process.platform !== "win32",
+    env,
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  let stdout = Buffer.alloc(0);
-  let overflowed = false;
+  const chunks: Buffer[] = [];
+  let outputBytes = 0;
+  let terminalError: ExternalPiResolutionError | null = null;
+  let terminated = false;
+
+  const terminate = () => {
+    if (terminated) return;
+    terminated = true;
+    if (process.platform !== "win32" && child.pid !== undefined) {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+        return;
+      } catch {
+        // The group may have already exited; kill the direct child as a fallback.
+      }
+    }
+    child.kill("SIGKILL");
+  };
+
   child.stdout.on("data", (chunk: Buffer) => {
-    if (overflowed) return;
-    const next = Buffer.concat([stdout, chunk]);
-    if (next.byteLength > MAX_VERSION_OUTPUT_BYTES) {
-      overflowed = true;
-      child.kill("SIGKILL");
+    if (terminalError !== null) return;
+    outputBytes += chunk.byteLength;
+    if (outputBytes > maxOutputBytes) {
+      terminalError = new ExternalPiResolutionError(
+        "pi_version_unavailable",
+        "Pi version output exceeded its limit.",
+      );
+      terminate();
       return;
     }
-    stdout = next;
+    chunks.push(chunk);
   });
   child.stderr.resume();
 
   return new Promise((resolveVersion, rejectVersion) => {
-    let settled = false;
-    const finish = (callback: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      callback();
-    };
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish(() =>
-        rejectVersion(
-          new ExternalPiResolutionError("pi_version_unavailable", "Pi version command timed out."),
-        ),
+      terminalError = new ExternalPiResolutionError(
+        "pi_version_unavailable",
+        "Pi version command timed out.",
       );
-    }, VERSION_TIMEOUT_MS);
-    child.once("error", () =>
-      finish(() =>
-        rejectVersion(
-          new ExternalPiResolutionError("pi_version_unavailable", "Pi version command failed."),
-        ),
-      ),
-    );
-    child.once("exit", (code) => {
-      if (overflowed) {
-        finish(() =>
-          rejectVersion(
-            new ExternalPiResolutionError(
-              "pi_version_unavailable",
-              "Pi version output exceeded its limit.",
-            ),
-          ),
-        );
+      terminate();
+    }, timeoutMs);
+    child.once("error", () => {
+      terminalError ??= new ExternalPiResolutionError(
+        "pi_version_unavailable",
+        "Pi version command failed.",
+      );
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (terminalError !== null) {
+        rejectVersion(terminalError);
         return;
       }
       if (code !== 0) {
-        finish(() =>
-          rejectVersion(
-            new ExternalPiResolutionError("pi_version_unavailable", "Pi version command failed."),
-          ),
+        rejectVersion(
+          new ExternalPiResolutionError("pi_version_unavailable", "Pi version command failed."),
         );
         return;
       }
-      finish(() => resolveVersion(stdout.toString("utf8")));
+      try {
+        resolveVersion(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+      } catch {
+        rejectVersion(
+          new ExternalPiResolutionError(
+            "pi_version_unavailable",
+            "Pi version command returned invalid UTF-8.",
+          ),
+        );
+      }
     });
   });
 }
