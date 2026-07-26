@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+## 0.1.0-beta.10 — 2026-07-26
+
+Corrects pi-fleet's execution-ownership boundary: pi-fleet now orchestrates the user's separately installed Pi executable instead of distributing a second managed Pi runtime.
+
 ### Changed
 
-- pi-fleet now requires a separately installed Pi and is being migrated to launch the exact Pi executable and Node interpreter selected by the invoking environment. It does not install, bundle, copy, or silently substitute Pi.
+- pi-fleet now requires a separately installed Pi and launches the exact Pi executable and Node interpreter selected by the invoking environment. It does not install, bundle, copy, or silently substitute Pi.
 - A runtime whose persisted Pi is unavailable still serves passive inspection, response retrieval, watching, and cleanup; `create`, `send`, and `compact` fail before dispatch.
 - Changed existing service Pi/Node selections fail closed as `runtime_upgrade_deferred` until users finish work and explicitly transition supervision. The beta.9 managed-Pi service follows the same manual transition: uninstall only pi-fleet supervision, then install from the intended Pi environment; state and native sessions remain.
 
