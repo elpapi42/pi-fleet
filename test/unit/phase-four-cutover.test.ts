@@ -1,4 +1,4 @@
-import { link, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -457,6 +457,27 @@ describe("protocol-v3 coordinated cutover", () => {
     await rm(procRoot, { recursive: true, force: true });
     await mkdir(procRoot);
     expect(() => assertNoOtherProcessHasDatabaseOpen(databasePath, procRoot)).not.toThrow();
+
+    // A same-user zombie exposes an unreadable fd directory but owns nothing.
+    const zombiePid = process.pid + 200_000;
+    await mkdir(join(procRoot, String(zombiePid), "fd"), { recursive: true });
+    await writeFile(
+      join(procRoot, String(zombiePid), "stat"),
+      `${String(zombiePid)} (cosmic-term) Z 1 1 1 0 -1 0 0 0 0 0\n`,
+    );
+    await chmod(join(procRoot, String(zombiePid), "fd"), 0o000);
+    expect(() => assertNoOtherProcessHasDatabaseOpen(databasePath, procRoot)).not.toThrow();
+
+    // A live same-user process that cannot be inspected still fails closed.
+    await writeFile(
+      join(procRoot, String(zombiePid), "stat"),
+      `${String(zombiePid)} (pifleet-runtime) S 1 1 1 0 -1 0 0 0 0 0\n`,
+    );
+    expect(() => assertNoOtherProcessHasDatabaseOpen(databasePath, procRoot)).toThrow(
+      /Cannot prove legacy runtime/i,
+    );
+    await chmod(join(procRoot, String(zombiePid), "fd"), 0o700);
+    await rm(join(procRoot, String(zombiePid)), { recursive: true, force: true });
 
     database = new DatabaseSync(databasePath);
     database.prepare("UPDATE schema_migrations SET checksum = 'wrong'").run();

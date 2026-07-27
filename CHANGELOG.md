@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.14 — 2026-07-27
+
+### Fixed
+
+- Fixed the destructive-transition ownership proof rejecting startup on ordinary Linux desktops: a same-user zombie process exposes an unreadable `/proc/<pid>/fd` while owning no descriptors, which made the new runtime refuse to open a legacy database with `Cannot prove legacy runtime <pid> released pi-fleet state`. Live same-user processes that cannot be inspected still fail closed.
+
 ## 0.1.0-beta.13 — 2026-07-27
 
 Makes local programs first-class pi-fleet clients: a supported TypeScript SDK plus continuous, replayable semantic receive over shared per-user agents. This beta replaces the previous receive and watch contracts and resets pi-fleet-owned state.

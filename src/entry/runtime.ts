@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 
@@ -252,10 +252,14 @@ export function assertNoOtherProcessHasDatabaseOpen(path: string, procRoot = "/p
       continue;
     }
     if (currentUid !== undefined && owner !== currentUid) continue;
+    // A reaped-but-unwaited process has already released every descriptor, and its
+    // `/proc/<pid>/fd` is deliberately unreadable, so it cannot own the database.
+    if (isZombieProcess(processPath)) continue;
     let descriptors: string[];
     try {
       descriptors = readdirSync(`${processPath}/fd`);
     } catch (error: unknown) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
       throw new Error(`Cannot prove legacy runtime ${entry} released pi-fleet state`, {
         cause: error,
       });
@@ -278,6 +282,20 @@ export function assertNoOtherProcessHasDatabaseOpen(path: string, procRoot = "/p
       }
     }
   }
+}
+
+/** Reads the scheduler state character from `/proc/<pid>/stat`, tolerating exits. */
+function isZombieProcess(processPath: string): boolean {
+  let stat: string;
+  try {
+    stat = readFileSync(`${processPath}/stat`, "utf8");
+  } catch {
+    // An unreadable or vanished stat line proves nothing on its own; the caller
+    // still requires descriptor evidence for live same-user processes.
+    return false;
+  }
+  const afterComm = stat.slice(stat.lastIndexOf(")") + 1).trim();
+  return afterComm.startsWith("Z");
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
