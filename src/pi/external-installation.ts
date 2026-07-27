@@ -7,7 +7,7 @@ import { delimiter, dirname, isAbsolute, join } from "node:path";
 
 import type { PiRuntimeIdentity } from "../protocol/pi-identity.js";
 
-const VERSION_TIMEOUT_MS = 3_000;
+const VERSION_TIMEOUT_MS = 15_000;
 const MAX_VERSION_OUTPUT_BYTES = 4 * 1024;
 
 export type ExternalPiResolutionErrorCode =

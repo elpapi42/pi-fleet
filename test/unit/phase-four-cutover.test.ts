@@ -468,16 +468,25 @@ describe("protocol-v3 coordinated cutover", () => {
     await chmod(join(procRoot, String(zombiePid), "fd"), 0o000);
     expect(() => assertNoOtherProcessHasDatabaseOpen(databasePath, procRoot)).not.toThrow();
 
-    // A live same-user process that cannot be inspected still fails closed.
+    // A live same-user process the kernel hides cannot be a pi-fleet runtime, so the
+    // sweep skips it and SQLite locking remains the authoritative proof.
     await writeFile(
       join(procRoot, String(zombiePid), "stat"),
-      `${String(zombiePid)} (pifleet-runtime) S 1 1 1 0 -1 0 0 0 0 0\n`,
+      `${String(zombiePid)} (systemd) S 1 1 1 0 -1 0 0 0 0 0\n`,
     );
-    expect(() => assertNoOtherProcessHasDatabaseOpen(databasePath, procRoot)).toThrow(
-      /Cannot prove legacy runtime/i,
-    );
+    expect(() => assertNoOtherProcessHasDatabaseOpen(databasePath, procRoot)).not.toThrow();
     await chmod(join(procRoot, String(zombiePid), "fd"), 0o700);
     await rm(join(procRoot, String(zombiePid)), { recursive: true, force: true });
+
+    // A live writer elsewhere on the host still fails closed through SQLite locking.
+    const writer = new DatabaseSync(databasePath);
+    writer.exec("BEGIN EXCLUSIVE");
+    expect(() => assertNoOtherProcessHasDatabaseOpen(databasePath, procRoot)).toThrow(
+      /Cannot prove another runtime released the pi-fleet database/i,
+    );
+    writer.exec("ROLLBACK");
+    writer.close();
+    expect(() => assertNoOtherProcessHasDatabaseOpen(databasePath, procRoot)).not.toThrow();
 
     database = new DatabaseSync(databasePath);
     database.prepare("UPDATE schema_migrations SET checksum = 'wrong'").run();

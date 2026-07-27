@@ -236,10 +236,21 @@ async function assertLegacyProcessTreesAbsent(path: string): Promise<void> {
   assertNoOtherProcessHasDatabaseOpen(path);
 }
 
+/**
+ * Proves no other process still writes the legacy database before a destructive reset.
+ *
+ * SQLite's own locking is the authoritative proof: a writer anywhere on the host,
+ * inspectable or not, blocks an exclusive transaction. The `/proc` sweep only adds
+ * a named diagnostic for same-user processes we can actually inspect; processes the
+ * kernel hides from us (privileged managers, setuid binaries, zombies) are skipped
+ * rather than treated as unprovable, because they cannot be a pi-fleet runtime and
+ * the lock probe already covers the real risk.
+ */
 export function assertNoOtherProcessHasDatabaseOpen(path: string, procRoot = "/proc"): void {
   if (process.platform !== "linux" || !existsSync(path)) {
     throw new Error("Legacy runtime ownership proof is supported only on Linux");
   }
+  assertDatabaseIsUnlocked(path);
   const databaseIdentity = statSync(path);
   const currentUid = process.getuid?.();
   for (const entry of readdirSync(procRoot)) {
@@ -258,29 +269,36 @@ export function assertNoOtherProcessHasDatabaseOpen(path: string, procRoot = "/p
     let descriptors: string[];
     try {
       descriptors = readdirSync(`${processPath}/fd`);
-    } catch (error: unknown) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
-      throw new Error(`Cannot prove legacy runtime ${entry} released pi-fleet state`, {
-        cause: error,
-      });
+    } catch {
+      // Not inspectable, so it cannot be identified here; the lock probe decides.
+      continue;
     }
     for (const descriptor of descriptors) {
+      let opened;
       try {
-        const opened = statSync(`${processPath}/fd/${descriptor}`);
-        if (opened.dev === databaseIdentity.dev && opened.ino === databaseIdentity.ino) {
-          throw new Error(`Legacy runtime process ${entry} still owns the pi-fleet database`);
-        }
-      } catch (error: unknown) {
-        if (
-          error instanceof Error &&
-          "code" in error &&
-          (error.code === "ENOENT" || error.code === "EBADF")
-        ) {
-          continue;
-        }
-        throw error;
+        opened = statSync(`${processPath}/fd/${descriptor}`);
+      } catch {
+        continue;
+      }
+      if (opened.dev === databaseIdentity.dev && opened.ino === databaseIdentity.ino) {
+        throw new Error(`Legacy runtime process ${entry} still owns the pi-fleet database`);
       }
     }
+  }
+}
+
+/** Fails closed when any process anywhere still holds a SQLite write lock. */
+function assertDatabaseIsUnlocked(path: string): void {
+  const database = new DatabaseSync(path);
+  try {
+    database.exec("BEGIN EXCLUSIVE");
+    database.exec("ROLLBACK");
+  } catch (error: unknown) {
+    throw new Error("Cannot prove another runtime released the pi-fleet database", {
+      cause: error,
+    });
+  } finally {
+    database.close();
   }
 }
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-beta.15 — 2026-07-27
+
+### Fixed
+
+- Raised the bounded `pi --version` identity probe timeout so a loaded machine no longer reports `pi_version_unavailable` for a healthy Pi installation.
+- Made the destructive-transition ownership proof authoritative and inspection-independent. SQLite exclusive locking now proves no other process still writes the database, while the `/proc` sweep is a best-effort named diagnostic that skips processes the kernel hides. Upgrading previously failed on ordinary Linux desktops with `EACCES` on the systemd user manager's descriptors.
+
 ## 0.1.0-beta.14 — 2026-07-27
 
 ### Fixed
