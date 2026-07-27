@@ -1,6 +1,6 @@
 {
   "name": "@elpapi42/pi-fleet",
-  "version": "0.1.0-beta.12",
+  "version": "0.1.0-beta.13",
   "description": "Pi-native execution infrastructure for programmatic agent orchestration",
   "license": "MIT",
   "author": "elpapi42",
