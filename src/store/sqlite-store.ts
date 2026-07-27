@@ -2,6 +2,10 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import {
+  hardenPrivateDirectorySync,
+  hardenSqliteSidecarsSync,
+} from "../platform/shared/state-security.js";
 import type {
   FleetStore,
   StoredAgent,
@@ -82,11 +86,15 @@ export class SqliteFleetStore implements FleetStore {
   #closed = false;
 
   constructor(path: string) {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const directory = dirname(path);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    hardenPrivateDirectorySync(directory);
+    hardenSqliteSidecarsSync(path);
     this.#database = new DatabaseSync(path);
     this.#database.exec(
       "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
     );
+    hardenSqliteSidecarsSync(path);
     try {
       this.#migrate();
       const metadata = this.#database
@@ -187,6 +195,52 @@ export class SqliteFleetStore implements FleetStore {
         agent.summary.process.state,
         JSON.stringify(agent),
       );
+  }
+
+  async rollbackProvisionalCreate(
+    name: string,
+    completedOperation: StoredOperation,
+  ): Promise<StoredAgent | null> {
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = await this.getAgent(name);
+      const pending = await this.getOperation(completedOperation.operationId);
+      if (existing === null) {
+        this.#database.exec("ROLLBACK");
+        return null;
+      }
+      if (
+        pending?.state !== "pending" ||
+        pending.method !== "create" ||
+        pending.targetAgent?.id !== existing.summary.id ||
+        completedOperation.state !== "completed" ||
+        completedOperation.method !== "create" ||
+        completedOperation.fingerprint !== pending.fingerprint
+      ) {
+        throw new Error("Provisional create rollback does not match the pending operation");
+      }
+      this.#database.prepare("DELETE FROM agents WHERE name = ?").run(name);
+      this.#database
+        .prepare(
+          `DELETE FROM operations
+           WHERE json_extract(data_json, '$.targetAgent.id') = ?`,
+        )
+        .run(existing.summary.id);
+      this.#database.prepare("DELETE FROM send_records WHERE agent_name = ?").run(name);
+      this.#database.prepare("DELETE FROM compact_records WHERE agent_name = ?").run(name);
+      this.#database
+        .prepare(
+          `DELETE FROM incarnations
+           WHERE json_extract(data_json, '$.agentId') = ?`,
+        )
+        .run(existing.summary.id);
+      await this.putOperation(completedOperation);
+      this.#database.exec("COMMIT");
+      return existing;
+    } catch (error: unknown) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   async deleteAgent(name: string): Promise<StoredAgent | null> {

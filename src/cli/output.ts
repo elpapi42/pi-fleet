@@ -6,15 +6,13 @@ import type {
   DestroyResult,
   FleetClientError,
   ListResult,
-  ReceiveResult,
   SendResult,
   StatusResult,
 } from "../client/fleet-client.js";
 
-type FiniteResult =
+export type FiniteResult =
   | CreateResult
   | SendResult
-  | ReceiveResult
   | StatusResult
   | ListResult
   | DestroyResult
@@ -22,10 +20,6 @@ type FiniteResult =
 
 export function writeResult(stream: Writable, result: FiniteResult, human: boolean): void {
   stream.write(human ? `${renderHuman(result)}\n` : `${JSON.stringify(result)}\n`);
-}
-
-export function writeWatchReady(stream: Writable, name: string): void {
-  stream.write(`${JSON.stringify({ schemaVersion: 1, type: "watch.ready", agent: { name } })}\n`);
 }
 
 export function writeError(stream: Writable, error: FleetClientError, human: boolean): void {
@@ -42,8 +36,6 @@ function renderHuman(result: FiniteResult): string {
       return `${result.agent.name}: ${result.agent.state} (${result.agent.process.state})`;
     case "message.accepted":
       return `${result.agent.name}: message accepted`;
-    case "response":
-      return result.response.text;
     case "agent.status":
       return `${result.agent.name}: ${result.agent.state} (${result.agent.process.state})`;
     case "agent.list":

@@ -3,3 +3,6 @@ dist/
 .pi/
 AGENTS.md
 .codegraph/
+pi/
+pi-acp/
+openspec/schemas/

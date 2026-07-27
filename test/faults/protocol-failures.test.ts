@@ -1,10 +1,20 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createConnection, type Socket } from "node:net";
+import { createConnection, createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { SocketFleetClient } from "../../src/client/socket-fleet-client.js";
+import { segmentSemanticEvent } from "../../src/protocol/semantic-segmentation.js";
 import { PROTOCOL_VERSION } from "../../src/protocol/version.js";
+import type {
+  ActivityId,
+  AgentEventId,
+  AgentId,
+  ContinuityEpoch,
+  ReceiveCursor,
+  SemanticEvent,
+} from "../../src/runtime/semantic-events.js";
 import { startControlServer, type ControlServer } from "../../src/runtime/control-server.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
@@ -41,6 +51,30 @@ async function exchange(socketPath: string, bytes: string): Promise<Record<strin
   const chunks: Buffer[] = [];
   for await (const chunk of socket) chunks.push(Buffer.from(chunk));
   return JSON.parse(Buffer.concat(chunks).toString().trim()) as Record<string, unknown>;
+}
+
+async function scriptedReceiveServer(
+  frames: (requestId: string) => readonly Record<string, unknown>[],
+): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "pifleet-protocol-scripted-"));
+  const socketPath = join(root, "control.sock");
+  const server = createServer((socket) => {
+    socket.once("data", (chunk) => {
+      const request = JSON.parse(Buffer.from(chunk).toString()) as { requestId: string };
+      for (const frame of frames(request.requestId)) socket.write(`${JSON.stringify(frame)}\n`);
+      socket.end();
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("listening", resolve);
+    server.once("error", reject);
+    server.listen(socketPath);
+  });
+  cleanups.push(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  });
+  return socketPath;
 }
 
 async function connect(socketPath: string): Promise<Socket> {
@@ -80,6 +114,72 @@ describe("private protocol failure containment", () => {
       `${JSON.stringify({ v: 999, requestId: "bad", method: "agent.list", params: {} })}\n`,
     );
     expect(response).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+  });
+
+  it("rejects contradictory and non-boolean receive boundaries", async () => {
+    const socketPath = await harness();
+    for (const [requestId, params] of [
+      ["contradictory", { name: "agent", expectedAgentId: "id", after: "cursor", fromStart: true }],
+      ["bad-from-start", { name: "agent", expectedAgentId: "id", fromStart: "yes" }],
+      ["bad-until-idle", { name: "agent", expectedAgentId: "id", untilIdle: "yes" }],
+      [
+        "after-until-idle",
+        { name: "agent", expectedAgentId: "id", after: "cursor", untilIdle: true },
+      ],
+      [
+        "from-start-until-idle",
+        { name: "agent", expectedAgentId: "id", fromStart: true, untilIdle: true },
+      ],
+    ] as const) {
+      const response = await exchange(
+        socketPath,
+        `${JSON.stringify({
+          v: PROTOCOL_VERSION,
+          requestId,
+          method: "agent.receive",
+          params,
+        })}\n`,
+      );
+      expect(response).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+    }
+  });
+
+  it("rejects a whole-event cursor discontinuity before emitting the event", async () => {
+    const readyCursor = "cursor-a" as ReceiveCursor;
+    const event: SemanticEvent = {
+      type: "assistant.message.started",
+      id: "event-c" as AgentEventId,
+      activityId: "activity-c" as ActivityId,
+      agentId: "agent-id" as AgentId,
+      cursor: "cursor-c" as ReceiveCursor,
+      epoch: 0 as ContinuityEpoch,
+      sourceRawPosition: 1,
+      observedAt: "2026-01-01T00:00:00Z",
+    };
+    const [segment] = segmentSemanticEvent(event, "cursor-b" as ReceiveCursor, 4_096);
+    const socketPath = await scriptedReceiveServer((requestId) => [
+      {
+        v: PROTOCOL_VERSION,
+        requestId,
+        stream: "ready",
+        cursor: readyCursor,
+        limits: { maxEventBytes: 8_192, maxSegments: 32 },
+      },
+      { v: PROTOCOL_VERSION, requestId, stream: "semantic.segment", segment },
+    ]);
+    const client = new SocketFleetClient({ socketPath });
+    const received = [];
+    for await (const item of client.receive(
+      { name: "agent", expectedAgentId: "agent-id" },
+      { signal: new AbortController().signal },
+    )) {
+      received.push(item);
+    }
+    expect(received).toMatchObject([
+      { ok: true, value: { type: "ready", cursor: readyCursor } },
+      { ok: false, error: { code: "protocol_error" } },
+    ]);
+    expect(received.some((item) => item.ok && item.value.type === "event")).toBe(false);
   });
 
   it("does not answer or crash on an unterminated frame", async () => {

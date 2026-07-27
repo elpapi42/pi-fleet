@@ -1,249 +1,227 @@
 ---
 name: pi-fleet-operator
-description: Use `pifleet` as a machine-first control layer for Pi agents and their native sessions. Invoke this skill whenever an agent, Pi extension, orchestration workflow, or AI factory needs to create Pi agents, delegate or steer work, compact idle context, inspect lifecycle state, retrieve exact latest settled assistant text, consume live Pi RPC JSONL, restore a session-backed process, coordinate several Pi agents, or release pi-fleet management. Also use it for pi-fleet automation and troubleshooting even when the user says only “use pi-fleet,” “delegate this,” “ask the reviewer,” or “check the agents.”
-compatibility: Requires the `pifleet` executable and a separately installed supported `pi` executable on PATH.
+description: Use pi-fleet's SDK or CLI to create, communicate with, observe, compact, and destroy shared local Pi agents while preserving user-owned native sessions. Invoke for long-lived multi-agent orchestration, steering or follow-up input, continuous semantic receive, cursor recovery, lifecycle inspection, and conservative failure handling.
+compatibility: Requires Linux x64, Node.js ^22.19.0 or ^24.0.0, pifleet, and a separately installed Pi 0.82.1 executable.
 ---
 
 # pi-fleet operator
 
-Use pi-fleet as Pi-native execution infrastructure, not as a terminal multiplexer or workflow engine. pi-fleet owns process lifecycle, ordered communication, restoration, and exact result retrieval. The calling agent owns task decomposition, roles, scheduling, semantic retries, aggregation, observability, and knowledge mining.
+Use pi-fleet as Pi-native execution infrastructure, not as a terminal multiplexer or workflow engine. pi-fleet controls execution; the user controls the native session; the calling program owns roles, scheduling, aggregation, semantic retries, and autonomy.
 
-The governing boundary is: **pi-fleet controls execution; the user controls the session.**
+## Prefer the SDK for orchestration
 
-## Establish context safely
+The supported TypeScript entry is part of the same package:
 
-1. Confirm pi-fleet and the separately installed Pi selected by the same terminal environment before the first work-accepting operation:
-
-   ```bash
-   command -v pifleet
-   pifleet --version
-   command -v pi
-   pi --version
-   ```
-
-   pi-fleet launches that PATH-selected Pi executable and its selected Node interpreter; it does not bundle or substitute Pi. `PIFLEET_PI_EXECUTABLE` may select an explicit absolute executable. Shell aliases and functions are unsupported.
-
-2. Do not install, upgrade, repair, or restart pi-fleet unless the user asks for maintenance.
-3. Use the default compact JSON output for every finite command. Capture stdout, stderr, and exit status separately, and parse JSON rather than matching prose.
-4. Do not use `--human` for orchestration. If a person needs a result, parse the machine response and present the relevant information yourself.
-5. Treat `watch` differently from finite commands: stdout is Pi's unfiltered RPC byte stream, while readiness and errors are pi-fleet JSON on stderr.
-
-Operational commands may start the central runtime. Passive inspection must not wake an individual Pi process: `status`, `list`, `watch`, and retrieval of an already settled response remain passive with respect to Pi. If a service's persisted Pi later disappears, those passive commands and `destroy` remain usable; `create`, `send`, and `compact` fail before dispatch.
-
-## Pi changes and supervision transition
-
-A version-manager switch, global Pi upgrade, or changed selected Node must not silently alter a live pi-fleet runtime. A work-accepting command can return `pi_service_mismatch` when the terminal selection differs from the persisted service, or `runtime_upgrade_deferred` when automatic replacement cannot prove the existing runtime is quiescent.
-
-Do not force a repair. Finish or explicitly cancel existing work first. For the beta.9 managed-Pi to external-Pi transition, or any deferred service selection change, the safe maintenance procedure is user-authorized: remove only pi-fleet supervision with the installer `uninstall`, then run installer `install` from the environment selecting the intended Pi. This preserves SQLite state and every user-owned native session; it does not delete Pi or session files.
-
-## Choose whether to reuse or create an agent
-
-Start with `list` or `status` when the required agent may already exist:
-
-```bash
-pifleet list
-pifleet status NAME
+```ts
+import { connectPiFleet } from "@elpapi42/pi-fleet/client";
 ```
 
-Reuse an existing agent when the assignment should benefit from its native Pi session. Create a new agent only when a distinct managed agent or conversation is intended.
+All SDK clients and the CLI address one shared per-user agent pool. `client.close()` closes only local resources. It must never stop shared agents or the runtime.
 
-Every agent has a stable local programmatic name. The name is an address, not a persona or workflow definition. Use deterministic, collision-safe lowercase names of 1–63 characters matching:
+Use direct client methods:
+
+```ts
+const fleet = await connectPiFleet();
+const agent = await fleet.get("reviewer");
+const events = await agent.receive();
+await agent.send("Review this change.");
+```
+
+Agent handles carry an immutable creation UUID as well as the reusable friendly name. Never reconstruct a handle from a name when an existing handle is available; a stale handle must fail rather than retarget a same-name recreation.
+
+Use `connectPiFleet({ autoStartRuntime: false })` only when another process owns control-plane startup; connecting still performs a passive reachability and protocol check, so it fails immediately with `runtime_unavailable` or `protocol_incompatible` rather than returning a handle that breaks later. Imports are inert. Passive list/get/status/receive/destroy behavior must remain available when Pi is unavailable; work operations validate Pi when invoked.
+
+## Establish the local execution context
+
+Before the first work-accepting operation:
+
+```bash
+command -v pifleet
+pifleet --version
+command -v pi
+pi --version
+```
+
+The supported Pi target is 0.82.1. pi-fleet launches the selected Pi and Node paths; it does not bundle Pi. Do not install, upgrade, repair, restart, or replace supervision unless the user requests maintenance.
+
+Never test against the user's default state unless explicitly asked. Isolate at least `HOME`, `XDG_RUNTIME_DIR`, `PIFLEET_STATE_ROOT`, `PIFLEET_APPLICATION_ROOT`, `PI_CODING_AGENT_DIR`, and `PIFLEET_DISABLE_REGISTERED_SERVICE=1`.
+
+## Reuse before creating
+
+Use `client.list()`, `client.get(name)`, `pifleet list`, or `pifleet status NAME` before creating when continuity may be useful.
+
+Names are stable local addresses, not personas. They use 1–63 lowercase letters, digits, or interior hyphens:
 
 ```text
 ^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$
 ```
 
-Create an agent without initial work:
+Create through the SDK or CLI:
 
-```bash
-pifleet create NAME --cwd /absolute/project/path
+```ts
+const agent = await fleet.create({ name: "reviewer", cwd: "/workspace/project" });
 ```
 
-Create an agent and submit initial work:
-
 ```bash
-pifleet create NAME "INITIAL INSTRUCTIONS" --cwd /absolute/project/path
+pifleet create reviewer --cwd /workspace/project
+pifleet create reviewer "Initial instructions" --cwd /workspace/project
 ```
 
-`--cwd` belongs to pi-fleet and must appear before the first literal `--`. Preserve every native Pi option after that boundary in its original token order:
+Native Pi options follow the first literal `--` in exact order. `--cwd` belongs before it.
+
+## Preserve native sessions
+
+Pi sessions are user-owned native resources. Exact selectors remain authoritative:
 
 ```bash
-pifleet create NAME \
-  --cwd /absolute/project/path \
-  -- \
-  --model anthropic/claude-sonnet-4 \
-  --thinking high
+pifleet create reviewer --cwd /workspace/project -- --session /absolute/session.jsonl
+pifleet create reviewer -- --session-id SESSION_ID
+pifleet create reviewer -- --fork /absolute/source.jsonl
+pifleet create reviewer -- --continue
 ```
 
-## Preserve user control of sessions
+pi-fleet never copies, relocates, normalizes, wraps, or deletes native sessions. Successful destroy logically deletes pi-fleet-owned state and journal history for that agent UUID, not the session file. Do not imply forensic erasure of SQLite WAL/freelist pages or external backups.
 
-Pi sessions are user-controlled native resources. Use exact selectors when supplied:
+## Send steering or follow-up input
 
-```bash
-pifleet create NAME --cwd /absolute/project/path -- --session /absolute/session.jsonl
-pifleet create NAME --cwd /absolute/project/path -- --session-id SESSION_ID
-pifleet create NAME --cwd /absolute/project/path -- --fork /absolute/source.jsonl
-pifleet create NAME --cwd /absolute/project/path -- --continue
+Steering remains the default:
+
+```ts
+await agent.send("Check the failure path.");
+await agent.send("Then summarize the contract.", { delivery: "followUp" });
 ```
 
-pi-fleet records the concrete selected session for restoration and observation. It never copies, relocates, normalizes, or deletes the session.
-
-Do not hide, replace, or take ownership of session files in orchestration code. External observability and knowledge-mining systems may read the native files directly; `watch` is instead the live transient Pi RPC stream. Deliberate concurrent writers are allowed at the user's risk; never imply that arbitrary concurrent mutation preserves restoration correctness.
-
-## Submit and steer work
-
-Send ordinary Pi input through one verb:
-
 ```bash
-pifleet send NAME "MESSAGE"
+pifleet send reviewer "Check the failure path"
+pifleet send reviewer "Then summarize" --follow-up
 ```
 
-A successful send means pi-fleet accepted and ordered the input. It does not mean Pi completed the work or produced a distinct response.
+Follow-up delivery is best effort. Pi queues follow-up input only for a run already in flight, so
+pi-fleet sends follow-up input to an authoritatively idle agent as an ordinary prompt. Input
+accepted in the narrow window while a turn is ending can be queued against a run that never
+resumes, and no later turn carries it; prefer default steering when delivery must be certain.
 
-- While Pi is idle, `send` starts ordinary work.
-- While Pi is active, `send` uses Pi's steering behavior at its next decision point.
-- Repeated sends remain ordered and may influence one settled result.
-- pi-fleet deliberately does not provide one-send/one-response attribution.
+A successful send proves durable acceptance and ordering only. It does not prove completion, imply one response, or correlate one send to one event. Multiple sends may steer one active cycle. Cancellation stops the local wait, not accepted remote work.
 
-For large or shell-sensitive input, request stdin explicitly with `-`. pi-fleet never consumes piped stdin implicitly:
+Use explicit `-` for stdin; pi-fleet never consumes piped stdin implicitly.
 
-```bash
-git diff | pifleet send NAME -
-pifleet create NAME - --cwd /absolute/project/path < instructions.md
+## Receive continuous semantic activity
+
+Receive is passive and continuous. Attach before sending when observation timing matters:
+
+```ts
+const stream = await agent.receive();
+const checkpoint = stream.cursor;
+for await (const event of stream) {
+  // Persist event.cursor after processing and deduplicate by event.id.
+}
 ```
 
-Input must be nonempty valid UTF-8 and is limited to 512 KiB by default. Never place API keys or credentials in persisted messages or Pi arguments merely to configure the runtime. A persistent runtime does not inherit environment variables added only to a later CLI invocation.
+Start modes are:
 
-## Retrieve the semantic result
-
-Wait for Pi to become idle and retrieve its exact latest assistant text:
-
-```bash
-pifleet receive NAME --timeout 10m
+```ts
+await agent.receive();
+await agent.receive({ after: checkpoint });
+await agent.receive({ fromStart: true });
 ```
 
-Parse the JSON result. Do not approximate the response from `watch`, logs, stderr, terminal output, or last-line heuristics.
+The stream contains exactly six lifecycle event types:
 
-Receive semantics:
+- `assistant.thinking.started` / `assistant.thinking.finished`
+- `assistant.message.started` / `assistant.message.finished`
+- `tool.execution.started` / `tool.execution.finished`
 
-- The result is non-consuming and can be retrieved repeatedly.
-- It is the latest assistant text, not a response correlated to one send.
-- Several sends may influence the returned response.
-- `--timeout 0` performs an immediate poll.
-- Use explicit units such as `30s`, `5m`, or `1h`; unitless values are milliseconds.
-- Timeout exits `124` without canceling or mutating Pi work.
-- Canceling one held receive affects only that client.
+Each event has an event ID and cursor; each pair shares an activity ID. Tool finishes repeat the finalized input and add output/error state. Empty thinking or visible text emits no public lifecycle pair. There are no public deltas, retry events, raw RPC records, or turn events.
 
-The calling agent is responsible for mapping assignments to managed agents and deciding how to aggregate returned results.
+An observed start may remain unmatched after interruption. Never fabricate a finish or infer semantic completion from agent idleness.
 
-## Inspect lifecycle state
+Any number of receive streams may coexist. Consumers own checkpoints. Delivery after reconnect is at-least-once, so deduplicate by event ID.
 
-Use machine-readable inspection rather than inferring state from output:
+After `observation_uncertain`, stop at the last-safe cursor. Crossing to the supplied continuation cursor requires an explicit caller decision. Never silently bridge the gap.
+
+## Use the CLI as a shell adapter
 
 ```bash
-pifleet status NAME
+pifleet receive reviewer                    # live, continuous JSONL
+pifleet receive reviewer --after CURSOR     # replay then follow
+pifleet receive reviewer --from-start       # retained history then follow
+pifleet receive reviewer --until-idle       # live one-off projection
+```
+
+Readiness and the initial cursor are written to stderr. Semantic event JSONL is written to stdout. `--until-idle` cannot be combined with history; it exits with no history if already idle and otherwise emits through the exact observed idle boundary.
+
+The old raw `watch` command and finite latest-response receive contract no longer exist. Do not parse terminal output, raw Pi RPC, logs, or native session tailing as a substitute for semantic receive.
+
+## Inspect and compact conservatively
+
+`status` and `list` are passive and never restore Pi:
+
+```bash
+pifleet status reviewer
 pifleet list
 ```
 
-Reason separately about agent state and process residency. An `idle` agent can be `resident` or `absent`; the next send restores an absent process from the agent's native session when safe. Never infer continuity from a PID.
+An idle agent may be resident or absent. Never infer logical continuity from a PID.
 
-Handle failed state conservatively:
+Compact only an idle agent:
 
-- `runtime_interrupted`: active work stopped and was not silently replayed.
-- `delivery_uncertain`: Pi may have received the input; automatic replay could duplicate tool side effects.
-- `incarnation_cleanup_uncertain`: pi-fleet cannot prove an old process writer is gone; do not force a replacement writer.
+```ts
+await agent.compact();
+```
+
+```bash
+pifleet compact reviewer
+```
+
+Compaction is a typed Pi control, not an assistant response. Treat `compaction_uncertain` as potentially applied and never retry automatically.
+
+## Handle failure without replay
+
+Treat these as policy boundaries:
+
+- `runtime_interrupted`: active work stopped; pi-fleet did not replay it.
+- `delivery_uncertain`: Pi may have received input; replay may duplicate side effects.
+- `observation_uncertain`: receive history has a crash gap; explicit continuation is required.
+- `incarnation_cleanup_uncertain`: an old writer may remain; do not force a replacement.
+- `storage_unavailable`: durable recording failed; affected work and streams stop at the last safe cursor.
 - `session_unavailable` or `session_ambiguous`: continuity cannot safely be claimed.
 
-Ask for policy or user direction before semantically retrying uncertain work. A new send is a new instruction, not evidence that earlier work did nothing.
+A new send is new work, not proof that uncertain earlier work had no effect. Ask for user or orchestration policy before semantic retry.
 
-## Compact idle context
+## Destroy deliberately
 
-Use Pi's native typed compaction only when the agent is idle:
+```ts
+await agent.destroy();
+```
 
 ```bash
-pifleet compact NAME
+pifleet destroy reviewer
 ```
 
-`compact` restores an absent idle process when capacity allows, leaves it resident afterward, and returns bounded token metrics in `agent.compacted`. It checks authoritative Pi state immediately before invocation and rejects observed active, queued, restoring, or already-compacting work with `agent_busy`. Pi does not offer an atomic idle-only compact operation; trusted extension activity starting after that check can still encounter Pi's native abort-first behavior.
+Destroy only when pi-fleet should stop owning execution. It removes pi-fleet-owned control and journal history after process absence is proven, but preserves native Pi sessions, configuration, credentials, extensions, skills, prompts, and project files.
 
-Compaction does not produce a new assistant response. Use the `compact` result—not `receive`—to determine whether it completed. `receive` waits while compaction is active, and `watch` forwards Pi's compaction RPC events and command response unchanged.
+Do not destroy a reusable agent merely because one assignment completed.
 
-Treat `compaction_uncertain` as potentially applied and never retry it automatically: Pi may have appended the native compaction entry before the runtime lost the result.
+## Respect retention and output boundaries
 
-## Coordinate multiple agents
+The private durable journal stores every complete Pi RPC stdout record before parsing. It can contain prompts, thinking, tools, paths, extension data, and secrets for the agent's lifetime. Do not expose journal payloads in logs, errors, diagnostics, or reports.
 
-When orchestrating several Pi agents:
+Finite CLI commands emit one JSON object on stdout. Receive emits JSONL only. Keep stderr separate. Treat receive EPIPE as normal local disconnection. Do not use `--human` for programmatic orchestration.
 
-1. Keep fan-out bounded by available capacity.
-2. Give each intended continuity boundary its own agent, deterministic name, and session.
-3. Treat lifecycle, timeout, and failure independently per agent.
-4. Do not assume completion order matches submission order.
-5. Retrieve each agent's exact latest settled assistant text with `receive`; do not mine terminal-like output for answers.
-6. Aggregate, compare, route, and validate results in the calling layer.
-7. Keep semantic retry and cancellation policy outside pi-fleet.
+## Service and destructive beta transition
 
-pi-fleet has no scheduler queue or idle-process eviction. A process-starting operation can return `capacity_exceeded`; callers must reduce fan-out or deliberately destroy another agent rather than assuming hidden queueing.
+A changed Pi/Node selection or responsive incompatible runtime must fail closed. Do not force repair.
 
-## Consume live Pi RPC output
+For the destructive beta schema transition:
 
-`watch` is a live, byte-faithful copy of one Pi process incarnation's RPC stdout:
+1. Finish old work.
+2. Run the installed `dist/installer.mjs uninstall` to remove only supervision.
+3. Prove the old runtime and Pi process trees are absent.
+4. Run `dist/installer.mjs install` from the intended Pi/Node environment.
+5. Accept that prior pi-fleet-owned agents and history reset; native sessions remain.
 
-```bash
-pifleet watch NAME > pi-rpc.jsonl 2> watch-control.jsonl
-```
-
-Stdout contains exactly Pi's byte stream: command responses, text and thinking deltas, tool-call deltas, tool execution, lifecycle, queue, retry, compaction, extension UI, unknown records, and malformed or partial output are never filtered or reconstructed. Stderr receives one `watch.ready` record after registration and any later pi-fleet error.
-
-Treat concatenated bytes as authoritative because process and socket chunk boundaries may differ. Buffer through LF before parsing JSONL. Do not assume every emitted chunk is one record or valid UTF-8 by itself.
-
-`watch` is live-only and has no replay. It attaches to a resident incarnation or waits passively for the next one without waking Pi. Once bound, it ends when that process exits and never silently follows a restored process. Start a new watch for the next incarnation.
-
-Starting or canceling a watcher must not wake, steer, cancel, or otherwise change Pi. A lagging watcher fails independently with `watcher_lagged`; runtime or process failures remain visible rather than dropping bytes silently. Continue to use `status`, `list`, and `receive` for authoritative lifecycle and latest-result semantics.
-
-## Release management deliberately
-
-Destroy an agent only when pi-fleet should stop owning its process lifecycle:
-
-```bash
-pifleet destroy NAME
-```
-
-Destroy stops the managed process and removes pi-fleet's name, operation state, and capacity ownership. It never deletes Pi sessions, configuration, credentials, extensions, skills, prompts, or project files.
-
-Do not automatically destroy a reusable agent merely because one assignment finished. For intentionally temporary agents, retrieve the required result or artifact before releasing management.
-
-## Respect transport contracts
-
-Finite commands emit one compact JSON object on stdout when successful. Expected failures emit one structured JSON error object on stderr. Preserve exit status:
-
-- `0`: success;
-- `1`: error;
-- `124`: receive timeout.
-
-For automation:
-
-- parse finite-command JSON rather than matching prose;
-- never mix stderr diagnostics into stdout data;
-- keep `watch` bytes untouched when fidelity matters;
-- treat downstream `watch` EPIPE as normal client disconnection;
-- avoid concurrency assumptions based on send-to-response correlation;
-- use the same agent for related work only when retained session context is intentional.
-
-## Isolate testing
-
-Never test against the user's default pi-fleet state unless explicitly asked to exercise real agents. Isolate experimental or destructive checks with unique temporary values for at least:
-
-```text
-HOME
-XDG_RUNTIME_DIR
-PIFLEET_STATE_ROOT
-PIFLEET_APPLICATION_ROOT
-PI_CODING_AGENT_DIR
-PIFLEET_DISABLE_REGISTERED_SERVICE=1
-```
-
-Clean up only resources created under those roots. Do not operate on unrelated pi-fleet agents, sessions, services, or process groups.
+After reset, an older binary is not rollback. Use a forward fix or an externally managed pre-reset state backup.
 
 ## Report outcomes
 
-Report the pi-fleet name, operation, resulting lifecycle/residency state when relevant, and the parsed response or artifact. Surface timeout, interruption, uncertainty, and unvalidated continuity explicitly. Never expose credentials, private session contents, or unnecessary paths.
+Report the pi-fleet agent address, operation, lifecycle/residency state when relevant, processed event cursor, and any uncertainty boundary. Never expose credentials, raw history, thinking, tool payloads, session contents, cursors not needed by the recipient, or unnecessary private paths.

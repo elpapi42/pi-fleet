@@ -1,0 +1,123 @@
+name: prodspec
+version: 1
+description: Product-first planning from a frozen raw user-context snapshot to shared problem understanding, implementation, testing, and release readiness.
+
+artifacts:
+  - id: dump
+    generates: dump.md
+    description: Freeform user-authored raw context snapshot for the initiative.
+    template: dump.md
+    instruction: |
+      Create a freeform artifact for the user to fill manually before discovery.
+      This artifact is a frozen initial snapshot from /pdsx:create and must not be edited, normalized, or kept aligned with later artifacts.
+      Do not shape, summarize, refine, or AI-author the user's thinking here.
+      Later artifacts should read this as raw historical input only; divergence from later approved artifacts is expected, and only approved downstream artifacts become the source of truth for decisions.
+    requires: []
+
+  - id: problem
+    generates: problem.md
+    description: Shared understanding of the real problem worth solving.
+    template: problem.md
+    instruction: |
+      Capture only the agreed problem understanding.
+      Read dump.md as a frozen raw historical snapshot, not as an approved decision artifact or current truth.
+      Do not propose the solution.
+      Include only what is known, evidenced, or explicitly agreed with the user.
+    requires:
+      - dump
+
+  - id: solution
+    generates: solution.md
+    description: Shared understanding of the high-level solution behavior worth committing to.
+    template: solution.md
+    instruction: |
+      Capture the agreed product/workflow behavior and high-level solution mechanics.
+      Read dump.md as a frozen raw historical snapshot, not as an approved decision artifact or current truth.
+      Define enough behavior for technical specification.
+      Do not choose code-level implementation details or task steps.
+    requires:
+      - dump
+      - problem
+
+  - id: specification
+    generates: specification.md
+    description: Code-grounded technical approach for implementing the agreed solution.
+    template: specification.md
+    instruction: |
+      Capture the agreed technical approach grounded in actual code/docs/config/tests.
+      Read dump.md as a frozen raw historical snapshot, not as an approved decision artifact or current truth.
+      Include current technical state, relevant architecture context, target technical
+      behavior, implementation approach, relevant constraints, and validation strategy
+      for testing.md.
+      Do not write implementation task steps.
+    requires:
+      - dump
+      - solution
+
+  - id: implementation
+    generates: implementation.md
+    description: Phased, granular, self-contained execution tasks tracked by apply.
+    template: implementation.md
+    instruction: |
+      Create a phased implementation plan with detailed top-level checkbox tasks.
+      Read dump.md as a frozen raw historical snapshot, not as an approved decision artifact or current truth.
+      Use phase/task numbering to encode order and parallel lanes.
+      Put task-critical execution details directly on each checkbox line.
+      Use checkbox syntax only for executable tracked implementation tasks.
+      Do not create testing, validation, verification, smoke, browser/API/DB, eval, environment, or proof tasks in implementation.md; those belong in testing.md.
+    requires:
+      - dump
+      - specification
+
+  - id: testing
+    generates: testing.md
+    description: Repeatable verification runbook for testing the initiative across phases and environments.
+    template: testing.md
+    instruction: |
+      Create a repeatable testing runbook for agents and humans.
+      Read dump.md as a frozen raw historical snapshot, not as an approved decision artifact or current truth.
+      Use ordered steps, not checkbox tasks.
+      Cover phase-level checks, final verification, browser flows, API requests,
+      DB/data checks, observability, regression checks, setup, cleanup, and blockers.
+      Parameterize environment, credentials, roles, tenants/workspaces, and seeded data.
+      Do not include secret values.
+    requires:
+      - dump
+      - implementation
+
+  - id: release
+    generates: release.md
+    description: Repeatable release/deployment runbook for promoting the initiative through environments.
+    template: release.md
+    instruction: |
+      Create a repeatable release runbook for each target environment.
+      Read dump.md as a frozen raw historical snapshot, not as an approved decision artifact or current truth.
+      Use ordered steps, not checkbox tasks.
+      Cover branch/PR/commit promotion, required checks, environment variables,
+      config, feature flags, database migrations/backfills/indexes, explicit SQL/manual
+      database statements or data operations required to make the feature work in each
+      environment, deploy order, smoke checks, monitoring, rollback/kill switches,
+      approvals, and access gates.
+      Parameterize environment-specific values and never include secret values. If SQL,
+      env vars, config, flags, or manual steps are required but not fully known, record
+      the exact blocker, owner/access needed, and safest resolution path.
+    requires:
+      - dump
+      - testing
+
+apply:
+  requires:
+    - dump
+    - implementation
+    - testing
+    - release
+  tracks: implementation.md
+  instruction: |
+    Read dump.md, problem.md, solution.md, specification.md, implementation.md, testing.md, and release.md. Treat dump.md as a frozen historical snapshot only; do not edit it or try to keep it aligned with later artifacts.
+    Implement ready unchecked tasks from implementation.md according to phase/task numbering.
+    Treat testing.md and release.md as context for future verification/release and runbook drift only; do not execute browser/API/DB/smoke/eval/external/environment testing or release-readiness checks during apply.
+    Apply may run only basic local checks such as local unit/component/repo tests without browser/API/DB/external environments, lint, typecheck, and build.
+    Respect phase boundaries and code-review/fix gates.
+    Mark a task complete only after the relevant implementation work, review/fixes when applicable, and basic local checks are done or explicitly not applicable.
+    Checkbox completion means implementation complete; feature/system verification and release readiness remain future work.
+    Pause if implementation reveals a planning, testing, release, specification, or product gap.

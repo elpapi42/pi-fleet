@@ -11,7 +11,7 @@ const AGENT_NAMES = ["race-a", "race-b", "race-c"] as const;
 const ACTIONS_PER_SEED = 48;
 
 type AgentName = (typeof AGENT_NAMES)[number];
-type ActionKind = "create" | "send" | "status" | "receive" | "destroy" | "process-exit";
+type ActionKind = "create" | "send" | "status" | "destroy" | "process-exit";
 
 interface RaceAction {
   readonly index: number;
@@ -41,7 +41,6 @@ function generateActions(seed: number): readonly RaceAction[] {
     "send",
     "send",
     "status",
-    "receive",
     "destroy",
     "process-exit",
   ];
@@ -162,9 +161,6 @@ async function executeAction(
       return;
     case "status":
       await service.status({ name: action.name });
-      return;
-    case "receive":
-      await service.receive({ name: action.name });
       return;
     case "destroy":
       await service.destroy({ name: action.name }, operationId);

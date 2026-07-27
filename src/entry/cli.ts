@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { CommanderError } from "commander";
 
@@ -6,46 +5,26 @@ import { splitArgv } from "../cli/argv.js";
 import type { CliDependencies as Dependencies } from "../cli/context.js";
 import { createProgram } from "../cli/program.js";
 import { writeError } from "../cli/output.js";
-import { SocketFleetClient } from "../client/socket-fleet-client.js";
-import { resolveExternalPiInstallation } from "../pi/external-installation.js";
-import { installationIdentity } from "../pi/external-target.js";
-import { assertRegisteredPiSelection, ensureRuntime } from "../platform/client/start-runtime.js";
-import { resolveFleetPaths } from "../platform/shared/paths.js";
+import { createPiFleetClient } from "../client/sdk-facade.js";
+import { createSharedClientConnection } from "../client/shared-client.js";
+import { FleetClientSdkTransport } from "../client/sdk-transport.js";
 
 export type CliDependencies = Dependencies;
 
 function defaultDependencies(): CliDependencies {
   const abort = new AbortController();
-  const paths = resolveFleetPaths();
-  let installation: ReturnType<typeof resolveExternalPiInstallation> | undefined;
-  const selectedPi = () => (installation ??= resolveExternalPiInstallation({ env: process.env }));
-  const mutationPi = async () => {
-    const selected = await selectedPi();
-    if (process.env.PIFLEET_DISABLE_REGISTERED_SERVICE !== "1") {
-      await assertRegisteredPiSelection({
-        selectedPath: selected.selectedPath,
-        nodePath: selected.nodePath,
-      });
-    }
-    return selected;
-  };
+  const connection = createSharedClientConnection({
+    autoStartRuntime: true,
+  });
   return {
-    client: new SocketFleetClient({
-      socketPath: paths.socketPath,
-      beforeConnect: () =>
-        ensureRuntime({
-          socketPath: paths.socketPath,
-          env: process.env,
-          piInstallation: selectedPi,
-        }),
-      piIdentity: async () => installationIdentity(await mutationPi()),
-    }),
+    client: createPiFleetClient(
+      new FleetClientSdkTransport(connection.client, connection.operationIds),
+    ),
     cwd: process.cwd(),
     stdin: process.stdin,
     stdout: process.stdout,
     stderr: process.stderr,
     signal: abort.signal,
-    operationIds: () => ({ operationId: randomUUID(), createdAt: new Date().toISOString() }),
   };
 }
 
@@ -55,7 +34,7 @@ export async function runCli(
 ): Promise<number> {
   const split = splitArgv(argv);
   const commandName = split.fleetArgv[0];
-  const human = commandName !== "watch" && split.fleetArgv.includes("--human");
+  const human = split.fleetArgv.includes("--human");
 
   if (split.piArgv.length > 0 && commandName !== "create") {
     writeError(

@@ -9,7 +9,6 @@ import { runList } from "./commands/list.js";
 import { runReceive } from "./commands/receive.js";
 import { runSend } from "./commands/send.js";
 import { runStatus } from "./commands/status.js";
-import { runWatch } from "./commands/watch.js";
 
 export function createProgram(
   context: CommandContext,
@@ -17,7 +16,9 @@ export function createProgram(
 ): Command {
   const program = new Command()
     .name(PRODUCT_BINARY)
-    .description("Pi-native execution infrastructure for programmatic orchestration")
+    .description(
+      "Control shared local Pi agents; stream durable semantic activity with user-owned sessions",
+    )
     .version(PRODUCT_VERSION)
     .exitOverride()
     .showHelpAfterError(false)
@@ -53,23 +54,38 @@ export function createProgram(
     .description("Submit or steer Pi input")
     .argument("<name>")
     .argument("<message>")
+    .option("--follow-up", "Queue the input until Pi is fully done")
     .option("--human")
-    .action(async (name: string, message: string, options: HumanOptions) => {
-      setExitCode(await runSend({ name, message, human: options.human ?? false }, context));
+    .action(async (name: string, message: string, options: SendOptions) => {
+      setExitCode(
+        await runSend(
+          {
+            name,
+            message,
+            delivery: options.followUp === true ? "followUp" : "steer",
+            human: options.human ?? false,
+          },
+          context,
+        ),
+      );
     });
 
   program
     .command("receive")
-    .description("Wait for idle and return the exact latest assistant text")
+    .description("Stream durable high-level Pi activity")
     .argument("<name>")
-    .option("--timeout <duration>")
+    .option("--after <cursor>", "Replay strictly after a receive cursor, then follow live")
+    .option("--from-start", "Replay retained agent history, then follow live")
+    .option("--until-idle", "Attach live and exit after the exact observed idle boundary")
     .option("--human")
     .action(async (name: string, options: ReceiveOptions) => {
       setExitCode(
         await runReceive(
           {
             name,
-            ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
+            ...(options.after === undefined ? {} : { after: options.after }),
+            fromStart: options.fromStart ?? false,
+            untilIdle: options.untilIdle ?? false,
             human: options.human ?? false,
           },
           context,
@@ -92,14 +108,6 @@ export function createProgram(
     .option("--human")
     .action(async (options: HumanOptions) => {
       setExitCode(await runList({ human: options.human ?? false }, context));
-    });
-
-  program
-    .command("watch")
-    .description("Stream live raw Pi RPC JSONL")
-    .argument("<name>")
-    .action(async (name: string) => {
-      setExitCode(await runWatch(name, context));
     });
 
   program
@@ -131,6 +139,12 @@ interface CreateOptions extends HumanOptions {
   readonly cwd?: string;
 }
 
+interface SendOptions extends HumanOptions {
+  readonly followUp?: boolean;
+}
+
 interface ReceiveOptions extends HumanOptions {
-  readonly timeout?: string;
+  readonly after?: string;
+  readonly fromStart?: boolean;
+  readonly untilIdle?: boolean;
 }

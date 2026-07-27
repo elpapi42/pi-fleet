@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createLaunchProfile, observeSession } from "../../src/pi/launch-profile.js";
 import type { FleetStore, StoredAgent } from "../../src/store/fleet-store.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
-import { FleetService } from "../../src/runtime/fleet-service.js";
+import { FleetService, fingerprintPayload } from "../../src/runtime/fleet-service.js";
 import { SqliteFleetStore } from "../../src/store/sqlite-store.js";
 
 const roots: string[] = [];
@@ -53,8 +53,6 @@ function agent(): StoredAgent {
       },
     },
     launch,
-    latestAssistantText: "latest",
-    responseObservedAt: "2026-01-01T00:00:00.000Z",
   };
 }
 
@@ -67,21 +65,25 @@ async function exerciseStore(store: FleetStore): Promise<void> {
     operationId: "operation-1",
     method: "send",
     fingerprint: "fingerprint",
+    targetName: "reviewer",
     state: "completed",
     result: { ok: true },
   });
   expect(await store.getOperation("operation-1")).toMatchObject({ state: "completed" });
 
   await store.putSend({
+    agentId: "agent-1",
     sendId: "send-1",
     agentName: "reviewer",
     message: "message",
+    delivery: "steer",
     state: "dispatching",
     acceptedAt: "2026-01-01T00:00:00.000Z",
   });
   expect(await store.listNonterminalSends()).toHaveLength(1);
 
   await store.putCompact({
+    agentId: "agent-1",
     compactId: "compact-1",
     agentName: "reviewer",
     state: "completed",
@@ -94,13 +96,20 @@ async function exerciseStore(store: FleetStore): Promise<void> {
   });
 
   await store.putIncarnation({
+    agentId: "agent-1",
     incarnationId: "incarnation-1",
     agentName: "reviewer",
     pid: 123,
     state: "live",
   });
   expect(await store.listActiveIncarnations()).toEqual([
-    { incarnationId: "incarnation-1", agentName: "reviewer", pid: 123, state: "live" },
+    {
+      incarnationId: "incarnation-1",
+      agentId: "agent-1",
+      agentName: "reviewer",
+      pid: 123,
+      state: "live",
+    },
   ]);
 }
 
@@ -128,7 +137,6 @@ describe("FleetStore contract", () => {
     const second = new SqliteFleetStore(path);
     expect(await second.getAgent("reviewer")).toMatchObject({
       summary: { id: "agent-1", name: "reviewer", state: "idle", process: { state: "absent" } },
-      latestAssistantText: "latest",
       launch: { observedSession: { path: "/home/user/.pi/agent/sessions/session.jsonl" } },
     });
     expect(await second.getOperation("operation-1")).toMatchObject({ state: "completed" });
@@ -166,22 +174,26 @@ describe("FleetStore contract", () => {
       ...stored,
       summary: { ...stored.summary, process: { state: "absent" } },
     });
-    for (const [sendId, state] of [
-      ["pending-send", "pending"],
-      ["dispatching-send", "dispatching"],
+    for (const [sendId, state, delivery] of [
+      ["pending-send", "pending", "steer"],
+      ["pending-follow-up", "pending", "followUp"],
+      ["dispatching-send", "dispatching", "steer"],
     ] as const) {
-      const input = { name: "reviewer", message: sendId };
+      const input = { name: "reviewer", message: sendId, delivery };
       await store.putOperation({
         operationId: sendId,
         method: "send",
-        fingerprint: JSON.stringify(input),
+        fingerprint: fingerprintPayload(input),
+        targetName: "reviewer",
         state: "pending",
         result: null,
       });
       await store.putSend({
         sendId,
+        agentId: stored.summary.id,
         agentName: "reviewer",
         message: sendId,
+        delivery,
         state,
         acceptedAt: "2026-01-01T00:00:00.000Z",
       });
@@ -191,6 +203,11 @@ describe("FleetStore contract", () => {
     await service.reconcile();
     expect(await store.getSend("pending-send")).toMatchObject({ state: "acknowledged" });
     expect(await store.getOperation("pending-send")).toMatchObject({ state: "completed" });
+    expect(await store.getSend("pending-follow-up")).toMatchObject({
+      state: "acknowledged",
+      delivery: "followUp",
+    });
+    expect(await store.getOperation("pending-follow-up")).toMatchObject({ state: "completed" });
     expect(await store.getSend("dispatching-send")).toMatchObject({ state: "uncertain" });
     expect(await store.getOperation("dispatching-send")).toMatchObject({
       state: "completed",
@@ -205,11 +222,13 @@ describe("FleetStore contract", () => {
     await store.putOperation({
       operationId: "compact-1",
       method: "compact",
-      fingerprint: JSON.stringify({ name: "reviewer" }),
+      fingerprint: fingerprintPayload({ name: "reviewer" }),
+      targetName: "reviewer",
       state: "pending",
       result: null,
     });
     await store.putCompact({
+      agentId: "agent-1",
       compactId: "compact-1",
       agentName: "reviewer",
       state: "dispatching",
@@ -234,7 +253,8 @@ describe("FleetStore contract", () => {
       await initial.putOperation({
         operationId: `existing-${method}`,
         method,
-        fingerprint: JSON.stringify({ name: "reviewer", method }),
+        fingerprint: fingerprintPayload({ name: "reviewer", method }),
+        targetName: "reviewer",
         state: method === "send" ? "pending" : "completed",
         result: method === "send" ? null : { ok: true, value: { method } },
       });
@@ -252,7 +272,8 @@ describe("FleetStore contract", () => {
     await migrated.putOperation({
       operationId: "new-compact",
       method: "compact",
-      fingerprint: JSON.stringify({ name: "reviewer" }),
+      fingerprint: fingerprintPayload({ name: "reviewer" }),
+      targetName: "reviewer",
       state: "pending",
       result: null,
     });
@@ -269,6 +290,7 @@ describe("FleetStore contract", () => {
       operationId: "preserved-operation",
       method: "send",
       fingerprint: "preserved",
+      targetName: "reviewer",
       state: "pending",
       result: null,
     });
@@ -335,9 +357,11 @@ describe("FleetStore contract", () => {
     await store.putOperation({
       operationId: "pending-create",
       method: "create",
-      fingerprint: JSON.stringify(createInput),
+      fingerprint: fingerprintPayload(createInput),
+      targetName: "reviewer",
       state: "pending",
       result: null,
+      request: createInput,
     });
     const service = new FleetService(store, () => "2026-01-01T00:00:00.000Z");
     await service.reconcile();
@@ -348,7 +372,8 @@ describe("FleetStore contract", () => {
     await store.putOperation({
       operationId: "pending-destroy",
       method: "destroy",
-      fingerprint: JSON.stringify(destroyInput),
+      fingerprint: fingerprintPayload(destroyInput),
+      targetName: "reviewer",
       state: "pending",
       result: null,
       targetAgent: { id: (await store.getAgent("created"))!.summary.id, name: "created" },
@@ -367,7 +392,8 @@ describe("FleetStore contract", () => {
     await store.putOperation({
       operationId: "create-after-agent",
       method: "create",
-      fingerprint: JSON.stringify(createInput),
+      fingerprint: fingerprintPayload(createInput),
+      targetName: "reviewer",
       state: "pending",
       result: null,
       targetAgent: { id: existing.summary.id, name: existing.summary.name },
@@ -383,7 +409,8 @@ describe("FleetStore contract", () => {
     await store.putOperation({
       operationId: "destroy-after-delete",
       method: "destroy",
-      fingerprint: JSON.stringify(destroyInput),
+      fingerprint: fingerprintPayload(destroyInput),
+      targetName: "reviewer",
       state: "pending",
       result: null,
       targetAgent: { id: "agent-1", name: "reviewer" },
@@ -401,6 +428,7 @@ describe("FleetStore contract", () => {
     const first = new SqliteFleetStore(path);
     await first.createAgent(agent());
     await first.putIncarnation({
+      agentId: "agent-1",
       incarnationId: "incarnation-1",
       agentName: "reviewer",
       pid: 123,
@@ -415,6 +443,7 @@ describe("FleetStore contract", () => {
     expect(await second.listActiveIncarnations()).toEqual([
       {
         incarnationId: "incarnation-1",
+        agentId: "agent-1",
         agentName: "reviewer",
         pid: 123,
         state: "cleanup_uncertain",

@@ -5,8 +5,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { frameIterator, SocketFleetClient } from "../../src/client/socket-fleet-client.js";
-import type { PiLauncher } from "../../src/pi/adapter.js";
-import type { PiProcess } from "../../src/pi/process.js";
 import type { PiRuntimeIdentity } from "../../src/protocol/pi-identity.js";
 import { PROTOCOL_VERSION } from "../../src/protocol/version.js";
 import { startControlServer, type ControlServer } from "../../src/runtime/control-server.js";
@@ -19,14 +17,13 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
-async function harness(limits?: Partial<RuntimeLimits>, launcher?: PiLauncher) {
+async function harness(limits?: Partial<RuntimeLimits>) {
   const root = await mkdtemp(join(tmpdir(), "pifleet-socket-test-"));
   const socketPath = join(root, "control.sock");
   const store = new MemoryFleetStore();
   const service = new FleetService(store, {
     now: () => "2026-01-01T00:00:00.000Z",
     ...(limits === undefined ? {} : { limits }),
-    ...(launcher === undefined ? {} : { launcher }),
   });
   const server: ControlServer = await startControlServer({
     socketPath,
@@ -70,53 +67,6 @@ async function protocolFixture(
   return { client: new SocketFleetClient({ socketPath }), closed };
 }
 
-function streamingLauncher(): {
-  readonly launcher: PiLauncher;
-  emit(bytes: Buffer): void;
-} {
-  let sink: ((bytes: Buffer) => void) | undefined;
-  let exitListener: ((error: Error | null) => void) | undefined;
-  const process = {
-    pid: 51_000,
-    async getState() {
-      return {
-        isStreaming: false,
-        isCompacting: false,
-        pendingMessageCount: 0,
-        sessionFile: "/tmp/rpc-session.jsonl",
-        sessionId: "rpc-session",
-      };
-    },
-    async prompt() {},
-    async getLastAssistantText() {
-      return null;
-    },
-    onFrame() {
-      return () => undefined;
-    },
-    onExit(listener: (error: Error | null) => void) {
-      exitListener = listener;
-      return () => undefined;
-    },
-    async stop() {
-      exitListener?.(null);
-    },
-  } as unknown as PiProcess;
-  return {
-    launcher: {
-      artifactId: "streaming-pi",
-      async start(_profile, _restore, _onSpawn, onStdoutBytes) {
-        sink = onStdoutBytes;
-        return process;
-      },
-    },
-    emit(bytes) {
-      if (sink === undefined) throw new Error("Pi stdout sink is not installed");
-      sink(bytes);
-    },
-  };
-}
-
 const signal = new AbortController().signal;
 const operation = { operationId: "operation-1", createdAt: "2026-01-01T00:00:00.000Z" };
 
@@ -148,26 +98,6 @@ describe("private socket runtime", () => {
       ok: true,
       value: { agents: [] },
     });
-  });
-
-  it("maps an older runtime rejecting compact to protocol_incompatible", async () => {
-    const fixture = await protocolFixture((requestId) => ({
-      v: PROTOCOL_VERSION,
-      requestId,
-      ok: false,
-      error: { code: "invalid_request", message: "Invalid protocol request: /method" },
-    }));
-
-    expect(
-      await fixture.client.compact(
-        { name: "reviewer" },
-        {
-          signal,
-          operation: { operationId: "compact-old-runtime", createdAt: operation.createdAt },
-        },
-      ),
-    ).toMatchObject({ ok: false, error: { code: "protocol_incompatible" } });
-    await fixture.closed;
   });
 
   it("preserves current-runtime compact validation errors", async () => {
@@ -243,85 +173,7 @@ describe("private socket runtime", () => {
     ).toMatchObject({ ok: false, error: { code: "operation_conflict" } });
   });
 
-  it("exposes readiness separately and streams exact raw Pi RPC bytes", async () => {
-    const streaming = streamingLauncher();
-    const { client } = await harness(undefined, streaming.launcher);
-    await client.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, { signal, operation });
-
-    const abort = new AbortController();
-    const stream = client.watch({ name: "reviewer" }, { signal: abort.signal });
-    const iterator = stream[Symbol.asyncIterator]();
-    const ready = await iterator.next();
-    expect(ready).toMatchObject({
-      value: { ok: true, value: { type: "ready" } },
-    });
-    const next = iterator.next();
-    const raw = Buffer.from([
-      ...Buffer.from(
-        '{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","delta":"{\\"path\\":"}}\r\n',
-      ),
-      0xff,
-      0x00,
-    ]);
-
-    streaming.emit(raw);
-
-    const frame = await next;
-    if (frame.value?.ok !== true || frame.value.value.type !== "chunk") {
-      throw new Error("watch failed");
-    }
-    expect(Buffer.from(frame.value.value.bytes)).toEqual(raw);
-    abort.abort();
-    await iterator.return?.();
-  });
-
-  it("chunks oversized raw RPC writes through private frames without changing bytes", async () => {
-    const streaming = streamingLauncher();
-    const { client } = await harness({ maxProtocolFrameBytes: 1_200 }, streaming.launcher);
-    await client.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, { signal, operation });
-
-    const abort = new AbortController();
-    const stream = client.watch({ name: "reviewer" }, { signal: abort.signal });
-    const iterator = stream[Symbol.asyncIterator]();
-    await iterator.next();
-    const raw = Buffer.from(
-      `${JSON.stringify({ type: "message_update", opaque: "x".repeat(1_500) })}\npartial`,
-    );
-    let received = Buffer.alloc(0);
-    let nextFrame = iterator.next();
-
-    streaming.emit(raw);
-
-    while (received.length < raw.length) {
-      const frame = await nextFrame;
-      if (frame.value?.ok !== true || frame.value.value.type !== "chunk") {
-        throw new Error("watch failed");
-      }
-      received = Buffer.concat([received, Buffer.from(frame.value.value.bytes)]);
-      if (received.length < raw.length) nextFrame = iterator.next();
-    }
-    expect(received).toEqual(raw);
-    abort.abort();
-    await iterator.return?.();
-  });
-
-  it("reports a lagging raw RPC watcher without filtering or blocking Pi", async () => {
-    const streaming = streamingLauncher();
-    const { client } = await harness({ maxWatchQueuedBytes: 4 }, streaming.launcher);
-    await client.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, { signal, operation });
-    const iterator = client.watch({ name: "reviewer" }, { signal })[Symbol.asyncIterator]();
-    await expect(iterator.next()).resolves.toMatchObject({
-      value: { ok: true, value: { type: "ready" } },
-    });
-
-    streaming.emit(Buffer.from("12345"));
-
-    await expect(iterator.next()).resolves.toMatchObject({
-      value: { ok: false, error: { code: "watcher_lagged" } },
-    });
-  });
-
-  it("pauses and resumes watch input when the client frame queue reaches its byte bound", async () => {
+  it("pauses and resumes receive input when the client frame queue reaches its byte bound", async () => {
     const root = await mkdtemp(join(tmpdir(), "pifleet-socket-pressure-"));
     const socketPath = join(root, "control.sock");
     let serverSocket!: Socket;
@@ -357,37 +209,6 @@ describe("private socket runtime", () => {
       server.close((error) => (error === undefined ? resolve() : reject(error))),
     );
     await rm(root, { recursive: true, force: true });
-  });
-
-  it("reports unexpected watch socket EOF as runtime unavailable", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pifleet-socket-eof-"));
-    const socketPath = join(root, "control.sock");
-    const server = createServer((socket) => {
-      socket.once("data", (chunk) => {
-        const request = JSON.parse(chunk.toString().trim()) as { requestId: string };
-        socket.end(
-          `${JSON.stringify({ v: PROTOCOL_VERSION, requestId: request.requestId, stream: "ready" })}\n`,
-        );
-      });
-    });
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(socketPath, resolve);
-    });
-    cleanups.push(() =>
-      new Promise<void>((resolve, reject) =>
-        server.close((error) => (error === undefined ? resolve() : reject(error))),
-      ).finally(() => rm(root, { recursive: true, force: true })),
-    );
-
-    const client = new SocketFleetClient({ socketPath });
-    const iterator = client.watch({ name: "reviewer" }, { signal })[Symbol.asyncIterator]();
-    await expect(iterator.next()).resolves.toMatchObject({
-      value: { ok: true, value: { type: "ready" } },
-    });
-    await expect(iterator.next()).resolves.toMatchObject({
-      value: { ok: false, error: { code: "runtime_unavailable" } },
-    });
   });
 
   it("persists a new Pi identity mismatch but replays an earlier completed operation", async () => {
@@ -460,26 +281,95 @@ describe("private socket runtime", () => {
     await expect(closed).resolves.toBeUndefined();
   });
 
-  it("rejects an incompatible watch stream protocol-major and closes the connection", async () => {
-    const { client, closed } = await protocolFixture((requestId) => ({
-      v: PROTOCOL_VERSION + 1,
-      requestId,
-      stream: "ready",
-    }));
-
-    const iterator = client.watch({ name: "reviewer" }, { signal })[Symbol.asyncIterator]();
-    await expect(iterator.next()).resolves.toMatchObject({
-      value: {
-        ok: false,
-        error: {
-          code: "protocol_incompatible",
-          message:
-            "The running pi-fleet runtime is incompatible with this client; repair or restart it.",
-        },
+  it.each([
+    {
+      label: "accepts a last safe cursor on an ordinary terminal stream failure",
+      error: {
+        code: "runtime_unavailable",
+        message: "Receive stream failed.",
+        details: { lastSafeCursor: "cursor-1" },
       },
+      expected: { code: "runtime_unavailable", details: { lastSafeCursor: "cursor-1" } },
+    },
+    {
+      label: "accepts continuation cursors only for observation uncertainty",
+      error: {
+        code: "observation_uncertain",
+        message: "Receive stream failed.",
+        details: { lastSafeCursor: "cursor-1", continuationCursor: "cursor-2" },
+      },
+      expected: {
+        code: "observation_uncertain",
+        details: { lastSafeCursor: "cursor-1", continuationCursor: "cursor-2" },
+      },
+    },
+    {
+      label: "rejects a continuation cursor on an ordinary terminal stream failure",
+      error: {
+        code: "runtime_unavailable",
+        message: "Receive stream failed.",
+        details: { lastSafeCursor: "cursor-1", continuationCursor: "cursor-2" },
+      },
+      expected: { code: "protocol_error" },
+    },
+    {
+      label: "rejects unrecognized error detail payloads",
+      error: {
+        code: "storage_unavailable",
+        message: "Receive stream failed.",
+        details: { lastSafeCursor: "cursor-1", prompt: "raw retained content" },
+      },
+      expected: { code: "protocol_error" },
+    },
+  ])("$label", async ({ error, expected }) => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-stream-error-"));
+    const socketPath = join(root, "control.sock");
+    const server = createServer((socket) => {
+      socket.once("data", (chunk: Buffer) => {
+        const request = JSON.parse(chunk.toString("utf8").split("\n")[0] ?? "{}") as {
+          requestId: string;
+        };
+        socket.write(
+          `${JSON.stringify({
+            v: PROTOCOL_VERSION,
+            requestId: request.requestId,
+            stream: "ready",
+            cursor: "cursor-0",
+            limits: { maxEventBytes: 1024, maxSegments: 4 },
+          })}\n`,
+        );
+        socket.write(
+          `${JSON.stringify({
+            v: PROTOCOL_VERSION,
+            requestId: request.requestId,
+            stream: "error",
+            error,
+          })}\n`,
+        );
+      });
     });
-    await iterator.return?.();
-    await expect(closed).resolves.toBeUndefined();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    cleanups.push(async () => {
+      await new Promise<void>((resolve, reject) =>
+        server.close((closeError) => (closeError === undefined ? resolve() : reject(closeError))),
+      );
+      await rm(root, { recursive: true, force: true });
+    });
+
+    const client = new SocketFleetClient({ socketPath });
+    const items: unknown[] = [];
+    for await (const item of client.receive(
+      { name: "reviewer", expectedAgentId: "11111111-1111-4111-8111-111111111111" },
+      { signal },
+    )) {
+      items.push(item);
+    }
+
+    expect(items[0]).toMatchObject({ ok: true, value: { type: "ready" } });
+    expect(items[1]).toMatchObject({ ok: false, error: expected });
   });
 
   it("returns typed errors instead of leaking private protocol frames", async () => {

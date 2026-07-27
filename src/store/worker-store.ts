@@ -50,6 +50,13 @@ export class WorkerFleetStore implements FleetStore {
     return this.#call("createAgent", [agent]);
   }
 
+  rollbackProvisionalCreate(
+    name: string,
+    completedOperation: StoredOperation,
+  ): Promise<StoredAgent | null> {
+    return this.#call("rollbackProvisionalCreate", [name, completedOperation]);
+  }
+
   getAgent(name: string): Promise<StoredAgent | null> {
     return this.#call("getAgent", [name]);
   }

@@ -1,6 +1,7 @@
 import { Type, type Static } from "@sinclair/typebox";
 
 import { PiRuntimeIdentitySchema } from "./pi-identity.js";
+import type { SemanticSegmentFrame } from "./semantic-segmentation.js";
 import { PROTOCOL_VERSION } from "./version.js";
 
 export const OperationSchema = Type.Object(
@@ -18,7 +19,6 @@ export const RequestSchema = Type.Object(
       Type.Literal("agent.receive"),
       Type.Literal("agent.status"),
       Type.Literal("agent.list"),
-      Type.Literal("agent.watch"),
       Type.Literal("agent.destroy"),
       Type.Literal("agent.compact"),
     ]),
@@ -54,17 +54,26 @@ export interface ProtocolFailure {
 export type ProtocolResponse = ProtocolSuccess | ProtocolFailure;
 
 export type ProtocolStreamFrame =
-  | { readonly v: typeof PROTOCOL_VERSION; readonly requestId: string; readonly stream: "ready" }
   | {
       readonly v: typeof PROTOCOL_VERSION;
       readonly requestId: string;
-      readonly stream: "chunk";
-      readonly data: string;
+      readonly stream: "ready";
+      readonly cursor: string;
+    }
+  | {
+      readonly v: typeof PROTOCOL_VERSION;
+      readonly requestId: string;
+      readonly stream: "semantic.segment";
+      readonly segment: SemanticSegmentFrame;
     }
   | { readonly v: typeof PROTOCOL_VERSION; readonly requestId: string; readonly stream: "end" }
   | {
       readonly v: typeof PROTOCOL_VERSION;
       readonly requestId: string;
       readonly stream: "error";
-      readonly error: { readonly code: string; readonly message: string };
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly details?: Record<string, unknown>;
+      };
     };

@@ -79,6 +79,8 @@ describe("service installer", () => {
       platform: "linux",
       home,
       executor,
+      replaceExisting: true,
+      ownershipPreflight: async () => undefined,
       definition: { nodePath: replacementNodePath, runtimePath },
     });
     expect(commands.filter((command) => command.at(-2) === "restart")).toHaveLength(2);
@@ -88,9 +90,90 @@ describe("service installer", () => {
       platform: "linux",
       home,
       executor,
+      replaceExisting: true,
+      ownershipPreflight: async () => undefined,
       definition: { nodePath: replacementNodePath, runtimePath },
     });
     expect(commands.filter((command) => command.at(-2) === "restart")).toHaveLength(3);
+  });
+
+  it("defers explicit service replacement when ownership proof is absent", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pifleet-service-"));
+    roots.push(home);
+    const commands: Array<readonly string[]> = [];
+    const executor: CommandExecutor = {
+      async run(command, args) {
+        commands.push([command, ...args]);
+      },
+    };
+    const nodePath = join(home, "node");
+    const runtimePath = join(home, "runtime.mjs");
+    const replacementRuntimePath = join(home, "runtime-v2.mjs");
+    await Promise.all([
+      writeFile(nodePath, "#!/bin/sh\n"),
+      writeFile(runtimePath, "export {};\n"),
+      writeFile(replacementRuntimePath, "export {};\n"),
+    ]);
+    await chmod(nodePath, 0o700);
+    const path = await installUserService({
+      platform: "linux",
+      home,
+      executor,
+      definition: { nodePath, runtimePath },
+    });
+    const before = await readFile(path, "utf8");
+    const commandCount = commands.length;
+
+    await expect(
+      installUserService({
+        platform: "linux",
+        home,
+        executor,
+        replaceExisting: true,
+        definition: { nodePath, runtimePath: replacementRuntimePath },
+      }),
+    ).rejects.toMatchObject({ code: "runtime_upgrade_deferred" });
+
+    expect(await readFile(path, "utf8")).toBe(before);
+    expect(commands).toHaveLength(commandCount);
+  });
+
+  it("runs ownership preflight before replacing an installed definition", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pifleet-service-"));
+    roots.push(home);
+    const executor: CommandExecutor = { async run() {} };
+    const nodePath = join(home, "node");
+    const runtimePath = join(home, "runtime.mjs");
+    const replacementRuntimePath = join(home, "runtime-v2.mjs");
+    await Promise.all([
+      writeFile(nodePath, "#!/bin/sh\n"),
+      writeFile(runtimePath, "export {};\n"),
+      writeFile(replacementRuntimePath, "export {};\n"),
+    ]);
+    await chmod(nodePath, 0o700);
+    const path = await installUserService({
+      platform: "linux",
+      home,
+      executor,
+      definition: { nodePath, runtimePath },
+    });
+    const before = await readFile(path, "utf8");
+    let inspectedBeforeWrite = false;
+
+    await installUserService({
+      platform: "linux",
+      home,
+      executor,
+      replaceExisting: true,
+      ownershipPreflight: async () => {
+        expect(await readFile(path, "utf8")).toBe(before);
+        inspectedBeforeWrite = true;
+      },
+      definition: { nodePath, runtimePath: replacementRuntimePath },
+    });
+
+    expect(inspectedBeforeWrite).toBe(true);
+    expect(await readFile(path, "utf8")).not.toBe(before);
   });
 
   it("defers changed service replacement without modifying the installed definition", async () => {
@@ -182,6 +265,32 @@ describe("service installer", () => {
     await new Promise<void>((resolveClose, rejectClose) =>
       server.close((error) => (error === undefined ? resolveClose() : rejectClose(error))),
     );
+  });
+
+  it("does not start or materialize when socket ownership is uncertain", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pifleet-service-"));
+    roots.push(home);
+    let starterCalls = 0;
+    let piResolutionCalls = 0;
+
+    await expect(
+      ensureRuntime({
+        socketPath: join(home, "runtime", "control.sock"),
+        home,
+        inspectOwnership: async () => "uncertain",
+        registeredRuntimeStarter: async () => {
+          starterCalls += 1;
+          return false;
+        },
+        piInstallation: async () => {
+          piResolutionCalls += 1;
+          throw new Error("Pi resolution must not run for uncertain ownership");
+        },
+      }),
+    ).rejects.toMatchObject({ code: "runtime_upgrade_deferred" });
+
+    expect(starterCalls).toBe(0);
+    expect(piResolutionCalls).toBe(0);
   });
 
   it("rejects a CLI state root that differs from the registered service", async () => {

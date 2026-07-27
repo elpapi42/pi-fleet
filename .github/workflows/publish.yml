@@ -49,8 +49,15 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
+      - run: npm run test:faults
+      - run: npm run test:process
+      - run: npm run test:compat
+      - run: npm run test:package
+      - run: npm run test:client-types
+      - run: npm run test:platform
       - run: npm run test:version-matrix
       - run: npm run test:soak
+      - run: npm run benchmark:store
       - run: npm run release:check
 
       - name: Publish beta with provenance
@@ -63,12 +70,143 @@ jobs:
           package_version="${GITHUB_REF_NAME#v}"
           package_name="@elpapi42/pi-fleet"
           root="$(mktemp -d)"
-          cleanup() {
+          provider_pid=""
+          declare -A cleanup_starttimes=()
+          read_process_identity() {
+            local pid="$1" stat rest
+            local -a fields
+            [ -r "/proc/$pid/stat" ] || return 1
+            stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 1
+            rest="${stat##*) }"
+            read -r -a fields <<<"$rest"
+            [ "${#fields[@]}" -ge 20 ] || return 1
+            printf '%s %s\n' "${fields[19]}" "${fields[1]}"
+          }
+          process_starttime() {
+            local identity
+            identity="$(read_process_identity "$1")" || return 1
+            printf '%s\n' "${identity%% *}"
+          }
+          track_cleanup_pid() {
+            local pid="$1" expected_starttime="${2:-}" starttime
+            [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+            starttime="$(process_starttime "$pid")" || return 1
+            if [ -n "$expected_starttime" ] && [ "$starttime" != "$expected_starttime" ]; then
+              return 1
+            fi
+            cleanup_starttimes["$pid"]="$starttime"
+          }
+          cleanup_identity_alive() {
+            local pid="$1" current
+            current="$(process_starttime "$pid")" || return 1
+            [ "$current" = "${cleanup_starttimes[$pid]:-}" ]
+          }
+          collect_descendants() {
+            local parent="$1" child before after child_start child_parent
+            cleanup_identity_alive "$parent" || return 0
+            while IFS= read -r child; do
+              before="$(read_process_identity "$child")" || continue
+              read -r child_start child_parent <<<"$before"
+              [ "$child_parent" = "$parent" ] || continue
+              cleanup_identity_alive "$parent" || return 0
+              after="$(read_process_identity "$child")" || continue
+              [ "$after" = "$before" ] || continue
+              track_cleanup_pid "$child" "$child_start" || continue
+              collect_descendants "$child"
+            done < <(pgrep -P "$parent" 2>/dev/null || true)
+          }
+          collect_cleanup_identities() {
+            local before after environ pid starttime _parent cmdline
+            for pid in $(pgrep -f -- "$root/application/releases" || true); do
+              before="$(read_process_identity "$pid")" || continue
+              cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)" || continue
+              [[ "$cmdline" == *"$root/application/releases"* ]] || continue
+              after="$(read_process_identity "$pid")" || continue
+              [ "$after" = "$before" ] || continue
+              read -r starttime _parent <<<"$before"
+              track_cleanup_pid "$pid" "$starttime" || continue
+              collect_descendants "$pid"
+            done
+            for environ in /proc/[0-9]*/environ; do
+              [ -r "$environ" ] || continue
+              pid="${environ#/proc/}"
+              pid="${pid%/environ}"
+              before="$(read_process_identity "$pid")" || continue
+              if tr '\0' '\n' <"$environ" 2>/dev/null |
+                grep -Fxq "PIFLEET_STATE_ROOT=$root/state"; then
+                after="$(read_process_identity "$pid")" || continue
+                [ "$after" = "$before" ] || continue
+                read -r starttime _parent <<<"$before"
+                track_cleanup_pid "$pid" "$starttime" || continue
+                collect_descendants "$pid"
+              fi
+            done
+          }
+          signal_cleanup_identities() {
+            local signal="$1" pid
+            for pid in "${!cleanup_starttimes[@]}"; do
+              if cleanup_identity_alive "$pid"; then
+                kill -"$signal" "$pid" 2>/dev/null || true
+              fi
+            done
+          }
+          wait_for_cleanup() {
+            local attempts="$1" attempt pid alive
+            for attempt in $(seq 1 "$attempts"); do
+              alive=0
+              for pid in "${!cleanup_starttimes[@]}"; do
+                if cleanup_identity_alive "$pid"; then
+                  alive=1
+                  break
+                fi
+              done
+              [ "$alive" -eq 0 ] && return 0
+              sleep 0.1
+            done
+            return 1
+          }
+          remaining_cleanup_identities() {
             local pid
-            while IFS= read -r pid; do
-              kill -TERM "$pid" 2>/dev/null || true
-            done < <(pgrep -f -- "$root/application/releases" || true)
-            rm -rf "$root"
+            for pid in "${!cleanup_starttimes[@]}"; do
+              if cleanup_identity_alive "$pid"; then
+                printf '%s:%s\n' "$pid" "${cleanup_starttimes[$pid]}"
+              fi
+            done | sort
+          }
+          cleanup() {
+            local original_status=$? cleanup_status=0 remaining
+            trap - EXIT
+            set +e
+            # Rescan after each signal: a runtime can spawn or orphan a child after
+            # the initial collection but before its parent exits.
+            collect_cleanup_identities
+            signal_cleanup_identities TERM
+            wait_for_cleanup 20 || true
+            collect_cleanup_identities
+            signal_cleanup_identities TERM
+            wait_for_cleanup 20 || true
+
+            collect_cleanup_identities
+            signal_cleanup_identities KILL
+            wait_for_cleanup 20 || true
+            collect_cleanup_identities
+            signal_cleanup_identities KILL
+            wait_for_cleanup 20 || true
+
+            # The final collection is independent of the original PID set: only a
+            # proven absence of isolated environment processes permits root removal.
+            collect_cleanup_identities
+            remaining="$(remaining_cleanup_identities)"
+            if [ -n "$remaining" ]; then
+              echo "Registry smoke cleanup could not stop: $remaining" >&2
+              cleanup_status=1
+            else
+              rm -rf "$root" || cleanup_status=1
+            fi
+            if [ "$original_status" -ne 0 ]; then
+              exit "$original_status"
+            fi
+            exit "$cleanup_status"
           }
           trap cleanup EXIT
 
@@ -91,12 +229,73 @@ jobs:
             sleep 2
           done
 
-          mkdir -p "$root"/{home,runtime,state,application,pi-agent}
+          mkdir -p "$root"/{home,runtime,pi-agent,sdk}
           npm install --global --prefix "$root/pi-npm" --ignore-scripts @earendil-works/pi-coding-agent@0.82.1
           npm install --global --prefix "$root/npm" --ignore-scripts "$package_name@$package_version"
+          npm install --prefix "$root/sdk" --ignore-scripts "$package_name@$package_version"
           pi="$root/pi-npm/bin/pi"
           cli="$root/npm/bin/pifleet"
+
+          cat >"$root/sdk/inert.mjs" <<'EOF'
+          import { connectPiFleet } from "@elpapi42/pi-fleet/client";
+          if (typeof connectPiFleet !== "function") process.exit(1);
+          EOF
+          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" node "$root/sdk/inert.mjs"
+          test ! -e "$root/state"
+          test ! -e "$root/application"
+          test ! -e "$root/state/control.sock"
+          test ! -e "$root/state/fleet.sqlite"
+          test -z "$(pgrep -f -- "$root/application/releases" || true)"
           test "$("$cli" --version)" = "$package_version"
+
+          mkdir -p "$root"/{state,application}
+          cat >"$root/deterministic-server.mjs" <<'EOF'
+          import { writeFileSync } from "node:fs";
+          import { createServer } from "node:http";
+
+          let requestCount = 0;
+          const server = createServer(async (request, response) => {
+            for await (const _chunk of request) {
+              // Drain the request before replying.
+            }
+            requestCount += 1;
+            response.writeHead(200, { "content-type": "text/event-stream" });
+            const frame = (delta, finishReason) => ({
+              id: `response-${requestCount}`,
+              object: "chat.completion.chunk",
+              created: 1,
+              model: "deterministic",
+              choices: [{ index: 0, delta, finish_reason: finishReason }],
+            });
+            response.write(`data: ${JSON.stringify(frame({ role: "assistant" }, null))}\n\n`);
+            response.write(`data: ${JSON.stringify(frame({ content: `deterministic response ${requestCount}` }, null))}\n\n`);
+            response.write(`data: ${JSON.stringify(frame({}, "stop"))}\n\n`);
+            response.end("data: [DONE]\n\n");
+          });
+          server.listen(0, "127.0.0.1", () => {
+            const address = server.address();
+            if (address === null || typeof address === "string") process.exit(1);
+            writeFileSync(process.argv[2], String(address.port));
+          });
+          for (const signal of ["SIGINT", "SIGTERM"]) {
+            process.once(signal, () => server.close(() => process.exit(0)));
+          }
+          EOF
+          node "$root/deterministic-server.mjs" "$root/provider.port" &
+          provider_pid=$!
+          track_cleanup_pid "$provider_pid" || true
+          for attempt in $(seq 1 100); do
+            test -s "$root/provider.port" && break
+            if [ "$attempt" -eq 100 ]; then
+              echo "Deterministic provider did not become ready" >&2
+              exit 1
+            fi
+            sleep 0.05
+          done
+          provider_port="$(cat "$root/provider.port")"
+          cat >"$root/pi-agent/models.json" <<EOF
+          {"providers":{"pifleet-smoke":{"baseUrl":"http://127.0.0.1:$provider_port/v1","api":"openai-completions","apiKey":"local-placeholder","models":[{"id":"deterministic","contextWindow":4096,"maxTokens":256}]}}}
+          EOF
 
           env \
             HOME="$root/home" \
@@ -118,7 +317,60 @@ jobs:
               value.agents.length !== 0
             ) process.exit(1);
           ' "$root/list.json"
-          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" create registry-smoke >"$root/create.json"
+          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" create registry-smoke -- --provider pifleet-smoke --model deterministic --no-extensions --no-skills --no-prompt-templates >"$root/create.json"
           env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" status registry-smoke >"$root/status.json"
+          cat >"$root/sdk/smoke.mjs" <<'EOF'
+          import { connectPiFleet } from "@elpapi42/pi-fleet/client";
+
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 30_000);
+          const client = await connectPiFleet({
+            autoStartRuntime: false,
+            stateRoot: process.env.PIFLEET_STATE_ROOT,
+            applicationRoot: process.env.PIFLEET_APPLICATION_ROOT,
+            signal: controller.signal,
+          });
+          try {
+            const agents = await client.list({ signal: controller.signal });
+            if (agents.length !== 1 || agents[0].name !== "registry-smoke") process.exit(1);
+            const agent = await client.get(agents[0].name, { signal: controller.signal });
+            const stream = await agent.receive({ signal: controller.signal });
+            if (typeof stream.cursor !== "string" || stream.cursor.length === 0) process.exit(1);
+            const finished = (async () => {
+              for await (const event of stream) {
+                if (
+                  event.type === "assistant.message.finished" &&
+                  event.text === "deterministic response 1"
+                ) return;
+              }
+              throw new Error("Semantic receive ended before the deterministic assistant message");
+            })();
+            await agent.send("Return the deterministic response.", { signal: controller.signal });
+            await finished;
+          } finally {
+            clearTimeout(timeout);
+            await client.close();
+          }
+          EOF
+          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" node "$root/sdk/smoke.mjs"
           env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" destroy registry-smoke >"$root/destroy.json"
+          package_root="$root/npm/lib/node_modules/@elpapi42/pi-fleet"
+          test -f "$package_root/dist/client.mjs"
+          test -f "$package_root/dist/client/index.d.ts"
+          node -e '
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const root = process.argv[1];
+            const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json")));
+            const runtime = JSON.parse(fs.readFileSync(path.join(root, "dist/runtime-manifest.json")));
+            if (
+              packageJson.exports?.["./client"]?.types !== "./dist/client/index.d.ts" ||
+              packageJson.exports?.["./client"]?.import !== "./dist/client.mjs" ||
+              runtime.runtime?.protocolVersion !== 3 ||
+              runtime.runtime?.journalSchemaVersion !== 3 ||
+              runtime.runtime?.clientExport !== "./client" ||
+              !runtime.files.some((file) => file.path === "dist/client.mjs") ||
+              !runtime.files.some((file) => file.path === "dist/client/index.d.ts")
+            ) process.exit(1);
+          ' "$package_root"
           test ! -e "$root/application/releases"/*/node_modules/@earendil-works/pi-coding-agent

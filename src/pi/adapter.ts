@@ -1,7 +1,9 @@
 import type { AgentLaunchProfile } from "./launch-profile.js";
 import { PiProcess } from "./process.js";
 
-export type PiStdoutSink = (bytes: Buffer) => void;
+export type { PiDeliveryMode } from "./process.js";
+
+export type PiStdoutSink = (record: Buffer) => void | Promise<void>;
 
 export type PiExecutionUnavailableCode =
   | "pi_not_found"
@@ -24,7 +26,7 @@ export interface PiLauncher {
     profile: AgentLaunchProfile,
     restore: boolean,
     onSpawn?: (pid: number) => Promise<void>,
-    onStdoutBytes?: PiStdoutSink,
+    onStdoutRecord?: PiStdoutSink,
   ): Promise<PiProcess>;
 }
 
@@ -35,6 +37,7 @@ export interface RealPiLauncherOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly onStart?: (pid: number) => void;
   readonly maxStdoutFrameBytes?: number;
+  readonly maxPartialRecordBytes?: number;
   readonly preflight?: () => Promise<void>;
 }
 
@@ -53,7 +56,7 @@ export class RealPiLauncher implements PiLauncher {
     profile: AgentLaunchProfile,
     restore: boolean,
     onSpawn?: (pid: number) => Promise<void>,
-    onStdoutBytes?: PiStdoutSink,
+    onStdoutRecord?: PiStdoutSink,
   ): Promise<PiProcess> {
     const piArgv = restore ? profile.restorePiArgv : profile.userPiArgv;
     if (piArgv === null) throw new Error("Agent has no observed Pi session to restore");
@@ -66,8 +69,11 @@ export class RealPiLauncher implements PiLauncher {
       ...(this.options.maxStdoutFrameBytes === undefined
         ? {}
         : { maxStdoutFrameBytes: this.options.maxStdoutFrameBytes }),
+      ...(this.options.maxPartialRecordBytes === undefined
+        ? {}
+        : { maxPartialRecordBytes: this.options.maxPartialRecordBytes }),
       ...(onSpawn === undefined ? {} : { onSpawn }),
-      ...(onStdoutBytes === undefined ? {} : { onStdoutBytes }),
+      ...(onStdoutRecord === undefined ? {} : { onStdoutRecord }),
     });
     this.options.onStart?.(process.pid);
     return process;

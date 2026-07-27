@@ -5,6 +5,8 @@ import { createLaunchProfile, observeSession } from "../../src/pi/launch-profile
 import type { PiProcess } from "../../src/pi/process.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
 import type { StoredAgent } from "../../src/store/fleet-store.js";
+import { JournalFleetStoreAdapter } from "../../src/store/journal-fleet-store-adapter.js";
+import { MemoryJournalStore } from "../../src/store/memory-journal-store.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
 
 function countingLauncher() {
@@ -65,8 +67,6 @@ function absentAgent(name: string): StoredAgent {
       path: "/tmp/delivery-session.jsonl",
       id: "delivery-session",
     }),
-    latestAssistantText: null,
-    responseObservedAt: null,
   };
 }
 
@@ -76,9 +76,11 @@ describe("durable delivery recovery", () => {
     await store.createAgent(absentAgent("pending"));
     await store.putSend({
       sendId: "pending-send",
+      agentId: "pending-id",
       agentName: "pending",
       ordinal: 1,
       message: "once",
+      delivery: "steer",
       state: "pending",
       acceptedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -93,14 +95,45 @@ describe("durable delivery recovery", () => {
     await service.close();
   });
 
+  it("canonicalizes omitted delivery before journal persistence and recovery", async () => {
+    const journal = new MemoryJournalStore();
+    const store = new JournalFleetStoreAdapter(journal);
+    const counter = countingLauncher();
+    const first = new FleetService(store, { launcher: counter.launcher });
+    await first.create({ name: "canonical", cwd: "/tmp", piArgv: [] }, "create-canonical");
+    await first.send({ name: "canonical", message: "default steering" }, "send-canonical");
+
+    const operation = await journal.getOperation("send-canonical");
+    const send = await journal.getSend("send-canonical");
+    expect(operation?.fingerprint).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(operation?.fingerprint).not.toContain("default steering");
+    expect(send).toMatchObject({ delivery: "steer", state: "acknowledged" });
+    if (operation === null || send === null) throw new Error("Expected durable send state");
+
+    await journal.putOperation({ ...operation, state: "pending", result: null });
+    await journal.putSend({ ...send, state: "pending" });
+    await first.close();
+
+    const recovered = new FleetService(store, { launcher: counter.launcher });
+    await recovered.reconcile();
+    expect(await journal.getOperation("send-canonical")).toMatchObject({
+      state: "completed",
+      result: { ok: true },
+    });
+    expect(await journal.getSend("send-canonical")).toMatchObject({ state: "acknowledged" });
+    await recovered.close();
+  });
+
   it("marks a possibly-written dispatching send uncertain without replay", async () => {
     const store = new MemoryFleetStore();
     await store.createAgent(absentAgent("dispatching"));
     await store.putSend({
       sendId: "dispatching-send",
+      agentId: "dispatching-id",
       agentName: "dispatching",
       ordinal: 1,
       message: "never replay",
+      delivery: "steer",
       state: "dispatching",
       acceptedAt: "2026-01-01T00:00:00.000Z",
     });

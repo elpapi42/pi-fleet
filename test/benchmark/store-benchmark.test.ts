@@ -28,13 +28,12 @@ it("records the main-thread SQLite baseline", async () => {
           session: { path: null, id: null },
         },
         launch: createLaunchProfile({ cwd: root, piArgv: [] }),
-        latestAssistantText: null,
-        responseObservedAt: null,
       });
       await store.putOperation({
         operationId: `operation-${index}`,
         method: "create",
         fingerprint: name,
+        targetName: "reviewer",
         state: "completed",
         result: { ok: true },
       });

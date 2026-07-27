@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { PiLauncher } from "../../src/pi/adapter.js";
 import { PiCompactionError, type PiProcess } from "../../src/pi/process.js";
-import { FleetService } from "../../src/runtime/fleet-service.js";
+import { FleetService, fingerprintPayload } from "../../src/runtime/fleet-service.js";
+import type { FleetClientError } from "../../src/client/fleet-client.js";
 import type { StoredOperation } from "../../src/store/fleet-store.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
 
@@ -249,33 +250,6 @@ describe("compact lifecycle", () => {
     await service.close();
   });
 
-  it("keeps receive waiting until compaction finishes", async () => {
-    const controlled = controlledProcess(41_020);
-    const gate = controlled.holdCompaction();
-    const service = new FleetService(new MemoryFleetStore(), {
-      launcher: launcherFor(controlled),
-    });
-    await service.create({ name: "reviewer", cwd: "/tmp", piArgv: [] }, "create-1");
-    const compact = service.compact({ name: "reviewer" }, "compact-held");
-    await gate.started;
-
-    let received = false;
-    const receive = service.receive({ name: "reviewer" }).then((result) => {
-      received = true;
-      return result;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(received).toBe(false);
-
-    gate.release();
-    expect(await compact).toMatchObject({ ok: true });
-    expect(await receive).toMatchObject({
-      ok: true,
-      value: { response: { text: "previous response" } },
-    });
-    await service.close();
-  });
-
   it("blocks queued sends while destroy intent is being persisted", async () => {
     const controlled = controlledProcess(41_024);
     const compactGate = controlled.holdCompaction();
@@ -369,12 +343,14 @@ describe("compact lifecycle", () => {
     await store.putOperation({
       operationId: "compact-recover",
       method: "compact",
-      fingerprint: JSON.stringify({ name: "reviewer" }),
+      fingerprint: fingerprintPayload({ name: "reviewer" }),
+      targetName: "reviewer",
       state: "pending",
       result: null,
       targetAgent: { id: created.value.agent.id, name: "reviewer" },
     });
     await store.putCompact({
+      agentId: "agent-1",
       compactId: "compact-recover",
       agentName: "reviewer",
       state: "completed",
@@ -411,12 +387,14 @@ describe("compact lifecycle", () => {
     await store.putOperation({
       operationId: "compact-stale",
       method: "compact",
-      fingerprint: JSON.stringify({ name: "reviewer" }),
+      fingerprint: fingerprintPayload({ name: "reviewer" }),
+      targetName: "reviewer",
       state: "pending",
       result: null,
       targetAgent: { id: first.value.agent.id, name: "reviewer" },
     });
     await store.putCompact({
+      agentId: "agent-1",
       compactId: "compact-stale",
       agentName: "reviewer",
       state: "pending",
@@ -466,18 +444,21 @@ describe("compact lifecycle", () => {
     await store.putOperation({
       operationId: "compact-crashed",
       method: "compact",
-      fingerprint: JSON.stringify({ name: "reviewer" }),
+      fingerprint: fingerprintPayload({ name: "reviewer" }),
+      targetName: "reviewer",
       state: "pending",
       result: null,
       targetAgent: { id: created.value.agent.id, name: "reviewer" },
     });
     await store.putCompact({
+      agentId: "agent-1",
       compactId: "compact-crashed",
       agentName: "reviewer",
       state: "dispatching",
       requestedAt: "2026-01-01T00:00:00.000Z",
     });
     await store.putIncarnation({
+      agentId: "agent-1",
       incarnationId: "old-incarnation",
       agentName: "reviewer",
       pid: 999_999_999,
@@ -570,7 +551,7 @@ describe("compact lifecycle", () => {
     await restarted.close();
   });
 
-  it.each([
+  it.each<[FleetClientError["code"], string]>([
     ["agent_busy", "Agent reviewer must be idle before compaction."],
     ["capacity_exceeded", "pi-fleet has reached its process limit."],
     ["pi_start_failed", "Pi failed to restore for reviewer; compaction was not dispatched."],
@@ -582,12 +563,14 @@ describe("compact lifecycle", () => {
     await store.putOperation({
       operationId: `compact-${code}`,
       method: "compact",
-      fingerprint: JSON.stringify({ name: "reviewer" }),
+      fingerprint: fingerprintPayload({ name: "reviewer" }),
+      targetName: "reviewer",
       state: "pending",
       result: null,
       targetAgent: { id: created.value.agent.id, name: "reviewer" },
     });
     await store.putCompact({
+      agentId: "agent-1",
       compactId: `compact-${code}`,
       agentName: "reviewer",
       state: "failed",

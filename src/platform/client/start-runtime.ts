@@ -1,12 +1,16 @@
 import { execFile, spawn } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
-import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import type { PiInstallation } from "../../pi/external-installation.js";
+import {
+  inspectControlSocketOwnership,
+  RuntimeOwnershipBlockedError,
+  type ControlSocketOwnership,
+} from "../shared/runtime-ownership.js";
 import { materializeRuntime } from "../install/runtime-release.js";
 import { resolveApplicationRoot, resolveFleetPaths } from "../shared/paths.js";
 
@@ -19,10 +23,14 @@ export async function ensureRuntime(options: {
   readonly sourceRoot?: string;
   readonly applicationRoot?: string;
   readonly home?: string;
-  readonly piInstallation?: () => Promise<PiInstallation>;
+  readonly piInstallation?: () => Promise<PiInstallation | null>;
   readonly registeredRuntimeStarter?: (env: NodeJS.ProcessEnv) => Promise<boolean>;
+  readonly inspectOwnership?: (socketPath: string) => Promise<ControlSocketOwnership>;
 }): Promise<void> {
-  if (await canConnect(options.socketPath)) return;
+  const inspectOwnership = options.inspectOwnership ?? inspectControlSocketOwnership;
+  const initialOwnership = await inspectOwnership(options.socketPath);
+  if (initialOwnership === "responsive") return;
+  assertRuntimeStartAllowed(initialOwnership, options.socketPath);
 
   let env = { ...process.env, ...options.env };
   const registered =
@@ -37,11 +45,13 @@ export async function ensureRuntime(options: {
   if (!registered) {
     if (options.piInstallation !== undefined) {
       const installation = await options.piInstallation();
-      env = {
-        ...env,
-        PIFLEET_PI_EXECUTABLE: installation.selectedPath,
-        PIFLEET_PI_NODE: installation.nodePath,
-      };
+      if (installation !== null) {
+        env = {
+          ...env,
+          PIFLEET_PI_EXECUTABLE: installation.selectedPath,
+          PIFLEET_PI_NODE: installation.nodePath,
+        };
+      }
     }
     const sourceRoot =
       options.sourceRoot ?? (await findPackageRoot(fileURLToPath(import.meta.url)));
@@ -60,10 +70,27 @@ export async function ensureRuntime(options: {
 
   const deadline = Date.now() + (options.timeoutMs ?? 5_000);
   while (Date.now() < deadline) {
-    if (await canConnect(options.socketPath)) return;
+    const ownership = await inspectOwnership(options.socketPath);
+    if (ownership === "responsive") return;
+    if (ownership === "uncertain") {
+      throw new RuntimeOwnershipBlockedError(
+        `pi-fleet control socket ownership is uncertain for ${options.socketPath}`,
+      );
+    }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
   }
   throw new Error(`pi-fleet runtime did not become ready at ${options.socketPath}`);
+}
+
+function assertRuntimeStartAllowed(
+  ownership: Exclude<ControlSocketOwnership, "responsive">,
+  socketPath: string,
+): void {
+  if (ownership === "uncertain") {
+    throw new RuntimeOwnershipBlockedError(
+      `pi-fleet control socket ownership is uncertain for ${socketPath}`,
+    );
+  }
 }
 
 async function startRegisteredRuntime(options: {
@@ -220,23 +247,4 @@ async function exists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function canConnect(socketPath: string): Promise<boolean> {
-  return new Promise((resolveConnect) => {
-    const socket = createConnection(socketPath);
-    const timer = setTimeout(() => {
-      socket.destroy();
-      resolveConnect(false);
-    }, 100);
-    socket.once("connect", () => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolveConnect(true);
-    });
-    socket.once("error", () => {
-      clearTimeout(timer);
-      resolveConnect(false);
-    });
-  });
 }

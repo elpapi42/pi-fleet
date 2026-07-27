@@ -2,6 +2,7 @@ import { type PiRuntimeIdentity, samePiRuntimeIdentity } from "../protocol/pi-id
 import {
   ExternalPiResolutionError,
   externalPiExecutionEnvironment,
+  installationIdentity,
   resolveExternalPiInstallation,
   type PiInstallation,
 } from "./external-installation.js";
@@ -15,6 +16,7 @@ export interface ExternalPiTarget {
 export async function createExternalPiTarget(
   env: NodeJS.ProcessEnv,
   maxStdoutFrameBytes?: number,
+  maxPartialRecordBytes?: number,
 ): Promise<ExternalPiTarget> {
   const selectedPath = env.PIFLEET_PI_EXECUTABLE;
   const nodePath = env.PIFLEET_PI_NODE;
@@ -41,6 +43,7 @@ export async function createExternalPiTarget(
     artifactId: "external-pi",
     env: externalPiExecutionEnvironment(env, initial.selectedPath, initial.nodePath),
     ...(maxStdoutFrameBytes === undefined ? {} : { maxStdoutFrameBytes }),
+    ...(maxPartialRecordBytes === undefined ? {} : { maxPartialRecordBytes }),
     preflight: async () => {
       let current: PiInstallation;
       try {
@@ -59,16 +62,7 @@ export async function createExternalPiTarget(
   return { launcher, identity };
 }
 
-export function installationIdentity(installation: PiInstallation): PiRuntimeIdentity {
-  return {
-    mode: "external",
-    selectedPath: installation.selectedPath,
-    nodePath: installation.nodePath,
-    realPath: installation.realPath,
-    version: installation.version,
-    fingerprint: installation.fingerprint,
-  };
-}
+export { installationIdentity } from "./external-installation.js";
 
 function unavailableTarget(
   selectedPath: string,

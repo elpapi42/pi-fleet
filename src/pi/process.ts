@@ -3,8 +3,10 @@ import { once } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { signalProcessTree, waitForProcessGroupExit } from "../platform/runtime/process-tree.js";
+import { RpcRecordFramer } from "./rpc-record-framer.js";
 
 const DEFAULT_MAX_STDOUT_FRAME_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_PARTIAL_RECORD_BYTES = 64 * 1024 * 1024;
 
 export class PiRpcRejectedError extends Error {
   constructor(message: string) {
@@ -22,6 +24,15 @@ export class PiCompactionError extends Error {
   constructor(readonly code: "nothing_to_compact" | "compaction_failed") {
     super(code);
     this.name = "PiCompactionError";
+  }
+}
+
+export class PiResponseCommitDelayError extends Error {
+  readonly code = "storage_unavailable" as const;
+
+  constructor() {
+    super("Pi responded, but pi-fleet could not durably commit the response in time");
+    this.name = "PiResponseCommitDelayError";
   }
 }
 
@@ -54,6 +65,48 @@ export interface PiFrame {
   readonly [key: string]: unknown;
 }
 
+export type PiDeliveryMode = "steer" | "followUp";
+
+/**
+ * A future durable stdout pipeline uses this state to avoid mistaking an
+ * observed matching response for a Pi timeout while its journal commit waits.
+ * The active parser still resolves responses immediately in Phase 1.
+ */
+export type PiResponseAdmissionState =
+  | "awaiting_response"
+  | "admitted_pending_commit"
+  | "committed"
+  | "failed";
+
+export class PiResponseAdmission {
+  #state: PiResponseAdmissionState = "awaiting_response";
+
+  get state(): PiResponseAdmissionState {
+    return this.#state;
+  }
+
+  admit(): void {
+    if (this.#state !== "awaiting_response") {
+      throw new Error(`Cannot admit response while ${this.#state}`);
+    }
+    this.#state = "admitted_pending_commit";
+  }
+
+  commit(): void {
+    if (this.#state !== "admitted_pending_commit") {
+      throw new Error(`Cannot commit response while ${this.#state}`);
+    }
+    this.#state = "committed";
+  }
+
+  fail(): void {
+    if (this.#state === "committed") {
+      throw new Error("Cannot fail a committed response");
+    }
+    this.#state = "failed";
+  }
+}
+
 export interface PiProcessStartOptions {
   readonly executable: string;
   readonly argvPrefix?: readonly string[];
@@ -61,14 +114,19 @@ export interface PiProcessStartOptions {
   readonly cwd: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly maxStdoutFrameBytes?: number;
+  readonly maxPartialRecordBytes?: number;
   readonly onSpawn?: (pid: number) => Promise<void>;
-  readonly onStdoutBytes?: (bytes: Buffer) => void;
+  /** Called after a complete LF-terminated record is admitted and before it becomes observable. */
+  readonly onStdoutRecord?: (record: Buffer) => void | Promise<void>;
+  /** Test/adapter compatibility only; production runtime uses onStdoutRecord. */
+  readonly onStdoutBytes?: (record: Buffer) => void;
 }
 
 interface ResponseWaiter {
   readonly resolve: (frame: PiFrame) => void;
   readonly reject: (error: Error) => void;
   readonly timer: NodeJS.Timeout;
+  readonly admission: PiResponseAdmission;
 }
 
 export class PiProcess {
@@ -76,19 +134,29 @@ export class PiProcess {
   readonly #responses = new Map<string, ResponseWaiter>();
   readonly #listeners = new Set<(frame: PiFrame) => void>();
   readonly #exitListeners = new Set<(error: Error | null) => void>();
-  #stdoutBuffer = Buffer.alloc(0);
+  readonly #stdoutFramer: RpcRecordFramer;
   #stderr = "";
   #stopping = false;
   #handledExit = false;
   readonly #exitHandled: Promise<void>;
   #resolveExitHandled: () => void = () => undefined;
   readonly #maxStdoutFrameBytes: number;
+  readonly #onStdoutRecord: (record: Buffer) => Promise<void>;
+  #stdoutLane: Promise<void> = Promise.resolve();
+  #stdoutFailure: Error | null = null;
 
   private constructor(options: PiProcessStartOptions) {
     this.#exitHandled = new Promise((resolve) => {
       this.#resolveExitHandled = resolve;
     });
     this.#maxStdoutFrameBytes = options.maxStdoutFrameBytes ?? DEFAULT_MAX_STDOUT_FRAME_BYTES;
+    this.#stdoutFramer = new RpcRecordFramer(
+      options.maxPartialRecordBytes ?? DEFAULT_MAX_PARTIAL_RECORD_BYTES,
+    );
+    this.#onStdoutRecord = async (record) => {
+      if (options.onStdoutRecord !== undefined) await options.onStdoutRecord(record);
+      else options.onStdoutBytes?.(record);
+    };
     this.#child = spawn(
       options.executable,
       [...(options.argvPrefix ?? []), "--mode", "rpc", ...options.piArgv],
@@ -101,14 +169,21 @@ export class PiProcess {
     );
     this.#child.stderr.setEncoding("utf8");
     this.#child.stdout.on("data", (chunk: Buffer) => {
-      options.onStdoutBytes?.(chunk);
-      this.#consumeStdout(chunk);
+      this.#child.stdout.pause();
+      this.#stdoutLane = this.#stdoutLane
+        .then(() => this.#consumeStdout(chunk))
+        .catch((error: unknown) => this.#failStdout(error))
+        .finally(() => {
+          if (this.#child.exitCode === null && this.#stdoutFailure === null) {
+            this.#child.stdout.resume();
+          }
+        });
     });
     this.#child.stderr.on("data", (chunk: string) => {
       this.#stderr = `${this.#stderr}${chunk}`.slice(-65_536);
     });
-    this.#child.once("exit", (code, signal) => this.#handleExit(code, signal));
-    this.#child.once("error", (error) => this.#handleExit(null, null, error));
+    this.#child.once("exit", (code, signal) => void this.#handleExit(code, signal));
+    this.#child.once("error", (error) => void this.#handleExit(null, null, error));
   }
 
   static async start(options: PiProcessStartOptions): Promise<PiProcess> {
@@ -155,6 +230,10 @@ export class PiProcess {
     await this.request({ type: "prompt", message, streamingBehavior: "steer" });
   }
 
+  async followUp(message: string): Promise<void> {
+    await this.request({ type: "follow_up", message });
+  }
+
   async compact(): Promise<PiCompactionResult> {
     let frame: PiFrame;
     try {
@@ -194,12 +273,23 @@ export class PiProcess {
   async request(command: Record<string, unknown>, timeoutMs = 15_000): Promise<PiFrame> {
     if (this.#child.exitCode !== null) throw new Error("Pi process is not running");
     const id = randomUUID();
+    const admission = new PiResponseAdmission();
     const response = new Promise<PiFrame>((resolveResponse, rejectResponse) => {
       const timer = setTimeout(() => {
+        if (admission.state === "admitted_pending_commit") {
+          this.#failStdout(new PiResponseCommitDelayError());
+          return;
+        }
         this.#responses.delete(id);
+        admission.fail();
         rejectResponse(new Error("Pi RPC request timed out"));
       }, timeoutMs);
-      this.#responses.set(id, { resolve: resolveResponse, reject: rejectResponse, timer });
+      this.#responses.set(id, {
+        resolve: resolveResponse,
+        reject: rejectResponse,
+        timer,
+        admission,
+      });
     });
     try {
       await this.#write({ ...command, id });
@@ -208,6 +298,7 @@ export class PiProcess {
       if (waiter !== undefined) {
         clearTimeout(waiter.timer);
         this.#responses.delete(id);
+        waiter.admission.fail();
         waiter.reject(error instanceof Error ? error : new Error("Pi RPC write failed"));
       }
     }
@@ -247,32 +338,39 @@ export class PiProcess {
     await once(this.#child.stdin, "drain");
   }
 
-  #consumeStdout(chunk: Buffer): void {
-    this.#stdoutBuffer = Buffer.concat([this.#stdoutBuffer, chunk]);
-    while (true) {
-      const newline = this.#stdoutBuffer.indexOf(0x0a);
-      if (newline < 0) {
-        if (this.#stdoutBuffer.length > this.#maxStdoutFrameBytes) {
-          signalProcessTree(this.pid, "SIGTERM");
-        }
-        return;
+  async #consumeStdout(chunk: Buffer): Promise<void> {
+    for (const record of this.#stdoutFramer.push(chunk)) {
+      const commit = this.#onStdoutRecord(record);
+      if (record.length - 1 > this.#maxStdoutFrameBytes) {
+        await commit;
+        throw new Error("Pi RPC record exceeds the configured parser limit");
       }
-      if (newline > this.#maxStdoutFrameBytes) {
-        signalProcessTree(this.pid, "SIGTERM");
-        return;
-      }
-      let lineBytes = this.#stdoutBuffer.subarray(0, newline);
-      this.#stdoutBuffer = this.#stdoutBuffer.subarray(newline + 1);
+      let lineBytes = record.subarray(0, record.length - 1);
       if (lineBytes.at(-1) === 0x0d) lineBytes = lineBytes.subarray(0, -1);
-      if (lineBytes.length === 0) continue;
-      let frame: PiFrame;
-      try {
-        const line = new TextDecoder("utf-8", { fatal: true }).decode(lineBytes);
-        frame = JSON.parse(line) as PiFrame;
-      } catch {
-        signalProcessTree(this.pid, "SIGTERM");
-        return;
+      let frame: PiFrame | null = null;
+      if (lineBytes.length > 0) {
+        try {
+          const line = new TextDecoder("utf-8", { fatal: true }).decode(lineBytes);
+          frame = JSON.parse(line) as PiFrame;
+        } catch {
+          await commit;
+          throw new Error("Pi emitted a malformed RPC record");
+        }
       }
+      const waiter =
+        frame?.type === "response" && typeof frame.id === "string"
+          ? this.#responses.get(frame.id)
+          : undefined;
+      if (waiter !== undefined) waiter.admission.admit();
+      await commit;
+      if (waiter !== undefined) {
+        if (waiter.admission.state !== "admitted_pending_commit") continue;
+        waiter.admission.commit();
+        clearTimeout(waiter.timer);
+        this.#responses.delete(frame!.id!);
+        waiter.resolve(frame!);
+      }
+      if (frame === null) continue;
       if (
         frame.type === "extension_ui_request" &&
         typeof frame.id === "string" &&
@@ -282,29 +380,48 @@ export class PiProcess {
           () => undefined,
         );
       }
-      if (frame.type === "response" && frame.id !== undefined) {
-        const waiter = this.#responses.get(frame.id);
-        if (waiter !== undefined) {
-          clearTimeout(waiter.timer);
-          this.#responses.delete(frame.id);
-          waiter.resolve(frame);
-        }
-      }
       for (const listener of this.#listeners) listener(frame);
     }
   }
 
-  #handleExit(code: number | null, signal: NodeJS.Signals | null, cause?: Error): void {
+  async drainStdout(): Promise<void> {
+    await this.#stdoutLane;
+  }
+
+  #failStdout(error: unknown): void {
+    if (this.#stdoutFailure !== null) return;
+    this.#stdoutFailure =
+      error instanceof Error ? error : new Error("Pi stdout persistence failed");
+    for (const waiter of this.#responses.values()) {
+      clearTimeout(waiter.timer);
+      if (waiter.admission.state !== "committed") waiter.admission.fail();
+      waiter.reject(this.#stdoutFailure);
+    }
+    this.#responses.clear();
+    signalProcessTree(this.pid, "SIGTERM");
+  }
+
+  async #handleExit(
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    cause?: Error,
+  ): Promise<void> {
     if (this.#handledExit) return;
     this.#handledExit = true;
+    await this.#stdoutLane.catch(() => undefined);
+    const trailingPartial = this.#stdoutFramer.finish();
     const error =
-      this.#stopping && (code === 0 || signal === "SIGTERM")
-        ? null
-        : (cause ??
-          new Error(`Pi exited unexpectedly (code=${String(code)}, signal=${String(signal)})`));
+      this.#stdoutFailure ??
+      (trailingPartial !== null
+        ? new Error("Pi exited with an unterminated RPC record")
+        : this.#stopping && (code === 0 || signal === "SIGTERM")
+          ? null
+          : (cause ??
+            new Error(`Pi exited unexpectedly (code=${String(code)}, signal=${String(signal)})`)));
     try {
       for (const waiter of this.#responses.values()) {
         clearTimeout(waiter.timer);
+        if (waiter.admission.state !== "committed") waiter.admission.fail();
         waiter.reject(error ?? new Error("Pi stopped before responding"));
       }
       this.#responses.clear();

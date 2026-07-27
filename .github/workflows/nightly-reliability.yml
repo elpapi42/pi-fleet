@@ -32,10 +32,13 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check
+      - run: npm run test:integration
       - run: npm run test:faults
       - run: npm run test:process
       - run: npm run test:compat
       - run: npm run test:package
+      - run: npm run test:client-types
       - run: npm run test:version-matrix
       - run: npm run test:soak
       - run: npm run benchmark:store
+      - run: npm run release:check

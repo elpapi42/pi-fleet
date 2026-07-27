@@ -69,7 +69,10 @@ function activePiPid(databasePath: string): number | null {
   try {
     const row = database
       .prepare(
-        "SELECT pid FROM incarnations WHERE state IN ('starting','live','stopping','cleanup_uncertain') ORDER BY rowid DESC LIMIT 1",
+        `SELECT json_extract(data_json, '$.pid') AS pid
+         FROM journal_incarnations
+         WHERE json_extract(data_json, '$.state') IN ('starting','live','stopping','cleanup_uncertain')
+         ORDER BY rowid DESC LIMIT 1`,
       )
       .get() as { pid: number | null } | undefined;
     return row?.pid ?? null;
@@ -79,7 +82,7 @@ function activePiPid(databasePath: string): number | null {
 }
 
 describe("compiled runtime crash recovery", () => {
-  it("completes orderly shutdown while a watch connection is held", async () => {
+  it("completes orderly shutdown while a receive connection is held", async () => {
     const root = await mkdtemp(join(tmpdir(), "pifleet-runtime-watch-shutdown-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
     const wrapper = join(root, "scripted-pi");
@@ -111,7 +114,7 @@ describe("compiled runtime crash recovery", () => {
       },
     );
     if (!created.ok) throw new Error(JSON.stringify(created.error));
-    const iterator = client.watch({ name: "watched" }, { signal })[Symbol.asyncIterator]();
+    const iterator = client.receive({ name: "watched" }, { signal })[Symbol.asyncIterator]();
     await expect(iterator.next()).resolves.toMatchObject({
       value: { ok: true, value: { type: "ready" } },
     });
@@ -126,6 +129,9 @@ describe("compiled runtime crash recovery", () => {
         ),
       ]),
     ).resolves.toBeDefined();
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { ok: false, error: { code: "runtime_unavailable" } },
+    });
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
@@ -172,15 +178,18 @@ describe("compiled runtime crash recovery", () => {
         },
       ),
     ).resolves.toMatchObject({ ok: true });
-    const receiving = client.receive({ name: "crash" }, { signal, timeoutMs: 10_000 });
+    const receiveStream = client.receive({ name: "crash" }, { signal, timeoutMs: 10_000 });
+    const receiving = receiveStream[Symbol.asyncIterator]();
+    await expect(receiving.next()).resolves.toMatchObject({
+      value: { ok: true, value: { type: "ready" } },
+    });
     const originalPiPid = activePiPid(paths.databasePath);
     expect(originalPiPid).not.toBeNull();
 
     first.child.kill("SIGKILL");
     await once(first.child, "exit");
-    await expect(receiving).resolves.toMatchObject({
-      ok: false,
-      error: { code: "runtime_unavailable" },
+    await expect(receiving.next()).resolves.toMatchObject({
+      value: { ok: false, error: { code: "runtime_unavailable" } },
     });
 
     const second = await startRuntime(env);

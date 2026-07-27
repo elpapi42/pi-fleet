@@ -3,12 +3,18 @@ import { createConnection, type Socket } from "node:net";
 
 import { readJsonLines, writeJsonLine } from "../protocol/jsonl.js";
 import { MANAGED_PI_RUNTIME_IDENTITY, type PiRuntimeIdentity } from "../protocol/pi-identity.js";
+import {
+  SemanticEventReassembler,
+  type SemanticSegmentFrame,
+} from "../protocol/semantic-segmentation.js";
 import { PROTOCOL_VERSION } from "../protocol/version.js";
+import { isPiFleetErrorCode } from "./contracts.js";
+import type { ReceiveCursor } from "./contracts.js";
 import { err, ok, type Result } from "../shared/result.js";
 import type {
-  CreateInput,
   CompactInput,
   CompactResult,
+  CreateInput,
   CreateResult,
   DestroyInput,
   DestroyResult,
@@ -16,15 +22,13 @@ import type {
   FleetClientError,
   ListResult,
   MutationOptions,
-  WatchStreamItem,
   ReceiveInput,
-  ReceiveResult,
+  ReceiveStreamItem,
   RequestOptions,
   SendInput,
   SendResult,
   StatusInput,
   StatusResult,
-  WatchInput,
 } from "./fleet-client.js";
 
 export class SocketFleetClient implements FleetClient {
@@ -43,15 +47,118 @@ export class SocketFleetClient implements FleetClient {
     return this.#request("agent.create", input, options);
   }
 
-  send(input: SendInput, options: MutationOptions): Promise<Result<SendResult, FleetClientError>> {
-    return this.#request("agent.send", input, options);
+  async send(
+    input: SendInput,
+    options: MutationOptions,
+  ): Promise<Result<SendResult, FleetClientError>> {
+    const bound = await this.#bind(input, options);
+    if (!bound.ok) return bound;
+    return this.#request("agent.send", bound.value, options);
   }
 
-  receive(
+  async *receive(
     input: ReceiveInput,
     options: RequestOptions,
-  ): Promise<Result<ReceiveResult, FleetClientError>> {
-    return this.#request("agent.receive", { ...input, timeoutMs: options.timeoutMs }, options);
+  ): AsyncIterable<Result<ReceiveStreamItem, FleetClientError>> {
+    const bound = await this.#bind(input, options);
+    if (!bound.ok) {
+      yield bound;
+      return;
+    }
+    let socket: Socket;
+    try {
+      await this.options.beforeConnect?.();
+      socket = await connect(this.options.socketPath, options.signal);
+    } catch (error: unknown) {
+      yield err(connectionError(error));
+      return;
+    }
+    const requestId = randomUUID();
+    const frames = frameIterator(socket, options.signal);
+    let reassembler: SemanticEventReassembler | null = null;
+    let expectedCursor: ReceiveCursor | null = null;
+    writeJsonLine(socket, {
+      v: PROTOCOL_VERSION,
+      requestId,
+      method: "agent.receive",
+      params: receiveParams(bound.value),
+    });
+    let ready = false;
+    let ended = false;
+    try {
+      for await (const frame of frames) {
+        if (!isRecord(frame) || frame.requestId !== requestId) continue;
+        if (frame.v !== PROTOCOL_VERSION) {
+          yield err(protocolIncompatible());
+          return;
+        }
+        if (frame.stream === "ready" && typeof frame.cursor === "string") {
+          if (
+            ready ||
+            !isRecord(frame.limits) ||
+            !isPositiveSafeInteger(frame.limits.maxEventBytes) ||
+            !isPositiveSafeInteger(frame.limits.maxSegments)
+          ) {
+            yield err({ code: "protocol_error", message: "Invalid receive readiness frame." });
+            return;
+          }
+          ready = true;
+          expectedCursor = frame.cursor as ReceiveCursor;
+          reassembler = new SemanticEventReassembler(
+            frame.limits.maxEventBytes,
+            frame.limits.maxSegments,
+          );
+          yield ok({ type: "ready", cursor: expectedCursor });
+          continue;
+        }
+        if (frame.stream === "semantic.segment" && isSemanticSegment(frame.segment)) {
+          if (!ready) {
+            yield err({
+              code: "protocol_error",
+              message: "Receive event arrived before readiness.",
+            });
+            return;
+          }
+          try {
+            if (reassembler === null || expectedCursor === null) {
+              throw new Error("Receive stream is not ready");
+            }
+            const complete = reassembler.push(frame.segment);
+            if (complete !== null) {
+              if (complete.precedingCursor !== expectedCursor) {
+                throw new Error("Receive event cursor chain is discontinuous");
+              }
+              expectedCursor = complete.event.cursor;
+              yield ok({ type: "event", cursor: complete.event.cursor, event: complete.event });
+            }
+          } catch {
+            yield err({ code: "protocol_error", message: "Receive stream segmentation failed." });
+            return;
+          }
+          continue;
+        }
+        if (frame.stream === "end") {
+          ended = true;
+          return;
+        }
+        if (frame.stream === "error" && isErrorRecord(frame.error)) {
+          yield err(frame.error);
+          return;
+        }
+        yield err({ code: "protocol_error", message: "Invalid receive stream frame." });
+        return;
+      }
+      if (!ended && !options.signal.aborted) {
+        yield err({
+          code: "runtime_unavailable",
+          message: "Runtime connection closed before the receive stream ended.",
+        });
+      }
+    } catch (error: unknown) {
+      if (!options.signal.aborted) yield err(connectionError(error));
+    } finally {
+      socket.destroy();
+    }
   }
 
   status(
@@ -65,84 +172,40 @@ export class SocketFleetClient implements FleetClient {
     return this.#request("agent.list", {}, options);
   }
 
-  async *watch(
-    input: WatchInput,
-    options: RequestOptions,
-  ): AsyncIterable<Result<WatchStreamItem, FleetClientError>> {
-    let socket: Socket;
-    try {
-      await this.options.beforeConnect?.();
-      socket = await connect(this.options.socketPath, options.signal);
-    } catch (error: unknown) {
-      yield err(connectionError(error));
-      return;
-    }
-
-    const requestId = randomUUID();
-    const frames = frameIterator(socket, options.signal);
-    writeJsonLine(socket, {
-      v: PROTOCOL_VERSION,
-      requestId,
-      method: "agent.watch",
-      params: input,
-    });
-
-    let endedExplicitly = false;
-    try {
-      for await (const frame of frames) {
-        if (!isRecord(frame) || frame.requestId !== requestId) continue;
-        if (frame.v !== PROTOCOL_VERSION) {
-          yield err({
-            code: "protocol_incompatible",
-            message:
-              "The running pi-fleet runtime is incompatible with this client; repair or restart it.",
-          });
-          return;
-        }
-        if (frame.stream === "ready") {
-          yield ok({ type: "ready" });
-          continue;
-        }
-        if (frame.stream === "end") {
-          endedExplicitly = true;
-          return;
-        }
-        if (frame.stream === "chunk" && typeof frame.data === "string") {
-          yield ok({ type: "chunk", bytes: Buffer.from(frame.data, "base64") });
-          continue;
-        }
-        if (frame.stream === "error" && isErrorRecord(frame.error)) {
-          yield err(frame.error);
-          return;
-        }
-        yield err({ code: "protocol_error", message: "Invalid watch stream frame." });
-        return;
-      }
-      if (!endedExplicitly && !options.signal.aborted) {
-        yield err({
-          code: "runtime_unavailable",
-          message: "Runtime connection closed before the watch stream ended.",
-        });
-      }
-    } catch (error: unknown) {
-      if (!options.signal.aborted) yield err(connectionError(error));
-    } finally {
-      socket.destroy();
-    }
-  }
-
-  destroy(
+  async destroy(
     input: DestroyInput,
     options: MutationOptions,
   ): Promise<Result<DestroyResult, FleetClientError>> {
-    return this.#request("agent.destroy", input, options);
+    const bound = await this.#bind(input, options);
+    if (!bound.ok) return bound;
+    return this.#request("agent.destroy", bound.value, options);
   }
 
-  compact(
+  async compact(
     input: CompactInput,
     options: MutationOptions,
   ): Promise<Result<CompactResult, FleetClientError>> {
-    return this.#request("agent.compact", input, options);
+    const bound = await this.#bind(input, options);
+    if (!bound.ok) return bound;
+    return this.#request("agent.compact", bound.value, options);
+  }
+
+  async #bind<T extends { readonly name: string; readonly expectedAgentId?: string }>(
+    input: T,
+    options: RequestOptions,
+  ): Promise<Result<T & { readonly expectedAgentId: string }, FleetClientError>> {
+    if (input.expectedAgentId !== undefined) {
+      return ok({ ...input, expectedAgentId: input.expectedAgentId });
+    }
+    const status = await this.status(
+      { name: input.name },
+      {
+        signal: options.signal,
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      },
+    );
+    if (!status.ok) return status;
+    return ok({ ...input, expectedAgentId: status.value.agent.id });
   }
 
   async #request<T>(
@@ -157,7 +220,6 @@ export class SocketFleetClient implements FleetClient {
     } catch (error: unknown) {
       return err(connectionError(error));
     }
-
     const requestId = randomUUID();
     let piIdentity: PiRuntimeIdentity | undefined;
     try {
@@ -175,31 +237,13 @@ export class SocketFleetClient implements FleetClient {
       ...(isMutationOptions(options) ? { operation: options.operation } : {}),
       ...(piIdentity === undefined ? {} : { runtime: { pi: piIdentity } }),
     });
-
     try {
       const frame = await response;
       if (!isRecord(frame) || frame.requestId !== requestId || typeof frame.ok !== "boolean") {
         return err({ code: "protocol_error", message: "Invalid runtime response." });
       }
-      if (frame.v !== PROTOCOL_VERSION) {
-        return err({
-          code: "protocol_incompatible",
-          message:
-            "The running pi-fleet runtime is incompatible with this client; repair or restart it.",
-        });
-      }
+      if (frame.v !== PROTOCOL_VERSION) return err(protocolIncompatible());
       if (frame.ok) return ok(frame.result as T);
-      if (
-        method === "agent.compact" &&
-        isErrorRecord(frame.error) &&
-        frame.error.code === "invalid_request" &&
-        frame.error.message === "Invalid protocol request: /method"
-      ) {
-        return err({
-          code: "protocol_incompatible",
-          message: "The running pi-fleet runtime does not support compact; upgrade or repair it.",
-        });
-      }
       if (isErrorRecord(frame.error)) return err(frame.error);
       return err({ code: "protocol_error", message: "Runtime returned an invalid error." });
     } catch (error: unknown) {
@@ -214,6 +258,24 @@ export class SocketFleetClient implements FleetClient {
     if (configured === undefined) return MANAGED_PI_RUNTIME_IDENTITY;
     return typeof configured === "function" ? configured() : configured;
   }
+}
+
+function receiveParams(input: ReceiveInput): Record<string, unknown> {
+  const start = input.start ?? { kind: "live" };
+  return {
+    name: input.name,
+    ...(input.expectedAgentId === undefined ? {} : { expectedAgentId: input.expectedAgentId }),
+    ...(start.kind === "after" ? { after: start.cursor } : {}),
+    ...(start.kind === "start" ? { fromStart: true } : {}),
+    ...(input.untilIdle === true ? { untilIdle: true } : {}),
+  };
+}
+
+function protocolIncompatible(): FleetClientError {
+  return {
+    code: "protocol_incompatible",
+    message: "The running pi-fleet runtime is incompatible with this client; repair or restart it.",
+  };
 }
 
 function piSelectionError(error: unknown): FleetClientError {
@@ -304,7 +366,7 @@ export async function* frameIterator(
   const stop = readJsonLines(
     socket,
     (frame) => {
-      const bytes = Buffer.byteLength(JSON.stringify(frame), "utf8");
+      const bytes = Buffer.byteLength(JSON.stringify(frame));
       queue.push({ value: frame, bytes });
       queuedBytes += bytes;
       if (queuedBytes >= maxQueuedBytes && !paused) {
@@ -330,7 +392,6 @@ export async function* frameIterator(
     notify();
   };
   signal.addEventListener("abort", onAbort, { once: true });
-
   try {
     while (!ended || queue.length > 0) {
       if (queue.length === 0) {
@@ -355,17 +416,54 @@ export async function* frameIterator(
   }
 }
 
+function isSemanticSegment(value: unknown): value is SemanticSegmentFrame {
+  return isRecord(value) && value.type === "semantic.segment";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function isPositiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && typeof value === "number" && value > 0;
+}
+
 function isErrorRecord(value: unknown): value is FleetClientError {
-  return isRecord(value) && typeof value.code === "string" && typeof value.message === "string";
+  return (
+    isRecord(value) &&
+    isPiFleetErrorCode(value.code) &&
+    typeof value.message === "string" &&
+    isSafeErrorDetails(value.code, value.details)
+  );
+}
+
+/**
+ * Terminal receive-stream failures may report the last durably delivered
+ * position so a caller can resume deliberately. Only continuity uncertainty may
+ * additionally offer an explicit continuation cursor.
+ */
+function isSafeErrorDetails(
+  code: string,
+  details: unknown,
+): details is Readonly<Record<string, unknown>> | undefined {
+  if (details === undefined) return true;
+  if (!isRecord(details)) return false;
+  const allowed =
+    code === "observation_uncertain"
+      ? ["lastSafeCursor", "continuationCursor"]
+      : ["lastSafeCursor"];
+  if (Object.keys(details).some((key) => !allowed.includes(key))) return false;
+  if (!(typeof details.lastSafeCursor === "string" || details.lastSafeCursor === undefined)) {
+    return false;
+  }
+  if (code !== "observation_uncertain") return true;
+  return typeof details.continuationCursor === "string" || details.continuationCursor === null;
 }
 
 function connectionError(error: unknown): FleetClientError {
+  void error;
   return {
     code: "runtime_unavailable",
-    message: error instanceof Error ? error.message : "Unable to connect to pi-fleet runtime.",
+    message: "Unable to connect to pi-fleet runtime.",
   };
 }

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { PiExecutionUnavailableError, type PiLauncher } from "../../src/pi/adapter.js";
 import type { PiProcess } from "../../src/pi/process.js";
 import type { PiRuntimeIdentity } from "../../src/protocol/pi-identity.js";
-import { FleetService } from "../../src/runtime/fleet-service.js";
+import { FleetService, fingerprintPayload } from "../../src/runtime/fleet-service.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
 
 function controlledLauncher() {
@@ -79,8 +79,6 @@ describe("Pi execution availability", () => {
     if (stored === null) throw new Error("missing resident agent");
     await store.putAgent({
       ...stored,
-      latestAssistantText: "stored response",
-      responseObservedAt: "2026-01-01T00:00:00.000Z",
     });
     controlled.setAvailable(false);
 
@@ -110,13 +108,6 @@ describe("Pi execution availability", () => {
       ok: true,
       value: { agents: [{ name: "resident" }] },
     });
-    expect(await service.receive({ name: "resident" })).toMatchObject({
-      ok: true,
-      value: { response: { text: "stored response" } },
-    });
-    const abort = new AbortController();
-    expect(await service.openWatch({ name: "resident" }, abort.signal)).toMatchObject({ ok: true });
-    abort.abort();
     expect(await service.destroy({ name: "resident" }, "destroy-resident")).toMatchObject({
       ok: true,
     });
@@ -178,20 +169,30 @@ describe("Pi execution availability", () => {
       );
     }
     await first.close();
+    const sendAgent = await store.getAgent("send-agent");
+    const compactAgent = await store.getAgent("compact-agent");
+    const destroyAgent = await store.getAgent("destroy-agent");
+    if (sendAgent === null || compactAgent === null || destroyAgent === null) {
+      throw new Error("missing seeded agents");
+    }
 
-    const sendInput = { name: "send-agent", message: "pending" };
+    const sendInput = { name: "send-agent", message: "pending", delivery: "steer" as const };
     await store.putOperation({
       operationId: "pending-send",
       method: "send",
-      fingerprint: JSON.stringify(sendInput),
+      fingerprint: fingerprintPayload(sendInput),
+      targetName: "reviewer",
       state: "pending",
       result: null,
+      targetAgent: { id: sendAgent.summary.id, name: "send-agent" },
     });
     await store.putSend({
       sendId: "pending-send",
+      agentId: sendAgent.summary.id,
       agentName: "send-agent",
       ordinal: 1,
       message: "pending",
+      delivery: "steer",
       state: "pending",
       acceptedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -199,12 +200,15 @@ describe("Pi execution availability", () => {
     await store.putOperation({
       operationId: "pending-compact",
       method: "compact",
-      fingerprint: JSON.stringify(compactInput),
+      fingerprint: fingerprintPayload(compactInput),
+      targetName: "reviewer",
       state: "pending",
       result: null,
+      targetAgent: { id: compactAgent.summary.id, name: "compact-agent" },
     });
     await store.putCompact({
       compactId: "pending-compact",
+      agentId: compactAgent.summary.id,
       agentName: "compact-agent",
       state: "pending",
       requestedAt: "2026-01-01T00:00:00.000Z",
@@ -213,17 +217,21 @@ describe("Pi execution availability", () => {
     await store.putOperation({
       operationId: "pending-create",
       method: "create",
-      fingerprint: JSON.stringify(createInput),
+      fingerprint: fingerprintPayload(createInput),
+      targetName: "reviewer",
       state: "pending",
       result: null,
+      request: createInput,
     });
     const destroyInput = { name: "destroy-agent" };
     await store.putOperation({
       operationId: "pending-destroy",
       method: "destroy",
-      fingerprint: JSON.stringify(destroyInput),
+      fingerprint: fingerprintPayload(destroyInput),
+      targetName: "reviewer",
       state: "pending",
       result: null,
+      targetAgent: { id: destroyAgent.summary.id, name: "destroy-agent" },
     });
 
     controlled.setAvailable(false);

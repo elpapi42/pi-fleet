@@ -21,10 +21,17 @@ interface RuntimeClosure {
   readonly tree: TreeIntegrity;
 }
 
+interface RuntimeContract {
+  readonly protocolVersion: 3;
+  readonly journalSchemaVersion: 3;
+  readonly clientExport: "./client";
+}
+
 interface RuntimeManifest {
   readonly schemaVersion: 4;
   readonly package: { readonly name: string; readonly version: string };
   readonly piRuntime: { readonly mode: "external" };
+  readonly runtime: RuntimeContract;
   readonly files: readonly RuntimeManifestFile[];
   readonly dependencies: readonly RuntimeDependency[];
   readonly closure?: RuntimeClosure;
@@ -33,6 +40,11 @@ interface RuntimeManifest {
 interface PackageMetadata {
   readonly name: string;
   readonly version: string;
+  readonly runtime?: RuntimeContract;
+  readonly clientExport?: {
+    readonly types: "./dist/client/index.d.ts";
+    readonly import: "./dist/client.mjs";
+  };
   readonly dependencies: Readonly<Record<string, string>>;
 }
 
@@ -42,7 +54,12 @@ const requiredRuntimeArtifacts = new Set([
   "bin/pifleet-runtime.mjs",
   "dist/cli.mjs",
   "dist/runtime.mjs",
-  "dist/sqlite-worker.mjs",
+  "dist/journal-sqlite-worker.mjs",
+  "dist/client.mjs",
+  "dist/client-meta.json",
+  "dist/client/index.d.ts",
+  "dist/client/sdk-facade.d.ts",
+  "dist/client/contracts.d.ts",
 ]);
 const dependencyTreePath = "node_modules";
 
@@ -235,14 +252,18 @@ async function validateRuntimeManifest(candidate: unknown, root: string): Promis
     typeof candidate.package.name !== "string" ||
     typeof candidate.package.version !== "string" ||
     !isRecord(candidate.piRuntime) ||
-    candidate.piRuntime.mode !== "external"
+    candidate.piRuntime.mode !== "external" ||
+    !isRuntimeContract(candidate.runtime)
   ) {
     throw new Error("Runtime manifest has an invalid package identity");
   }
-  const packageMetadata = await readPackageMetadata(root);
+  const packageMetadata = await readPackageMetadata(root, true);
   if (
     candidate.package.name !== packageMetadata.name ||
-    candidate.package.version !== packageMetadata.version
+    candidate.package.version !== packageMetadata.version ||
+    packageMetadata.runtime === undefined ||
+    !sameRuntimeContract(candidate.runtime, packageMetadata.runtime) ||
+    packageMetadata.clientExport === undefined
   ) {
     throw new Error("Runtime manifest package identity does not match package.json");
   }
@@ -329,7 +350,10 @@ async function validateRuntimeManifest(candidate: unknown, root: string): Promis
   }
 }
 
-async function readPackageMetadata(root: string): Promise<PackageMetadata> {
+async function readPackageMetadata(
+  root: string,
+  requireRuntimeContract = false,
+): Promise<PackageMetadata> {
   let candidate: unknown;
   try {
     candidate = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
@@ -340,15 +364,28 @@ async function readPackageMetadata(root: string): Promise<PackageMetadata> {
     !isRecord(candidate) ||
     typeof candidate.name !== "string" ||
     typeof candidate.version !== "string" ||
+    (requireRuntimeContract && !isRuntimeContract(candidate.pifleet)) ||
     (candidate.dependencies !== undefined && !isRecord(candidate.dependencies)) ||
     (isRecord(candidate.dependencies) &&
       Object.values(candidate.dependencies).some((version) => typeof version !== "string"))
   ) {
     throw new Error("Runtime package.json has invalid package metadata");
   }
+  const clientExport = isRecord(candidate.exports) ? candidate.exports["./client"] : undefined;
   return {
     name: candidate.name,
     version: candidate.version,
+    ...(isRuntimeContract(candidate.pifleet) ? { runtime: candidate.pifleet } : {}),
+    ...(isRecord(clientExport) &&
+    clientExport.types === "./dist/client/index.d.ts" &&
+    clientExport.import === "./dist/client.mjs"
+      ? {
+          clientExport: {
+            types: "./dist/client/index.d.ts" as const,
+            import: "./dist/client.mjs" as const,
+          },
+        }
+      : {}),
     dependencies: isRecord(candidate.dependencies)
       ? (candidate.dependencies as Record<string, string>)
       : {},
@@ -381,6 +418,23 @@ function resolveInside(root: string, path: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isRuntimeContract(value: unknown): value is RuntimeContract {
+  return (
+    isRecord(value) &&
+    value.protocolVersion === 3 &&
+    value.journalSchemaVersion === 3 &&
+    value.clientExport === "./client"
+  );
+}
+
+function sameRuntimeContract(left: RuntimeContract, right: RuntimeContract): boolean {
+  return (
+    left.protocolVersion === right.protocolVersion &&
+    left.journalSchemaVersion === right.journalSchemaVersion &&
+    left.clientExport === right.clientExport
+  );
 }
 
 function isManifestPath(value: unknown): value is string {

@@ -37,6 +37,11 @@ async function dispatch(request: WorkerRequest): Promise<unknown> {
   switch (request.method) {
     case "createAgent":
       return store.createAgent(request.args[0] as StoredAgent);
+    case "rollbackProvisionalCreate":
+      return store.rollbackProvisionalCreate(
+        request.args[0] as string,
+        request.args[1] as StoredOperation,
+      );
     case "getAgent":
       return store.getAgent(request.args[0] as string);
     case "listAgents":

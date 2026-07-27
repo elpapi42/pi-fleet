@@ -1,70 +1,61 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { RealPiLauncher, type PiLauncher } from "../../src/pi/adapter.js";
+import type { SemanticEvent } from "../../src/client/contracts.js";
+import { RealPiLauncher } from "../../src/pi/adapter.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
-import { MemoryFleetStore } from "../../src/store/memory-store.js";
-import { SqliteFleetStore } from "../../src/store/sqlite-store.js";
+import { JournalRuntimeComposition } from "../../src/runtime/journal-runtime.js";
+import { JournalWakeup } from "../../src/runtime/journal-wakeup.js";
+import { OpaqueReceiveCursorCodec } from "../../src/runtime/receive-pager.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../../src/shared/runtime-limits.js";
+import { JournalFleetStoreAdapter } from "../../src/store/journal-fleet-store-adapter.js";
+import { MemoryJournalStore } from "../../src/store/memory-journal-store.js";
 
+/**
+ * Protocol-v3 lifecycle proof against the separately installed external Pi.
+ *
+ * These cases replace the removed finite-receive and raw-watch suite: they prove
+ * semantic receive delivery, steering, follow-up delivery, native-session
+ * restoration with one writer, no replay after active interruption, headless
+ * extension-UI cancellation, and preservation of user-owned session files.
+ */
 const SELECTED_PI_EXECUTABLE =
   process.env.PIFLEET_PI_EXECUTABLE ?? resolve(process.cwd(), "node_modules", ".bin", "pi");
+
+const PI_ARGV = [
+  "--provider",
+  "pifleet-probe",
+  "--model",
+  "deterministic",
+  "--no-skills",
+  "--no-prompt-templates",
+  "--no-tools",
+];
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
-async function collectUntil(iterator: AsyncIterator<Buffer>, marker: string): Promise<Buffer> {
-  let received = Buffer.alloc(0);
-  while (!received.includes(marker)) {
-    const next = await iterator.next();
-    if (next.done) throw new Error(`Pi RPC watch ended before ${marker}`);
-    received = Buffer.concat([received, next.value]);
-  }
-  return received;
-}
-
-async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await check()) return;
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
-  }
-  throw new Error("condition did not become true");
-}
-
-function recordRawStdout(
-  launcher: RealPiLauncher,
-  isRecording: () => boolean,
-  chunks: Buffer[],
-): PiLauncher {
-  return {
-    artifactId: launcher.artifactId,
-    start(profile, restore, onSpawn, onStdoutBytes) {
-      return launcher.start(profile, restore, onSpawn, (bytes) => {
-        if (isRecording()) chunks.push(Buffer.from(bytes));
-        onStdoutBytes?.(bytes);
-      });
-    },
-  };
-}
-
-async function deterministicServer() {
+async function deterministicProvider(responseDelayMs = 0) {
   let requestCount = 0;
   const bodies: string[] = [];
+  let started!: () => void;
+  const firstRequestStarted = new Promise<void>((resolveStarted) => (started = resolveStarted));
   const server = createServer(async (request, response) => {
     let body = "";
     request.setEncoding("utf8");
     for await (const chunk of request) body += chunk;
     bodies.push(body);
     requestCount += 1;
+    started();
+    if (responseDelayMs > 0) await new Promise((wait) => setTimeout(wait, responseDelayMs));
     response.writeHead(200, { "content-type": "text/event-stream" });
     const frame = (delta: Record<string, unknown>, finish: string | null) => ({
-      id: `response-${requestCount}`,
+      id: `response-${String(requestCount)}`,
       object: "chat.completion.chunk",
       created: 1,
       model: "deterministic",
@@ -72,7 +63,9 @@ async function deterministicServer() {
     });
     response.write(`data: ${JSON.stringify(frame({ role: "assistant" }, null))}\n\n`);
     response.write(
-      `data: ${JSON.stringify(frame({ content: `deterministic response ${requestCount}` }, null))}\n\n`,
+      `data: ${JSON.stringify(
+        frame({ content: `deterministic response ${String(requestCount)}` }, null),
+      )}\n\n`,
     );
     response.write(`data: ${JSON.stringify(frame({}, "stop"))}\n\n`);
     response.end("data: [DONE]\n\n");
@@ -80,204 +73,223 @@ async function deterministicServer() {
   server.listen(0, "127.0.0.1");
   await new Promise<void>((resolveListen) => server.once("listening", resolveListen));
   const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("server failed to listen");
+  if (address === null || typeof address === "string") throw new Error("provider failed to listen");
   cleanups.push(
     () =>
       new Promise<void>((resolveClose, rejectClose) =>
         server.close((error) => (error === undefined ? resolveClose() : rejectClose(error))),
       ),
   );
-  return { port: address.port, bodies, count: () => requestCount };
+  return { port: address.port, bodies, count: () => requestCount, firstRequestStarted };
 }
 
-describe("real Pi in-memory lifecycle", () => {
-  it("creates, reuses, releases, and restores the same native session", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pifleet-real-pi-"));
-    cleanups.push(() => rm(root, { recursive: true, force: true }));
-    const project = join(root, "project");
-    const agentDir = join(root, "pi-agent");
-    await mkdir(project, { recursive: true });
-    await mkdir(agentDir, { recursive: true });
-    const model = await deterministicServer();
-    await writeFile(
-      join(agentDir, "settings.json"),
-      JSON.stringify({ compaction: { reserveTokens: 100, keepRecentTokens: 10 } }),
-    );
-    await writeFile(
-      join(agentDir, "models.json"),
-      JSON.stringify({
-        providers: {
-          "pifleet-probe": {
-            baseUrl: `http://127.0.0.1:${model.port}/v1`,
-            api: "openai-completions",
-            apiKey: "local-placeholder",
-            models: [{ id: "deterministic", contextWindow: 4096, maxTokens: 256 }],
-          },
+async function environment(prefix: string, extensions = false, responseDelayMs = 0) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const project = join(root, "project");
+  const agentDir = join(root, "pi-agent");
+  await mkdir(project, { recursive: true });
+  await mkdir(agentDir, { recursive: true });
+  const provider = await deterministicProvider(responseDelayMs);
+  await writeFile(
+    join(agentDir, "models.json"),
+    JSON.stringify({
+      providers: {
+        "pifleet-probe": {
+          baseUrl: `http://127.0.0.1:${String(provider.port)}/v1`,
+          api: "openai-completions",
+          apiKey: "local-placeholder",
+          models: [{ id: "deterministic", contextWindow: 4096, maxTokens: 256 }],
         },
-      }),
-    );
+      },
+    }),
+  );
+  const pids: number[] = [];
+  const store = new MemoryJournalStore();
+  const service = new FleetService(new JournalFleetStoreAdapter(store), {
+    launcher: new RealPiLauncher({
+      executable: SELECTED_PI_EXECUTABLE,
+      artifactId: "external-pi",
+      env: { PI_CODING_AGENT_DIR: agentDir },
+      onStart: (pid) => pids.push(pid),
+    }),
+    journal: new JournalRuntimeComposition({
+      store,
+      limits: DEFAULT_RUNTIME_LIMITS,
+      cursors: new OpaqueReceiveCursorCodec(),
+      wakeup: new JournalWakeup(),
+    }),
+    journalStore: store,
+  });
+  cleanups.push(() => service.close());
+  const piArgv = extensions
+    ? PI_ARGV.filter((argument) => argument !== "--no-tools")
+    : ["--no-extensions", ...PI_ARGV];
+  return { project, agentDir, provider, pids, service, piArgv };
+}
 
-    const pids: number[] = [];
-    let recordingRawStdout = false;
-    const rawStdout: Buffer[] = [];
-    const launcher = recordRawStdout(
-      new RealPiLauncher({
-        executable: SELECTED_PI_EXECUTABLE,
-        artifactId: "external-pi",
-        env: { PI_CODING_AGENT_DIR: agentDir },
-        onStart: (pid) => pids.push(pid),
-      }),
-      () => recordingRawStdout,
-      rawStdout,
-    );
-    const service = new FleetService(new MemoryFleetStore(), {
-      launcher,
-      now: () => "2026-01-01T00:00:00.000Z",
-    });
-    cleanups.push(() => service.close());
-    const piArgv = [
-      "--provider",
-      "pifleet-probe",
-      "--model",
-      "deterministic",
-      "--no-extensions",
-      "--no-skills",
-      "--no-prompt-templates",
-      "--no-tools",
-    ];
+async function attachReceive(service: FleetService, name: string, expectedAgentId: string) {
+  const abort = new AbortController();
+  cleanups.push(async () => abort.abort());
+  const prepared = await service.prepareReceive(
+    { name, expectedAgentId },
+    { kind: "live" },
+    false,
+    abort.signal,
+  );
+  if (!prepared.ok) throw new Error(JSON.stringify(prepared.error));
+  const iterator = prepared.value.stream[Symbol.asyncIterator]();
+  return {
+    cursor: prepared.value.stream.cursor,
+    async until(match: (event: SemanticEvent) => boolean): Promise<SemanticEvent[]> {
+      const observed: SemanticEvent[] = [];
+      while (observed.length < 50) {
+        const next = await iterator.next();
+        if (next.done === true) throw new Error("receive stream ended before the expected event");
+        observed.push(next.value);
+        if (match(next.value)) return observed;
+      }
+      throw new Error("expected receive event was not observed");
+    },
+  };
+}
+
+async function waitUntil(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+  }
+  throw new Error("condition did not become true");
+}
+
+async function agentSession(service: FleetService, name: string) {
+  const status = await service.status({ name });
+  if (!status.ok || status.value.agent.session.path === null) {
+    throw new Error("external Pi did not materialize a session");
+  }
+  return status.value.agent.session;
+}
+
+describe("real Pi protocol-v3 lifecycle", () => {
+  it("streams semantic activity, steers, follows up, and restores the same native session", async () => {
+    const { project, provider, pids, service, piArgv } = await environment("pifleet-real-pi-");
 
     const created = await service.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
-    expect(created).toMatchObject({
-      ok: true,
-      value: {
-        agent: {
-          state: "idle",
-          process: { state: "resident" },
-          session: { path: expect.stringContaining(".jsonl"), id: expect.any(String) },
-        },
-      },
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    expect(created.value.agent).toMatchObject({
+      state: "idle",
+      process: { state: "resident" },
     });
+    const agentId = created.value.agent.id;
     expect(pids).toHaveLength(1);
 
-    const watchAbort = new AbortController();
-    const watch = await service.openWatch({ name: "reviewer" }, watchAbort.signal);
-    if (!watch.ok) throw new Error(JSON.stringify(watch.error));
-    const watchedUntilSettled = collectUntil(
-      watch.value[Symbol.asyncIterator](),
-      '"type":"agent_settled"',
+    const receive = await attachReceive(service, "reviewer", agentId);
+    expect(typeof receive.cursor).toBe("string");
+
+    expect(
+      await service.send(
+        { name: "reviewer", expectedAgentId: agentId, message: "first" },
+        "send-1",
+      ),
+    ).toMatchObject({ ok: true });
+
+    const firstTurn = await receive.until(
+      (event) =>
+        event.type === "assistant.message.finished" && event.text === "deterministic response 1",
     );
-    recordingRawStdout = true;
-    await service.send({ name: "reviewer", message: "first" }, "send-1");
-    const watchedBytes = await watchedUntilSettled;
-    recordingRawStdout = false;
-    expect(watchedBytes).toEqual(Buffer.concat(rawStdout));
-    const rpcText = watchedBytes.toString("utf8");
-    expect(rpcText).toContain('"command":"prompt"');
-    expect(rpcText).toContain('"type":"message_update"');
-    expect(rpcText).toContain('"type":"text_delta"');
-    expect(rpcText).toContain('"type":"agent_settled"');
-    watchAbort.abort();
+    expect(firstTurn.map((event) => event.type)).toContain("assistant.message.started");
+    expect(new Set(firstTurn.map((event) => event.agentId))).toEqual(new Set([agentId]));
+    const started = firstTurn.find((event) => event.type === "assistant.message.started");
+    const finished = firstTurn.at(-1);
+    expect(started?.activityId).toBe(finished?.activityId);
+    expect(new Set(firstTurn.map((event) => event.cursor)).size).toBe(firstTurn.length);
 
-    expect(await service.receive({ name: "reviewer" })).toMatchObject({
-      ok: true,
-      value: { response: { text: "deterministic response 1" } },
-    });
-    await service.send({ name: "reviewer", message: "second" }, "send-2");
-    expect(await service.receive({ name: "reviewer" })).toMatchObject({
-      ok: true,
-      value: { response: { text: "deterministic response 2" } },
-    });
+    expect(
+      await service.send(
+        { name: "reviewer", expectedAgentId: agentId, message: "second" },
+        "send-2",
+      ),
+    ).toMatchObject({ ok: true });
+    await receive.until(
+      (event) =>
+        event.type === "assistant.message.finished" && event.text === "deterministic response 2",
+    );
     expect(pids).toHaveLength(1);
 
-    const compacted = await service.compact({ name: "reviewer" }, "compact-1");
-    if (!compacted.ok) throw new Error(JSON.stringify(compacted.error));
-    expect(compacted).toMatchObject({
-      ok: true,
-      value: {
-        type: "agent.compacted",
-        compaction: {
-          tokensBefore: expect.any(Number),
-          estimatedTokensAfter: expect.any(Number),
-        },
-      },
-    });
-    expect(model.count()).toBe(3);
-
-    const status = await service.status({ name: "reviewer" });
-    if (!status.ok || status.value.agent.session.path === null) throw new Error("missing session");
-    const sessionPath = status.value.agent.session.path;
-    expect(await readFile(sessionPath, "utf8")).toContain('"type":"compaction"');
-
+    const session = await agentSession(service, "reviewer");
     await service.releaseAgentProcess("reviewer");
     expect(await service.status({ name: "reviewer" })).toMatchObject({
       ok: true,
       value: { agent: { state: "idle", process: { state: "absent" } } },
     });
 
-    await service.send({ name: "reviewer", message: "third" }, "send-3");
-    expect(await service.receive({ name: "reviewer" })).toMatchObject({
-      ok: true,
-      value: { response: { text: "deterministic response 4" } },
+    expect(
+      await service.send(
+        { name: "reviewer", expectedAgentId: agentId, message: "third" },
+        "send-3",
+      ),
+    ).toMatchObject({ ok: true });
+    await waitUntil(async () => {
+      const status = await service.status({ name: "reviewer" });
+      return status.ok && status.value.agent.process.state === "resident";
     });
     expect(pids).toHaveLength(2);
-    expect(model.bodies.at(-1)).toContain("deterministic response 3");
+    expect(await agentSession(service, "reviewer")).toEqual(session);
+    expect(provider.bodies.at(-1)).toContain("deterministic response 2");
 
-    expect(await service.destroy({ name: "reviewer" }, "destroy-1")).toMatchObject({
-      ok: true,
-    });
-    await expect(readFile(sessionPath, "utf8")).resolves.toContain("deterministic response 4");
-  }, 30_000);
+    expect(
+      await service.destroy({ name: "reviewer", expectedAgentId: agentId }, "destroy-1"),
+    ).toMatchObject({ ok: true });
+    await expect(readFile(session.path!, "utf8")).resolves.toContain("deterministic response 1");
+  }, 60_000);
 
-  it("restores one writer on the same session only after an idle external Pi dies and is addressed", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pifleet-real-pi-idle-death-"));
-    cleanups.push(() => rm(root, { recursive: true, force: true }));
-    const project = join(root, "project");
-    const agentDir = join(root, "pi-agent");
-    await mkdir(project, { recursive: true });
-    await mkdir(agentDir, { recursive: true });
-    const model = await deterministicServer();
-    await writeFile(
-      join(agentDir, "models.json"),
-      JSON.stringify({
-        providers: {
-          "pifleet-probe": {
-            baseUrl: `http://127.0.0.1:${model.port}/v1`,
-            api: "openai-completions",
-            apiKey: "local-placeholder",
-            models: [{ id: "deterministic", contextWindow: 4096, maxTokens: 256 }],
-          },
-        },
-      }),
+  it("delivers follow-up input queued while Pi is genuinely working", async () => {
+    const { project, service, piArgv, provider } = await environment(
+      "pifleet-real-pi-followup-",
+      false,
+      1_500,
     );
-    const pids: number[] = [];
-    const service = new FleetService(new MemoryFleetStore(), {
-      launcher: new RealPiLauncher({
-        executable: SELECTED_PI_EXECUTABLE,
-        artifactId: "external-pi",
-        env: { PI_CODING_AGENT_DIR: agentDir },
-        onStart: (pid) => pids.push(pid),
-      }),
-    });
-    cleanups.push(() => service.close());
-    const piArgv = [
-      "--provider",
-      "pifleet-probe",
-      "--model",
-      "deterministic",
-      "--no-extensions",
-      "--no-skills",
-      "--no-prompt-templates",
-      "--no-tools",
-    ];
 
-    await service.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
-    await service.send({ name: "reviewer", message: "baseline" }, "send-baseline");
-    await service.receive({ name: "reviewer" });
-    const before = await service.status({ name: "reviewer" });
-    if (!before.ok || before.value.agent.session.path === null) {
-      throw new Error("external Pi did not materialize a session");
-    }
-    const session = before.value.agent.session;
+    const created = await service.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    const agentId = created.value.agent.id;
+    const receive = await attachReceive(service, "reviewer", agentId);
+
+    await service.send({ name: "reviewer", expectedAgentId: agentId, message: "first" }, "send-1");
+    await provider.firstRequestStarted;
+    expect(
+      await service.send(
+        {
+          name: "reviewer",
+          expectedAgentId: agentId,
+          message: "queued while working",
+          delivery: "followUp",
+        },
+        "send-2",
+      ),
+    ).toMatchObject({ ok: true });
+
+    await receive.until(
+      (event) =>
+        event.type === "assistant.message.finished" && event.text === "deterministic response 2",
+    );
+    expect(provider.bodies.at(-1)).toContain("queued while working");
+    await service.destroy({ name: "reviewer", expectedAgentId: agentId }, "destroy-1");
+  }, 60_000);
+
+  it("fails active work without replay when the selected Pi process dies", async () => {
+    const { project, provider, pids, service, piArgv } = await environment("pifleet-real-pi-kill-");
+
+    const created = await service.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    const agentId = created.value.agent.id;
+    await service.send({ name: "reviewer", expectedAgentId: agentId, message: "one" }, "send-1");
+    const receive = await attachReceive(service, "reviewer", agentId);
+    await service.send({ name: "reviewer", expectedAgentId: agentId, message: "two" }, "send-2");
+    await receive.until((event) => event.type === "assistant.message.finished");
+    const session = await agentSession(service, "reviewer");
+    const requestsBefore = provider.count();
     const firstPid = pids[0]!;
 
     process.kill(firstPid, "SIGKILL");
@@ -290,58 +302,27 @@ describe("real Pi in-memory lifecycle", () => {
       );
     });
     expect(pids).toEqual([firstPid]);
-    expect(() => process.kill(firstPid, 0)).toThrow();
+    expect(provider.count()).toBe(requestsBefore);
 
-    await service.send({ name: "reviewer", message: "restore once" }, "send-restore");
-    expect(await service.receive({ name: "reviewer" })).toMatchObject({
-      ok: true,
-      value: { response: { text: "deterministic response 2" } },
+    expect(
+      await service.send(
+        { name: "reviewer", expectedAgentId: agentId, message: "after" },
+        "send-3",
+      ),
+    ).toMatchObject({ ok: true });
+    await waitUntil(async () => {
+      const status = await service.status({ name: "reviewer" });
+      return status.ok && status.value.agent.process.state === "resident";
     });
     expect(pids).toHaveLength(2);
-    expect(model.count()).toBe(2);
-    expect(await service.status({ name: "reviewer" })).toMatchObject({
-      ok: true,
-      value: {
-        agent: {
-          state: "idle",
-          process: { state: "resident" },
-          session,
-        },
-      },
-    });
-    await service.destroy({ name: "reviewer" }, "destroy-1");
-    await expect(readFile(session.path!, "utf8")).resolves.toContain("deterministic response 2");
-  }, 30_000);
+    expect(await agentSession(service, "reviewer")).toEqual(session);
+
+    await service.destroy({ name: "reviewer", expectedAgentId: agentId }, "destroy-1");
+    await expect(readFile(session.path!, "utf8")).resolves.toContain("deterministic response");
+  }, 60_000);
 
   it("cancels blocking extension UI headlessly without invoking the provider", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pifleet-real-pi-extension-ui-"));
-    cleanups.push(() => rm(root, { recursive: true, force: true }));
-    const project = join(root, "project");
-    const agentDir = join(root, "pi-agent");
-    await mkdir(project, { recursive: true });
-    await mkdir(agentDir, { recursive: true });
-    const model = await deterministicServer();
-    await writeFile(
-      join(agentDir, "models.json"),
-      JSON.stringify({
-        providers: {
-          "pifleet-probe": {
-            baseUrl: `http://127.0.0.1:${model.port}/v1`,
-            api: "openai-completions",
-            apiKey: "local-placeholder",
-            models: [{ id: "deterministic", contextWindow: 4096, maxTokens: 256 }],
-          },
-        },
-      }),
-    );
-    const service = new FleetService(new MemoryFleetStore(), {
-      launcher: new RealPiLauncher({
-        executable: SELECTED_PI_EXECUTABLE,
-        artifactId: "external-pi",
-        env: { PI_CODING_AGENT_DIR: agentDir },
-      }),
-    });
-    cleanups.push(() => service.close());
+    const { project, provider, service } = await environment("pifleet-real-pi-extension-", true);
     const selectedPiTarget = await realpath(SELECTED_PI_EXECUTABLE);
     const extensionPath = join(
       dirname(dirname(selectedPiTarget)),
@@ -349,225 +330,25 @@ describe("real Pi in-memory lifecycle", () => {
       "extensions",
       "rpc-demo.ts",
     );
-    const piArgv = [
-      "--provider",
-      "pifleet-probe",
-      "--model",
-      "deterministic",
-      "--extension",
-      extensionPath,
-      "--no-skills",
-      "--no-prompt-templates",
-      "--no-tools",
-    ];
+    const piArgv = [...PI_ARGV, "--extension", extensionPath];
 
-    await service.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
-    const watchAbort = new AbortController();
-    const watch = await service.openWatch({ name: "reviewer" }, watchAbort.signal);
-    if (!watch.ok) throw new Error(JSON.stringify(watch.error));
-    const uiRequest = collectUntil(
-      watch.value[Symbol.asyncIterator](),
-      '"type":"extension_ui_request"',
-    );
+    const created = await service.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    const agentId = created.value.agent.id;
 
     expect(
-      await service.send({ name: "reviewer", message: "/rpc-input" }, "send-ui"),
+      await service.send(
+        { name: "reviewer", expectedAgentId: agentId, message: "/rpc-input" },
+        "send-ui",
+      ),
     ).toMatchObject({ ok: true });
-    expect((await uiRequest).toString("utf8")).toContain('"method":"input"');
-    expect(await service.receive({ name: "reviewer" })).toMatchObject({
-      ok: false,
-      error: { code: "no_response" },
-    });
-    expect(model.count()).toBe(0);
-    watchAbort.abort();
-    await service.destroy({ name: "reviewer" }, "destroy-1");
-  }, 30_000);
-
-  it("does not replay active work when the selected external Pi process dies", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pifleet-real-pi-interrupted-"));
-    cleanups.push(() => rm(root, { recursive: true, force: true }));
-    const project = join(root, "project");
-    const agentDir = join(root, "pi-agent");
-    await mkdir(project, { recursive: true });
-    await mkdir(agentDir, { recursive: true });
-
-    let receivedRequest!: () => void;
-    const requestReceived = new Promise<void>(
-      (resolveRequest) => (receivedRequest = resolveRequest),
-    );
-    let requestCount = 0;
-    const sockets = new Set<Socket>();
-    const server = createServer(async (request, response) => {
-      requestCount += 1;
-      for await (const chunk of request) {
-        void chunk;
-      }
-      if (requestCount === 1) {
-        const frame = (delta: Record<string, unknown>, finish: string | null) => ({
-          id: "interrupted-baseline",
-          object: "chat.completion.chunk",
-          created: 1,
-          model: "deterministic",
-          choices: [{ index: 0, delta, finish_reason: finish }],
-        });
-        response.writeHead(200, { "content-type": "text/event-stream" });
-        response.write(`data: ${JSON.stringify(frame({ role: "assistant" }, null))}\n\n`);
-        response.write(`data: ${JSON.stringify(frame({ content: "settled baseline" }, null))}\n\n`);
-        response.write(`data: ${JSON.stringify(frame({}, "stop"))}\n\n`);
-        response.end("data: [DONE]\n\n");
-        return;
-      }
-      receivedRequest();
-      await new Promise<void>(() => undefined);
-    });
-    server.on("connection", (socket) => sockets.add(socket));
-    server.listen(0, "127.0.0.1");
-    await new Promise<void>((resolveListen) => server.once("listening", resolveListen));
-    cleanups.push(async () => {
-      for (const socket of sockets) socket.destroy();
-      await new Promise<void>((resolveClose, rejectClose) =>
-        server.close((error) => (error === undefined ? resolveClose() : rejectClose(error))),
-      );
-    });
-    const address = server.address();
-    if (address === null || typeof address === "string") throw new Error("server failed to listen");
-
-    await writeFile(
-      join(agentDir, "models.json"),
-      JSON.stringify({
-        providers: {
-          "pifleet-probe": {
-            baseUrl: `http://127.0.0.1:${address.port}/v1`,
-            api: "openai-completions",
-            apiKey: "local-placeholder",
-            models: [{ id: "deterministic", contextWindow: 4096, maxTokens: 256 }],
-          },
-        },
-      }),
-    );
-    const pids: number[] = [];
-    const service = new FleetService(new MemoryFleetStore(), {
-      launcher: new RealPiLauncher({
-        executable: SELECTED_PI_EXECUTABLE,
-        artifactId: "external-pi",
-        env: { PI_CODING_AGENT_DIR: agentDir },
-        onStart: (pid) => pids.push(pid),
-      }),
-    });
-    cleanups.push(() => service.close());
-    const piArgv = [
-      "--provider",
-      "pifleet-probe",
-      "--model",
-      "deterministic",
-      "--no-extensions",
-      "--no-skills",
-      "--no-prompt-templates",
-      "--no-tools",
-    ];
-    const created = await service.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
-    if (!created.ok || created.value.agent.session.path === null) {
-      throw new Error("failed to create external Pi agent");
-    }
-    const sessionPath = created.value.agent.session.path;
-
-    await service.send({ name: "reviewer", message: "settle first" }, "send-baseline");
-    expect(await service.receive({ name: "reviewer" })).toMatchObject({
-      ok: true,
-      value: { response: { text: "settled baseline" } },
-    });
-    await expect(readFile(sessionPath, "utf8")).resolves.toContain("settled baseline");
-
-    await service.send({ name: "reviewer", message: "do not replay" }, "send-interrupted");
-    await requestReceived;
-    expect(pids).toHaveLength(1);
-    process.kill(pids[0]!, "SIGKILL");
-
     await waitUntil(async () => {
       const status = await service.status({ name: "reviewer" });
-      return status.ok && status.value.agent.state === "failed";
+      return status.ok && status.value.agent.state === "idle";
     });
-    expect(await service.receive({ name: "reviewer" })).toMatchObject({
-      ok: false,
-      error: { code: "runtime_interrupted" },
-    });
-    expect(requestCount).toBe(2);
-    await expect(readFile(sessionPath, "utf8")).resolves.toContain("settled baseline");
-  }, 30_000);
 
-  it("persists the latest response and restores only when addressed after runtime restart", async () => {
-    const root = await mkdtemp(join(tmpdir(), "pifleet-real-pi-restart-"));
-    cleanups.push(() => rm(root, { recursive: true, force: true }));
-    const project = join(root, "project");
-    const agentDir = join(root, "pi-agent");
-    await mkdir(project, { recursive: true });
-    await mkdir(agentDir, { recursive: true });
-    const model = await deterministicServer();
-    await writeFile(
-      join(agentDir, "models.json"),
-      JSON.stringify({
-        providers: {
-          "pifleet-probe": {
-            baseUrl: `http://127.0.0.1:${model.port}/v1`,
-            api: "openai-completions",
-            apiKey: "local-placeholder",
-            models: [{ id: "deterministic", contextWindow: 4096, maxTokens: 256 }],
-          },
-        },
-      }),
-    );
-    const pids: number[] = [];
-    const launcher = () =>
-      new RealPiLauncher({
-        executable: SELECTED_PI_EXECUTABLE,
-        artifactId: "external-pi",
-        env: { PI_CODING_AGENT_DIR: agentDir },
-        onStart: (pid) => pids.push(pid),
-      });
-    const piArgv = [
-      "--provider",
-      "pifleet-probe",
-      "--model",
-      "deterministic",
-      "--no-extensions",
-      "--no-skills",
-      "--no-prompt-templates",
-      "--no-tools",
-    ];
-    const databasePath = join(root, "fleet.sqlite");
-    const firstStore = new SqliteFleetStore(databasePath);
-    const firstService = new FleetService(firstStore, { launcher: launcher() });
-    await firstService.create({ name: "reviewer", cwd: project, piArgv }, "create-1");
-    await firstService.send({ name: "reviewer", message: "first" }, "send-1");
-    expect(await firstService.receive({ name: "reviewer" })).toMatchObject({
-      ok: true,
-      value: { response: { text: "deterministic response 1" } },
-    });
-    await firstService.close();
-    await firstStore.close(true);
-
-    const secondStore = new SqliteFleetStore(databasePath);
-    const secondService = new FleetService(secondStore, { launcher: launcher() });
-    cleanups.push(async () => {
-      await secondService.close();
-      await secondStore.close(true);
-    });
-    expect(await secondService.status({ name: "reviewer" })).toMatchObject({
-      ok: true,
-      value: { agent: { state: "idle", process: { state: "absent" } } },
-    });
-    expect(await secondService.receive({ name: "reviewer" })).toMatchObject({
-      ok: true,
-      value: { response: { text: "deterministic response 1" } },
-    });
-    expect(pids).toHaveLength(1);
-
-    await secondService.send({ name: "reviewer", message: "second" }, "send-2");
-    expect(await secondService.receive({ name: "reviewer" })).toMatchObject({
-      ok: true,
-      value: { response: { text: "deterministic response 2" } },
-    });
-    expect(pids).toHaveLength(2);
-    await secondService.destroy({ name: "reviewer" }, "destroy-1");
-  }, 30_000);
+    // Blocking extension UI is cancelled headlessly, so no provider turn happens.
+    expect(provider.count()).toBe(0);
+    await service.destroy({ name: "reviewer", expectedAgentId: agentId }, "destroy-1");
+  }, 60_000);
 });

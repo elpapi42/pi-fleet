@@ -34,6 +34,40 @@ export class MemoryFleetStore implements FleetStore {
     this.#agents.set(agent.summary.name, agent);
   }
 
+  async rollbackProvisionalCreate(
+    name: string,
+    completedOperation: StoredOperation,
+  ): Promise<StoredAgent | null> {
+    const existing = this.#agents.get(name) ?? null;
+    const pending = this.#operations.get(completedOperation.operationId);
+    if (existing === null) return null;
+    if (
+      pending?.state !== "pending" ||
+      pending.method !== "create" ||
+      pending.targetAgent?.id !== existing.summary.id ||
+      completedOperation.state !== "completed" ||
+      completedOperation.method !== "create" ||
+      completedOperation.fingerprint !== pending.fingerprint
+    ) {
+      throw new Error("Provisional create rollback does not match the pending operation");
+    }
+    this.#agents.delete(name);
+    for (const [id, operation] of this.#operations) {
+      if (operation.targetAgent?.id === existing.summary.id) this.#operations.delete(id);
+    }
+    for (const [id, send] of this.#sends) {
+      if (send.agentId === existing.summary.id) this.#sends.delete(id);
+    }
+    for (const [id, compact] of this.#compacts) {
+      if (compact.agentId === existing.summary.id) this.#compacts.delete(id);
+    }
+    for (const [id, incarnation] of this.#incarnations) {
+      if (incarnation.agentId === existing.summary.id) this.#incarnations.delete(id);
+    }
+    this.#operations.set(completedOperation.operationId, completedOperation);
+    return existing;
+  }
+
   async deleteAgent(name: string): Promise<StoredAgent | null> {
     const existing = this.#agents.get(name) ?? null;
     if (existing !== null) this.#agents.delete(name);

@@ -17,7 +17,7 @@ function response(id, command, data = {}) {
 lines.on("line", (line) => {
   const request = JSON.parse(line);
   requests += 1;
-  if ((requests === 1 || mode === "idle") && request.type === "get_state") {
+  if ((requests === 1 || mode === "idle" || mode === "semantic") && request.type === "get_state") {
     process.stdout.write(
       `${response(request.id, "get_state", {
         isStreaming: false,
@@ -26,6 +26,19 @@ lines.on("line", (line) => {
         sessionFile: process.env.PIFLEET_TEST_SESSION_PATH ?? "/tmp/scripted-pi.jsonl",
         sessionId: "scripted-pi",
       })}\n`,
+    );
+    return;
+  }
+
+  if (mode === "semantic" && (request.type === "prompt" || request.type === "follow_up")) {
+    process.stdout.write(
+      `${response(request.id, request.type)}\n` +
+        `${JSON.stringify({ type: "agent_start" })}\n` +
+        `${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "working" } })}\n` +
+        `${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "working" } })}\n` +
+        `${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "done" } })}\n` +
+        `${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } })}\n` +
+        `${JSON.stringify({ type: "agent_settled" })}\n`,
     );
     return;
   }
@@ -39,6 +52,23 @@ lines.on("line", (line) => {
         estimatedTokensAfter: 300,
       })}\n`,
     );
+    return;
+  }
+
+  if (mode === "expect-follow-up") {
+    if (request.type !== "follow_up") {
+      process.stdout.write(
+        `${JSON.stringify({
+          id: request.id,
+          type: "response",
+          command: request.type,
+          success: false,
+          error: "expected follow_up",
+        })}\n`,
+      );
+      return;
+    }
+    process.stdout.write(`${response(request.id, "follow_up")}\n`);
     return;
   }
 
@@ -89,6 +119,12 @@ lines.on("line", (line) => {
     case "oversized":
       process.stdout.write(`${JSON.stringify({ payload: "x".repeat(16_384) })}\n`);
       return;
+    case "split-oversized": {
+      const frame = Buffer.from(`${JSON.stringify({ payload: "x".repeat(16_384) })}\n`);
+      process.stdout.write(frame.subarray(0, 8_192));
+      setImmediate(() => process.stdout.write(frame.subarray(8_192)));
+      return;
+    }
     case "reject":
       process.stdout.write(
         `${JSON.stringify({

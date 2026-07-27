@@ -10,6 +10,7 @@ interface Manifest {
   schemaVersion: number;
   package: { name: string; version: string };
   piRuntime: { mode: "external" };
+  runtime: { protocolVersion: 3; journalSchemaVersion: 3; clientExport: "./client" };
   files: Array<{ path: string; bytes: number; sha256: string }>;
   dependencies: Array<{ path: string; name: string; version: string }>;
 }
@@ -33,6 +34,13 @@ async function fixture(applicationRoot?: string): Promise<{
   const packageJson = {
     name: "@elpapi42/pi-fleet",
     version: "9.9.9",
+    pifleet: { protocolVersion: 3, journalSchemaVersion: 3, clientExport: "./client" },
+    exports: {
+      "./client": {
+        types: "./dist/client/index.d.ts",
+        import: "./dist/client.mjs",
+      },
+    },
     dependencies: { "fixture-dep": "1.0.0" },
   };
   const contents: Record<string, string> = {
@@ -41,7 +49,12 @@ async function fixture(applicationRoot?: string): Promise<{
     "bin/pifleet-runtime.mjs": "#!/usr/bin/env node\n",
     "dist/cli.mjs": "export {};\n",
     "dist/runtime.mjs": "export {};\n",
-    "dist/sqlite-worker.mjs": "export {};\n",
+    "dist/journal-sqlite-worker.mjs": "export {};\n",
+    "dist/client.mjs": "export {};\n",
+    "dist/client-meta.json": "{}\n",
+    "dist/client/index.d.ts": "export * from './sdk-facade.js';\nexport * from './contracts.js';\n",
+    "dist/client/sdk-facade.d.ts": "export interface PiFleetClient {}\n",
+    "dist/client/contracts.d.ts": "export type SemanticEvent = never;\n",
   };
   const files: Manifest["files"] = [];
   for (const [path, value] of Object.entries(contents)) {
@@ -66,6 +79,7 @@ async function fixture(applicationRoot?: string): Promise<{
     schemaVersion: 4,
     package: { name: "@elpapi42/pi-fleet", version: "9.9.9" },
     piRuntime: { mode: "external" },
+    runtime: { protocolVersion: 3, journalSchemaVersion: 3, clientExport: "./client" },
     files,
     dependencies: [{ path: "node_modules/fixture-dep", name: "fixture-dep", version: "1.0.0" }],
   };
@@ -95,6 +109,11 @@ describe("runtime materialization manifest validation", () => {
   it.each([
     ["invalid schema", (manifest: Manifest) => (manifest.schemaVersion = 2)],
     ["package mismatch", (manifest: Manifest) => (manifest.package.version = "other")],
+    [
+      "protocol mismatch",
+      (manifest: Manifest) =>
+        ((manifest.runtime as { protocolVersion: number }).protocolVersion = 2),
+    ],
     ["missing required artifact", (manifest: Manifest) => manifest.files.pop()],
     ["absolute path", (manifest: Manifest) => (manifest.files[0]!.path = "/tmp/escape")],
     ["parent path", (manifest: Manifest) => (manifest.files[0]!.path = "../escape")],
@@ -122,6 +141,34 @@ describe("runtime materialization manifest validation", () => {
     await expect(lstat(join(testFixture.applicationRoot, "releases"))).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("rejects a missing transitive client declaration", async () => {
+    const testFixture = await fixture();
+    testFixture.manifest.files = testFixture.manifest.files.filter(
+      (file) => file.path !== "dist/client/contracts.d.ts",
+    );
+
+    await expect(materialize(testFixture)).rejects.toThrow(
+      /missing required artifact dist\/client\/contracts\.d\.ts/i,
+    );
+  });
+
+  it("rejects a mismatched client export before materialization", async () => {
+    const testFixture = await fixture();
+    const packagePath = join(testFixture.sourceRoot, "package.json");
+    const packageJson = JSON.parse(await readFile(packagePath, "utf8")) as {
+      exports: Record<string, { types: string; import: string }>;
+    };
+    packageJson.exports["./client"] = {
+      types: "./dist/client/wrong.d.ts",
+      import: "./dist/client.mjs",
+    };
+    await writeFile(packagePath, `${JSON.stringify(packageJson)}\n`);
+
+    await expect(materialize(testFixture)).rejects.toThrow(
+      /package identity|client export|package\.json/i,
+    );
   });
 
   it("rejects a missing installed direct dependency", async () => {

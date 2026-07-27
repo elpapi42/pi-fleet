@@ -1,11 +1,23 @@
-import { PiCompactionError, type PiCompactionResult, type PiProcess } from "../pi/process.js";
+import { observeSession } from "../pi/launch-profile.js";
+import {
+  PiCompactionError,
+  type PiCompactionResult,
+  type PiDeliveryMode,
+  type PiProcess,
+  type PiState,
+} from "../pi/process.js";
 import { waitForProcessGroupExit } from "../platform/runtime/process-tree.js";
 import type { FleetStore, StoredAgent } from "../store/fleet-store.js";
 
 export type CoordinatorStopReason = "destroy" | "runtime_shutdown" | "idle_release";
 
+export interface IdleBoundary {
+  readonly agent: StoredAgent;
+  readonly idleEventPosition: number;
+}
+
 interface IdleWaiter {
-  readonly resolve: () => void;
+  readonly resolve: (boundary: IdleBoundary) => void;
   readonly reject: (error: Error) => void;
   readonly signal?: AbortSignal;
   readonly onAbort?: () => void;
@@ -17,6 +29,7 @@ export class AgentCoordinator {
   #stopReason: CoordinatorStopReason | null = null;
   #handlingFailure = false;
   #mayBeWorking = false;
+  #idleEventPosition: number | null = null;
   #unsubscribeFrame: () => void;
   #unsubscribeExit: () => void;
 
@@ -27,6 +40,7 @@ export class AgentCoordinator {
     readonly incarnationId: string,
     private readonly now: () => string,
     private readonly onProcessExit: (error: Error | null) => void,
+    private readonly onIdle?: (agent: StoredAgent) => Promise<number>,
   ) {
     this.#unsubscribeFrame = process.onFrame((frame) => {
       if (frame.type === "agent_start") this.#queueEvent(() => this.#markWorking());
@@ -41,15 +55,45 @@ export class AgentCoordinator {
     return this.agent;
   }
 
-  send(message: string): Promise<void> {
+  get idleEventPosition(): number | null {
+    return this.#idleEventPosition;
+  }
+
+  /**
+   * Delivers caller input to Pi.
+   *
+   * Follow-up delivery means "wait until the current run finishes", which Pi only
+   * honours while a turn is active: a follow-up queued against an authoritatively
+   * idle session would wait for a turn that may never start. Idle follow-up input
+   * is therefore delivered as an ordinary prompt, matching what typing into an idle
+   * Pi session does, while active follow-up keeps its queued semantics.
+   */
+  send(message: string, delivery: PiDeliveryMode = "steer"): Promise<void> {
     return this.#enqueue(async () => {
+      const queueFollowUp = delivery === "followUp" && (await this.#isActive());
       this.#mayBeWorking = true;
       try {
-        await this.process.prompt(message);
+        if (queueFollowUp) await this.process.followUp(message);
+        else await this.process.prompt(message);
       } catch (error: unknown) {
         this.#mayBeWorking = false;
         throw error;
       }
+    });
+  }
+
+  async #isActive(): Promise<boolean> {
+    if (this.#mayBeWorking) return true;
+    const state = await this.process.getState();
+    return state.isStreaming || state.isCompacting || state.pendingMessageCount !== 0;
+  }
+
+  reconcileState(): Promise<PiState> {
+    return this.#enqueue(async () => {
+      const state = await this.process.getState();
+      this.#applyObservedState(state);
+      await this.store.putAgent(this.agent);
+      return state;
     });
   }
 
@@ -88,15 +132,27 @@ export class AgentCoordinator {
     });
   }
 
-  async waitForIdle(signal?: AbortSignal): Promise<StoredAgent> {
-    let wait: Promise<void> | null = null;
+  async registerIdleWaiter(
+    signal?: AbortSignal,
+  ): Promise<{ readonly completion: Promise<IdleBoundary> }> {
+    let wait: Promise<IdleBoundary> | null = null;
     await this.#enqueue(async () => {
-      if (!this.#mayBeWorking && this.agent.summary.state === "idle") return;
       if (signal?.aborted === true) throw new Error("Receive cancelled");
+      if (
+        !this.#mayBeWorking &&
+        this.agent.summary.state === "idle" &&
+        this.#idleEventPosition !== null
+      ) {
+        wait = Promise.resolve({
+          agent: this.agent,
+          idleEventPosition: this.#idleEventPosition,
+        });
+        return;
+      }
 
-      let resolveIdle!: () => void;
+      let resolveIdle!: (boundary: IdleBoundary) => void;
       let rejectIdle!: (error: Error) => void;
-      const pending = new Promise<void>((resolve, reject) => {
+      const pending = new Promise<IdleBoundary>((resolve, reject) => {
         resolveIdle = resolve;
         rejectIdle = reject;
       });
@@ -124,15 +180,20 @@ export class AgentCoordinator {
         await this.#markIdle();
       }
     });
-    if (wait !== null) await wait;
-    await this.#lane;
-    return this.agent;
+    if (wait === null) throw new Error("Idle waiter registration failed");
+    return { completion: wait };
+  }
+
+  async waitForIdle(signal?: AbortSignal): Promise<IdleBoundary> {
+    const registered = await this.registerIdleWaiter(signal);
+    return registered.completion;
   }
 
   async stop(reason: CoordinatorStopReason): Promise<void> {
     this.#stopReason = reason;
     await this.store.putIncarnation({
       incarnationId: this.incarnationId,
+      agentId: this.agent.summary.id,
       agentName: this.agent.summary.name,
       pid: this.process.pid,
       state: "stopping",
@@ -153,6 +214,7 @@ export class AgentCoordinator {
       await this.store.putAgent(this.agent);
       await this.store.putIncarnation({
         incarnationId: this.incarnationId,
+        agentId: this.agent.summary.id,
         agentName: this.agent.summary.name,
         pid: this.process.pid,
         state: "cleanup_uncertain",
@@ -181,6 +243,7 @@ export class AgentCoordinator {
       await this.store.putAgent(this.agent);
       await this.store.putIncarnation({
         incarnationId: this.incarnationId,
+        agentId: this.agent.summary.id,
         agentName: this.agent.summary.name,
         pid: this.process.pid,
         state: "cleanup_uncertain",
@@ -194,6 +257,7 @@ export class AgentCoordinator {
       this.agent.summary.state === "working" || this.agent.summary.state === "restoring";
     const destroyed = this.#stopReason === "destroy";
     const interrupted =
+      this.agent.summary.state === "failed" ||
       (error !== null && this.#stopReason === null) ||
       (wasActive && this.#stopReason !== "destroy");
     const state = destroyed ? "destroying" : interrupted ? "failed" : "idle";
@@ -209,6 +273,7 @@ export class AgentCoordinator {
     await this.store.putAgent(this.agent);
     await this.store.putIncarnation({
       incarnationId: this.incarnationId,
+      agentId: this.agent.summary.id,
       agentName: this.agent.summary.name,
       pid: this.process.pid,
       state: "gone",
@@ -223,6 +288,7 @@ export class AgentCoordinator {
 
   async #markWorking(): Promise<void> {
     this.#mayBeWorking = true;
+    this.#idleEventPosition = null;
     this.agent = {
       ...this.agent,
       summary: {
@@ -236,12 +302,11 @@ export class AgentCoordinator {
   }
 
   async #markIdle(): Promise<void> {
-    const latestAssistantText = await this.process.getLastAssistantText();
-    this.#mayBeWorking = false;
-    this.agent = {
+    const state = await this.process.getState();
+    if (state.isStreaming || state.isCompacting || state.pendingMessageCount !== 0) return;
+    this.#applyObservedState(state);
+    const idleAgent: StoredAgent = {
       ...this.agent,
-      latestAssistantText,
-      responseObservedAt: latestAssistantText === null ? this.agent.responseObservedAt : this.now(),
       summary: {
         ...this.agent.summary,
         state: "idle",
@@ -249,8 +314,41 @@ export class AgentCoordinator {
         error: undefined,
       },
     };
-    await this.store.putAgent(this.agent);
-    this.#resolveIdleWaiters();
+    try {
+      const idleEventPosition = (await this.onIdle?.(idleAgent)) ?? null;
+      await this.store.putAgent(idleAgent);
+      this.agent = idleAgent;
+      this.#idleEventPosition = idleEventPosition;
+      this.#mayBeWorking = false;
+      this.#resolveIdleWaiters();
+    } catch (error: unknown) {
+      const failure = error instanceof Error ? error : new Error("Idle durability failed");
+      this.agent = {
+        ...idleAgent,
+        summary: {
+          ...idleAgent.summary,
+          state: "failed",
+          error: { code: "storage_unavailable" },
+        },
+      };
+      await this.store.putAgent(this.agent).catch(() => undefined);
+      this.#rejectIdleWaiters(failure);
+      throw failure;
+    }
+  }
+
+  #applyObservedState(state: PiState): void {
+    this.agent = {
+      ...this.agent,
+      launch: observeSession(this.agent.launch, {
+        path: state.sessionFile ?? null,
+        id: state.sessionId,
+      }),
+      summary: {
+        ...this.agent.summary,
+        session: { path: state.sessionFile ?? null, id: state.sessionId },
+      },
+    };
   }
 
   #resolveIdleWaiters(): void {
@@ -258,7 +356,10 @@ export class AgentCoordinator {
       if (waiter.signal !== undefined && waiter.onAbort !== undefined) {
         waiter.signal.removeEventListener("abort", waiter.onAbort);
       }
-      waiter.resolve();
+      waiter.resolve({
+        agent: this.agent,
+        idleEventPosition: this.#idleEventPosition ?? 0,
+      });
     }
     this.#idleWaiters.clear();
   }

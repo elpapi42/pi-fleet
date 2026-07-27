@@ -31,6 +31,7 @@ export async function installUserService(options: {
   readonly home?: string;
   readonly uid?: number;
   readonly replaceExisting?: boolean;
+  readonly ownershipPreflight?: () => Promise<void>;
 }): Promise<string> {
   const home = options.home ?? homedir();
   if (options.platform === "linux") {
@@ -38,9 +39,13 @@ export async function installUserService(options: {
     const effectiveDefinition = await preserveInstalledStateRoot(path, options.definition, "linux");
     const definition = systemdUserUnit(effectiveDefinition);
     const needsRepair = await serviceDefinitionNeedsRepair(path, definition, effectiveDefinition);
-    if (needsRepair && options.replaceExisting === false && (await exists(path))) {
-      throw new ServiceRepairDeferredError();
-    }
+    const installed = await exists(path);
+    await preflightInstalledReplacement({
+      installed,
+      needsRepair,
+      replaceExisting: options.replaceExisting,
+      ownershipPreflight: options.ownershipPreflight,
+    });
     if (needsRepair) {
       await atomicWrite(path, definition);
       await options.executor.run("systemctl", ["--user", "daemon-reload"]);
@@ -60,10 +65,14 @@ export async function installUserService(options: {
     );
     const definition = launchdAgentPlist(effectiveDefinition);
     const needsRepair = await serviceDefinitionNeedsRepair(path, definition, effectiveDefinition);
-    if (needsRepair && options.replaceExisting === false && (await exists(path))) {
-      throw new ServiceRepairDeferredError();
-    }
-    await atomicWrite(path, definition);
+    const installed = await exists(path);
+    await preflightInstalledReplacement({
+      installed,
+      needsRepair,
+      replaceExisting: options.replaceExisting,
+      ownershipPreflight: options.ownershipPreflight,
+    });
+    if (needsRepair) await atomicWrite(path, definition);
     const domain = `gui/${options.uid ?? process.getuid?.() ?? 0}`;
     await options.executor.run("launchctl", ["bootout", domain, path]).catch(() => undefined);
     await options.executor.run("launchctl", ["bootstrap", domain, path]);
@@ -114,6 +123,19 @@ export async function serviceDefinitionNeedsRepair(
   } catch {
     return true;
   }
+}
+
+async function preflightInstalledReplacement(options: {
+  readonly installed: boolean;
+  readonly needsRepair: boolean;
+  readonly replaceExisting: boolean | undefined;
+  readonly ownershipPreflight: (() => Promise<void>) | undefined;
+}): Promise<void> {
+  if (!options.installed || !options.needsRepair) return;
+  if (options.replaceExisting !== true || options.ownershipPreflight === undefined) {
+    throw new ServiceRepairDeferredError();
+  }
+  await options.ownershipPreflight();
 }
 
 async function preserveInstalledStateRoot(

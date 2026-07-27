@@ -32,8 +32,6 @@ describe("coordinator event failure containment", () => {
         observedSession: { path: "/tmp/session.jsonl", id: "session" },
         restorePiArgv: ["--session", "/tmp/session.jsonl"],
       },
-      latestAssistantText: null,
-      responseObservedAt: null,
     };
     await store.createAgent(agent);
     let frameListener: ((frame: { type: string }) => void) | undefined;

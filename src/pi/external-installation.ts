@@ -5,6 +5,8 @@ import { createReadStream } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 
+import type { PiRuntimeIdentity } from "../protocol/pi-identity.js";
+
 const VERSION_TIMEOUT_MS = 3_000;
 const MAX_VERSION_OUTPUT_BYTES = 4 * 1024;
 
@@ -31,6 +33,17 @@ export interface PiInstallation {
   readonly version: string;
   readonly nodePath: string;
   readonly fingerprint: string;
+}
+
+export function installationIdentity(installation: PiInstallation): PiRuntimeIdentity {
+  return {
+    mode: "external",
+    selectedPath: installation.selectedPath,
+    nodePath: installation.nodePath,
+    realPath: installation.realPath,
+    version: installation.version,
+    fingerprint: installation.fingerprint,
+  };
 }
 
 export interface ExternalPiResolverOptions {

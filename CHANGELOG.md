@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Added
+
+- Added the side-effect-free `@elpapi42/pi-fleet/client` TypeScript SDK inside the existing package, with direct client methods, UUID-bound agent handles, steering and follow-up input, generated declarations, stable content-safe errors, and continuity-safe receive reconnection.
+- Added durable semantic receive with initial and event cursors and exactly six lifecycle types: thinking, assistant-message, and tool-execution started/finished.
+- Added byte-faithful durable Pi stdout journaling, bounded replay, content-free storage diagnostics, passive WAL checkpointing, and bounded incremental reclamation.
+
+### Changed
+
+- Replaced idle-gated latest-response receive with a continuous passive semantic event stream. CLI `receive --until-idle` is now the explicit live one-off projection; historical replay uses `--after` or `--from-start`.
+- Added `send --follow-up`; steering remains the default. Follow-up delivery is best effort: Pi queues
+  follow-up input only for a run already in flight, so idle follow-up input is delivered as an ordinary
+  prompt, and input accepted while a turn is ending may be queued against a run that never resumes.
+- Bound every SDK handle, CLI invocation, durable operation, send, incarnation, cursor, and recovery path to the immutable agent creation UUID so same-name recreation cannot inherit stale work.
+- Made durable recording fail closed and require explicit continuation after an unclean-runtime observation gap.
+- Limited this release scope to Linux x64 with external Pi 0.82.1.
+
+### Removed
+
+- Removed the public raw `watch` command and its protocol, limits, errors, and compatibility shims.
+- Removed finite latest-assistant-response retrieval and the old latest-response storage model.
+
+### Upgrade note
+
+- This beta transition transactionally resets all prior pi-fleet-owned agents, operations, responses, and journal state without deleting native Pi session files. Stop old supervision and prove the old runtime and Pi process trees absent before activation. After the reset, older binaries are not a supported rollback path.
+
 ## 0.1.0-beta.10 — 2026-07-26
 
 Corrects pi-fleet's execution-ownership boundary: pi-fleet now orchestrates the user's separately installed Pi executable instead of distributing a second managed Pi runtime.

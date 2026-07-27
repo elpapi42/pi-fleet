@@ -5,8 +5,9 @@ import type {
   FleetClient,
   FleetClientError,
   MutationOptions,
-  RequestOptions,
 } from "../../src/client/fleet-client.js";
+import { createPiFleetClient } from "../../src/client/sdk-facade.js";
+import { FleetClientSdkTransport } from "../../src/client/sdk-transport.js";
 import { runCli, type CliDependencies } from "../../src/entry/cli.js";
 import { err, ok } from "../../src/shared/result.js";
 
@@ -23,17 +24,19 @@ function createHarness(client: FleetClient, stdinText = "") {
   let stdout = "";
   let stderr = "";
   let operation = 0;
+  const operationIds = () => ({
+    operationId: `operation-${++operation}`,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
   const dependencies: CliDependencies = {
-    client,
+    client: createPiFleetClient(
+      new FleetClientSdkTransport(client, operationIds, { reconnectDelayMs: 0 }),
+    ),
     cwd: "/workspace",
     stdin: Readable.from([stdinText]),
     stdout: writable((chunk) => (stdout += chunk)),
     stderr: writable((chunk) => (stderr += chunk)),
     signal: new AbortController().signal,
-    operationIds: () => ({
-      operationId: `operation-${++operation}`,
-      createdAt: "2026-01-01T00:00:00.000Z",
-    }),
   };
   return { dependencies, output: () => ({ stdout, stderr }) };
 }
@@ -44,12 +47,11 @@ function fakeClient(overrides: Partial<FleetClient> = {}): FleetClient {
   return {
     create: unavailable,
     send: unavailable,
-    receive: unavailable,
-    status: unavailable,
-    list: unavailable,
-    watch: async function* () {
+    receive: async function* () {
       yield err<FleetClientError>({ code: "internal_error", message: "unexpected" });
     },
+    status: async () => ok({ schemaVersion: 1, type: "agent.status", agent }),
+    list: unavailable,
     destroy: unavailable,
     compact: unavailable,
     ...overrides,
@@ -127,48 +129,29 @@ describe("public CLI contract", () => {
     expect(harness.output().stderr).toBe("");
   });
 
-  it("maps receive timeout and human response output", async () => {
-    let request: RequestOptions | undefined;
+  it("streams receive readiness on stderr and semantic events on stdout", async () => {
+    const event = {
+      id: "event-1",
+      activityId: "activity-1",
+      cursor: "cursor-1",
+      agentId: agent.id,
+      epoch: 0,
+      sourceRawPosition: 1,
+      observedAt: "2026-01-01T00:00:00.000Z",
+      type: "assistant.message.started",
+    } as const;
     const client = fakeClient({
-      receive: async (_input, options) => {
-        request = options;
-        return ok({
-          schemaVersion: 1,
-          type: "response",
-          agent: { id: agent.id, name: agent.name },
-          response: { text: "latest response", observedAt: "2026-01-01T00:00:00.000Z" },
-        });
+      receive: async function* () {
+        yield ok({ type: "ready", cursor: "cursor-0" as never });
+        yield ok({ type: "event", cursor: "cursor-1" as never, event: event as never });
       },
     });
     const harness = createHarness(client);
 
-    expect(
-      await runCli(["receive", "reviewer", "--timeout", "0", "--human"], harness.dependencies),
-    ).toBe(0);
-    expect(request?.timeoutMs).toBe(0);
-    expect(harness.output()).toEqual({ stderr: "", stdout: "latest response\n" });
-  });
-
-  it("writes readiness only to stderr and raw Pi RPC bytes only to stdout", async () => {
-    const client = fakeClient({
-      watch: async function* () {
-        yield ok({ type: "ready" });
-        yield ok({
-          type: "chunk",
-          bytes: new TextEncoder().encode(
-            '{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"why"}}\n',
-          ),
-        });
-        yield ok({ type: "chunk", bytes: Buffer.from("partial") });
-      },
-    });
-    const harness = createHarness(client);
-
-    expect(await runCli(["watch", "reviewer"], harness.dependencies)).toBe(0);
+    expect(await runCli(["receive", "reviewer", "--until-idle"], harness.dependencies)).toBe(0);
     expect(harness.output()).toEqual({
-      stderr: `${JSON.stringify({ schemaVersion: 1, type: "watch.ready", agent: { name: "reviewer" } })}\n`,
-      stdout:
-        '{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"why"}}\npartial',
+      stderr: `${JSON.stringify({ schemaVersion: 1, type: "receive.ready", cursor: "cursor-0" })}\n`,
+      stdout: `${JSON.stringify(event)}\n`,
     });
   });
 
@@ -182,18 +165,6 @@ describe("public CLI contract", () => {
       type: "error",
       error: { code: "invalid_arguments" },
     });
-  });
-
-  it("reserves exit 124 for receive timeout", async () => {
-    const client = fakeClient({
-      receive: async () => err({ code: "timeout", message: "Timed out" }),
-    });
-    const harness = createHarness(client);
-
-    expect(await runCli(["receive", "reviewer", "--timeout", "1ms"], harness.dependencies)).toBe(
-      124,
-    );
-    expect(harness.output().stdout).toBe("");
   });
 
   it("supports compact through JSON and human public formats", async () => {
@@ -254,10 +225,24 @@ describe("public CLI contract", () => {
     });
   });
 
-  it("rejects human formatting for raw watch", async () => {
+  it("rejects historical boundaries with the live-only until-idle projection", async () => {
+    for (const argv of [
+      ["receive", "reviewer", "--after", "cursor", "--until-idle"],
+      ["receive", "reviewer", "--from-start", "--until-idle"],
+    ]) {
+      const harness = createHarness(fakeClient());
+      expect(await runCli(argv, harness.dependencies)).toBe(1);
+      expect(harness.output().stdout).toBe("");
+      expect(JSON.parse(harness.output().stderr)).toMatchObject({
+        error: { code: "invalid_arguments" },
+      });
+    }
+  });
+
+  it("rejects the removed watch command", async () => {
     const harness = createHarness(fakeClient());
 
-    expect(await runCli(["watch", "reviewer", "--human"], harness.dependencies)).toBe(1);
+    expect(await runCli(["watch", "reviewer"], harness.dependencies)).toBe(1);
     expect(harness.output().stdout).toBe("");
     expect(JSON.parse(harness.output().stderr)).toMatchObject({
       error: { code: "invalid_arguments" },

@@ -1,6 +1,5 @@
-import { once } from "node:events";
-import { chmod, lstat, mkdir, unlink } from "node:fs/promises";
-import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { chmod, mkdir, unlink } from "node:fs/promises";
+import { createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
 
 import type {
@@ -12,39 +11,79 @@ import type {
   SendInput,
   StatusInput,
 } from "../client/fleet-client.js";
+import type { ReceiveStart } from "../client/agent-target.js";
 import { parseProtocolRequest } from "../protocol/validation.js";
-import { readJsonLines, writeJsonLine } from "../protocol/jsonl.js";
+import { writeJsonLine, readJsonLines } from "../protocol/jsonl.js";
 import type { PiRuntimeIdentity } from "../protocol/pi-identity.js";
-import { MAX_PROTOCOL_FRAME_BYTES, PROTOCOL_VERSION } from "../protocol/version.js";
+import { segmentSemanticEvent } from "../protocol/semantic-segmentation.js";
+import { PROTOCOL_VERSION } from "../protocol/version.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../shared/runtime-limits.js";
-import { err, type Result } from "../shared/result.js";
+import type { Result } from "../shared/result.js";
 import type { FleetService } from "./fleet-service.js";
-import { RpcWatchError } from "./rpc-watch-hub.js";
+import type { JournalRuntimeComposition } from "./journal-runtime.js";
+import { ReceiveObservationUncertainError } from "./receive-pager.js";
+import type { ReceiveCursor, SemanticEvent } from "./semantic-events.js";
+import {
+  inspectControlSocketOwnership,
+  RuntimeOwnershipBlockedError,
+} from "../platform/shared/runtime-ownership.js";
 
 export interface ControlServer {
   readonly socketPath: string;
   close(): Promise<void>;
 }
 
+interface ControlLimits {
+  readonly maxProtocolFrameBytes: number;
+  readonly maxSemanticFrameBytes: number;
+  readonly maxSemanticSegments: number;
+  readonly maxSemanticEventBytes: number;
+  readonly maxSocketWriteMs: number;
+}
+
 export async function startControlServer(options: {
   readonly socketPath: string;
   readonly service: FleetService | Promise<FleetService>;
-  readonly limits?: Pick<RuntimeLimits, "maxProtocolFrameBytes">;
+  readonly journal?: () => Promise<JournalRuntimeComposition>;
+  readonly limits?: Partial<
+    Pick<
+      RuntimeLimits,
+      | "maxProtocolFrameBytes"
+      | "maxSemanticFrameBytes"
+      | "maxSemanticSegments"
+      | "maxPiFrameBytes"
+      | "maxSocketWriteMs"
+    >
+  >;
 }): Promise<ControlServer> {
   await mkdir(dirname(options.socketPath), { recursive: true, mode: 0o700 });
   await prepareSocketPath(options.socketPath);
-
   const service = Promise.resolve(options.service);
-  const maxFrameBytes =
-    options.limits?.maxProtocolFrameBytes ?? DEFAULT_RUNTIME_LIMITS.maxProtocolFrameBytes;
-  const server = createServer((socket) => handleConnection(socket, service, maxFrameBytes));
+  const limits = {
+    maxProtocolFrameBytes:
+      options.limits?.maxProtocolFrameBytes ?? DEFAULT_RUNTIME_LIMITS.maxProtocolFrameBytes,
+    maxSemanticFrameBytes:
+      options.limits?.maxSemanticFrameBytes ?? DEFAULT_RUNTIME_LIMITS.maxSemanticFrameBytes,
+    maxSemanticSegments:
+      options.limits?.maxSemanticSegments ?? DEFAULT_RUNTIME_LIMITS.maxSemanticSegments,
+    maxSemanticEventBytes:
+      options.limits?.maxPiFrameBytes ?? DEFAULT_RUNTIME_LIMITS.maxPiFrameBytes,
+    maxSocketWriteMs: options.limits?.maxSocketWriteMs ?? DEFAULT_RUNTIME_LIMITS.maxSocketWriteMs,
+  };
+  const server = createServer((socket) =>
+    handleConnection(
+      socket,
+      service,
+      options.journal ?? (() => Promise.reject(new Error("Semantic receive is unavailable"))),
+      limits,
+    ),
+  );
   server.listen(options.socketPath);
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once("listening", resolveListen);
     server.once("error", rejectListen);
   });
   await chmod(options.socketPath, 0o600);
-
   return {
     socketPath: options.socketPath,
     async close() {
@@ -59,7 +98,8 @@ export async function startControlServer(options: {
 function handleConnection(
   socket: Socket,
   service: Promise<FleetService>,
-  maxFrameBytes: number,
+  journal: () => Promise<JournalRuntimeComposition>,
+  limits: ControlLimits,
 ): void {
   let handled = false;
   const abort = new AbortController();
@@ -71,40 +111,23 @@ function handleConnection(
       handled = true;
       stopReading();
       void service
-        .then((readyService) => dispatch(value, readyService, socket, abort.signal, maxFrameBytes))
-        .catch((error: unknown) => {
-          if (socket.destroyed) return;
-          const invalidRequest = error instanceof InvalidRequestError;
-          writeJsonLine(socket, {
-            v: PROTOCOL_VERSION,
-            requestId: requestIdFrom(value),
-            ok: false,
-            error: invalidRequest
-              ? { code: "invalid_request", message: error.message }
-              : { code: "internal_error", message: "pi-fleet encountered an internal error." },
-          });
-          socket.end();
-        });
+        .then((readyService) =>
+          dispatch(value, readyService, journal, socket, abort.signal, limits),
+        )
+        .catch((error: unknown) => writeConnectionError(socket, value, error));
     },
-    (error) => {
-      writeJsonLine(socket, {
-        v: PROTOCOL_VERSION,
-        requestId: "unknown",
-        ok: false,
-        error: { code: "invalid_request", message: error.message },
-      });
-      socket.end();
-    },
-    maxFrameBytes,
+    (error) => writeConnectionError(socket, undefined, new InvalidRequestError(error.message)),
+    limits.maxProtocolFrameBytes,
   );
 }
 
 async function dispatch(
   value: unknown,
   service: FleetService,
+  journal: () => Promise<JournalRuntimeComposition>,
   socket: Socket,
   connectionSignal: AbortSignal,
-  maxFrameBytes: number,
+  limits: ControlLimits,
 ): Promise<void> {
   let request: ReturnType<typeof parseProtocolRequest>;
   try {
@@ -116,7 +139,6 @@ async function dispatch(
   }
   const operationId = request.operation?.operationId;
   let result: Result<unknown, FleetClientError>;
-
   switch (request.method) {
     case "agent.create":
       result = await service.create(
@@ -133,91 +155,206 @@ async function dispatch(
       );
       break;
     case "agent.receive":
-      result = await receiveWithTimeout(
+      await streamReceive(
+        request.requestId,
+        asReceiveInput(request.params),
         service,
-        asNamedInput(request.params),
-        numberParam(request.params, "timeoutMs"),
+        await journal(),
+        socket,
         connectionSignal,
+        limits,
       );
-      break;
+      return;
     case "agent.status":
       result = await service.status(asNamedInput(request.params));
       break;
     case "agent.list":
       result = await service.list();
       break;
-    case "agent.watch": {
-      const watch = await service.openWatch(asNamedInput(request.params), connectionSignal);
-      if (!watch.ok) {
-        writeJsonLine(socket, {
-          v: PROTOCOL_VERSION,
-          requestId: request.requestId,
-          stream: "error",
-          error: watch.error,
-        });
-        socket.end();
-        return;
-      }
-      writeJsonLine(socket, { v: PROTOCOL_VERSION, requestId: request.requestId, stream: "ready" });
-      try {
-        const outgoingFrameLimit = Math.min(maxFrameBytes, MAX_PROTOCOL_FRAME_BYTES);
-        const maxRawChunkBytes = Math.max(1, Math.floor((outgoingFrameLimit - 1024) * 0.75));
-        for await (const chunk of watch.value) {
-          for (let offset = 0; offset < chunk.length; offset += maxRawChunkBytes) {
-            const part = chunk.subarray(offset, offset + maxRawChunkBytes);
-            const writable = writeJsonLine(socket, {
-              v: PROTOCOL_VERSION,
-              requestId: request.requestId,
-              stream: "chunk",
-              data: part.toString("base64"),
-            });
-            if (!writable) await once(socket, "drain");
-          }
-        }
-        if (!socket.destroyed) {
-          writeJsonLine(socket, {
-            v: PROTOCOL_VERSION,
-            requestId: request.requestId,
-            stream: "end",
-          });
-          socket.end();
-        }
-      } catch (error: unknown) {
-        if (!socket.destroyed) {
-          const watchError =
-            error instanceof RpcWatchError
-              ? { code: error.code, message: error.message }
-              : { code: "internal_error", message: "Raw Pi RPC watch failed." };
-          writeJsonLine(socket, {
-            v: PROTOCOL_VERSION,
-            requestId: request.requestId,
-            stream: "error",
-            error: watchError,
-          });
-          socket.end();
-        }
-      }
-      return;
-    }
     case "agent.destroy":
-      result = await service.destroy(asNamedInput(request.params), requireOperation(operationId));
+      result = await service.destroy(asBoundInput(request.params), requireOperation(operationId));
       break;
     case "agent.compact":
       result = await service.compact(
-        asNamedInput(request.params),
+        asBoundInput(request.params),
         requireOperation(operationId),
         requirePiIdentity(request.runtime?.pi),
       );
       break;
   }
-
-  writeJsonLine(
+  await writeFrame(
     socket,
     result.ok
       ? { v: PROTOCOL_VERSION, requestId: request.requestId, ok: true, result: result.value }
       : { v: PROTOCOL_VERSION, requestId: request.requestId, ok: false, error: result.error },
+    limits.maxSocketWriteMs,
   );
   socket.end();
+}
+
+async function streamReceive(
+  requestId: string,
+  input: ReceiveInput,
+  service: FleetService,
+  journal: JournalRuntimeComposition,
+  socket: Socket,
+  connectionSignal: AbortSignal,
+  limits: ControlLimits,
+): Promise<void> {
+  const abort = new AbortController();
+  const onConnectionAbort = () => abort.abort(connectionSignal.reason);
+  connectionSignal.addEventListener("abort", onConnectionAbort, { once: true });
+  let lastCursor: ReceiveCursor | null = null;
+  try {
+    const prepared = await service.prepareReceive(
+      input,
+      input.start ?? { kind: "live" },
+      input.untilIdle === true,
+      abort.signal,
+    );
+    if (!prepared.ok) {
+      await writeStreamError(socket, requestId, prepared.error, limits.maxSocketWriteMs);
+      return;
+    }
+    const { stream, idle } = prepared.value;
+    await writeFrame(
+      socket,
+      {
+        v: PROTOCOL_VERSION,
+        requestId,
+        stream: "ready",
+        cursor: stream.cursor,
+        limits: {
+          maxEventBytes: limits.maxSemanticEventBytes,
+          maxSegments: limits.maxSemanticSegments,
+        },
+      },
+      limits.maxSocketWriteMs,
+      limits.maxProtocolFrameBytes,
+    );
+
+    const iterator = stream[Symbol.asyncIterator]();
+    let precedingCursor = stream.cursor;
+    lastCursor = stream.cursor;
+    let lastPosition = journal.decodeCursorPosition(stream.cursor);
+    let idleHighWater: number | null = null;
+    let pending = iterator.next();
+    while (!abort.signal.aborted) {
+      if (idle !== null && idleHighWater === null) {
+        const raced = await Promise.race([
+          pending.then((next) => ({ kind: "event" as const, next })),
+          idle.then((settled) => ({ kind: "idle" as const, settled })),
+        ]);
+        if (raced.kind === "idle") {
+          if (!raced.settled.ok) {
+            await writeStreamError(socket, requestId, raced.settled.error, limits.maxSocketWriteMs);
+            return;
+          }
+          idleHighWater = raced.settled.value.idleEventPosition;
+          if (lastPosition >= idleHighWater) break;
+          continue;
+        }
+        if (raced.next.done) break;
+        const event = raced.next.value;
+        await writeSemanticEvent(socket, requestId, event, precedingCursor, limits);
+        precedingCursor = event.cursor;
+        lastCursor = event.cursor;
+        lastPosition = journal.decodeCursorPosition(event.cursor);
+        pending = iterator.next();
+        continue;
+      }
+
+      if (idleHighWater !== null && lastPosition >= idleHighWater) break;
+      const next = await pending;
+      if (next.done) break;
+      const event = next.value;
+      await writeSemanticEvent(socket, requestId, event, precedingCursor, limits);
+      precedingCursor = event.cursor;
+      lastCursor = event.cursor;
+      lastPosition = journal.decodeCursorPosition(event.cursor);
+      pending = iterator.next();
+    }
+    abort.abort();
+    await pending.catch(() => ({ done: true as const, value: undefined }));
+    await iterator.return?.();
+    if (!socket.destroyed) {
+      await writeFrame(
+        socket,
+        { v: PROTOCOL_VERSION, requestId, stream: "end" },
+        limits.maxSocketWriteMs,
+      );
+      socket.end();
+    }
+  } catch (error: unknown) {
+    if (socket.destroyed || connectionSignal.aborted) return;
+    const failure =
+      error instanceof ReceiveObservationUncertainError
+        ? {
+            code: error.code,
+            message: error.message,
+            details: {
+              lastSafeCursor: error.lastSafeCursor,
+              continuationCursor: error.continuationCursor,
+            },
+          }
+        : error instanceof Error && "code" in error && typeof error.code === "string"
+          ? {
+              code: error.code,
+              message: "Receive stream failed.",
+              ...(lastCursor === null ? {} : { details: { lastSafeCursor: lastCursor } }),
+            }
+          : error instanceof Error && error.message.startsWith("Semantic")
+            ? {
+                code: "semantic_event_too_large",
+                message: "A semantic event exceeds stream limits.",
+              }
+            : { code: "internal_error", message: "Receive stream failed." };
+    await writeStreamError(socket, requestId, failure, limits.maxSocketWriteMs);
+  } finally {
+    connectionSignal.removeEventListener("abort", onConnectionAbort);
+  }
+}
+
+async function writeSemanticEvent(
+  socket: Socket,
+  requestId: string,
+  event: SemanticEvent,
+  precedingCursor: ReceiveCursor,
+  limits: ControlLimits,
+): Promise<void> {
+  let segmentLimit = Math.max(
+    1,
+    Math.min(limits.maxSemanticFrameBytes, limits.maxProtocolFrameBytes),
+  );
+  let frames: unknown[] | null = null;
+  while (frames === null) {
+    const candidates = segmentSemanticEvent(
+      event,
+      precedingCursor,
+      segmentLimit,
+      limits.maxSemanticSegments,
+    ).map((segment) => ({
+      v: PROTOCOL_VERSION,
+      requestId,
+      stream: "semantic.segment",
+      segment,
+    }));
+    if (
+      candidates.every(
+        (frame) => Buffer.byteLength(JSON.stringify(frame)) + 1 <= limits.maxProtocolFrameBytes,
+      )
+    ) {
+      frames = candidates;
+      break;
+    }
+    if (segmentLimit === 1) {
+      throw new Error("Semantic event envelope exceeds the configured protocol limit");
+    }
+    segmentLimit = Math.max(1, Math.floor(segmentLimit * 0.75));
+  }
+  for (const frame of frames) {
+    await writeFrame(socket, frame, limits.maxSocketWriteMs, limits.maxProtocolFrameBytes);
+  }
 }
 
 function asCreateInput(params: Record<string, unknown>): CreateInput {
@@ -235,52 +372,69 @@ function asCreateInput(params: Record<string, unknown>): CreateInput {
 }
 
 function asSendInput(params: Record<string, unknown>): SendInput {
-  return { name: stringParam(params, "name"), message: stringParam(params, "message") };
+  const delivery = params.delivery;
+  if (delivery !== undefined && delivery !== "steer" && delivery !== "followUp") {
+    throw new InvalidRequestError("delivery must be steer or followUp");
+  }
+  return {
+    ...asBoundInput(params),
+    message: stringParam(params, "message"),
+    ...(delivery === undefined ? {} : { delivery }),
+  };
 }
 
-function asNamedInput(
+function asReceiveInput(params: Record<string, unknown>): ReceiveInput {
+  const named = asBoundInput(params);
+  if (params.untilIdle !== undefined && typeof params.untilIdle !== "boolean") {
+    throw new InvalidRequestError("untilIdle must be a boolean");
+  }
+  const start = receiveStart(params);
+  if (params.untilIdle === true && start.kind !== "live") {
+    throw new InvalidRequestError("untilIdle uses a live boundary and cannot include history");
+  }
+  return {
+    ...named,
+    start,
+    ...(params.untilIdle === true ? { untilIdle: true } : {}),
+  };
+}
+
+function receiveStart(params: Record<string, unknown>): ReceiveStart {
+  if (params.fromStart !== undefined && typeof params.fromStart !== "boolean") {
+    throw new InvalidRequestError("fromStart must be a boolean");
+  }
+  if (params.after !== undefined && typeof params.after !== "string") {
+    throw new InvalidRequestError("after must be a string cursor");
+  }
+  if (params.fromStart === true && params.after !== undefined) {
+    throw new InvalidRequestError("after and fromStart cannot be combined");
+  }
+  if (params.fromStart === true) return { kind: "start" };
+  if (typeof params.after === "string") {
+    return { kind: "after", cursor: params.after as ReceiveCursor };
+  }
+  return { kind: "live" };
+}
+
+function asNamedInput(params: Record<string, unknown>): StatusInput & DestroyInput & CompactInput {
+  const expectedAgentId = params.expectedAgentId;
+  if (expectedAgentId !== undefined && typeof expectedAgentId !== "string") {
+    throw new InvalidRequestError("expectedAgentId must be a string");
+  }
+  return {
+    name: stringParam(params, "name"),
+    ...(expectedAgentId === undefined ? {} : { expectedAgentId }),
+  };
+}
+
+function asBoundInput(
   params: Record<string, unknown>,
-): ReceiveInput & StatusInput & DestroyInput & CompactInput {
-  return { name: stringParam(params, "name") };
-}
-
-async function receiveWithTimeout(
-  service: FleetService,
-  input: ReceiveInput,
-  timeoutMs: number | undefined,
-  connectionSignal: AbortSignal,
-): Promise<Result<unknown, FleetClientError>> {
-  const abort = new AbortController();
-  let timedOut = false;
-  const onConnectionAbort = () => abort.abort();
-  connectionSignal.addEventListener("abort", onConnectionAbort, { once: true });
-  const timer =
-    timeoutMs === undefined
-      ? undefined
-      : setTimeout(() => {
-          timedOut = true;
-          abort.abort();
-        }, timeoutMs);
-  try {
-    return await service.receive(input, abort.signal);
-  } catch (error: unknown) {
-    if (timedOut) {
-      return err({ code: "timeout", message: "Agent did not become idle before timeout." });
-    }
-    throw error;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-    connectionSignal.removeEventListener("abort", onConnectionAbort);
+): StatusInput & DestroyInput & CompactInput & { readonly expectedAgentId: string } {
+  const input = asNamedInput(params);
+  if (input.expectedAgentId === undefined) {
+    throw new InvalidRequestError("expectedAgentId is required for agent-scoped operations");
   }
-}
-
-function numberParam(params: Record<string, unknown>, key: string): number | undefined {
-  const value = params[key];
-  if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new InvalidRequestError(`${key} must be a non-negative number`);
-  }
-  return value;
+  return { ...input, expectedAgentId: input.expectedAgentId };
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string {
@@ -301,6 +455,75 @@ function requirePiIdentity(identity: PiRuntimeIdentity | undefined): PiRuntimeId
   return identity;
 }
 
+async function writeStreamError(
+  socket: Socket,
+  requestId: string,
+  error: {
+    readonly code: string;
+    readonly message: string;
+    readonly details?: Record<string, unknown>;
+  },
+  timeoutMs: number,
+): Promise<void> {
+  if (socket.destroyed) return;
+  await writeFrame(socket, { v: PROTOCOL_VERSION, requestId, stream: "error", error }, timeoutMs);
+  socket.end();
+}
+
+async function writeFrame(
+  socket: Socket,
+  value: unknown,
+  timeoutMs: number,
+  maxBytes?: number,
+): Promise<void> {
+  if (socket.destroyed) throw new Error("Control socket is closed");
+  if (maxBytes !== undefined && Buffer.byteLength(JSON.stringify(value)) + 1 > maxBytes) {
+    throw new Error("Control protocol frame exceeds the configured limit");
+  }
+  if (writeJsonLine(socket, value)) return;
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.off("drain", onDrain);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("Control socket closed during write"));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("Control socket write timed out"));
+    }, timeoutMs);
+    socket.once("drain", onDrain);
+    socket.once("error", onError);
+    socket.once("close", onClose);
+  });
+}
+
+function writeConnectionError(socket: Socket, value: unknown, error: unknown): void {
+  if (socket.destroyed) return;
+  const invalid = error instanceof InvalidRequestError;
+  writeJsonLine(socket, {
+    v: PROTOCOL_VERSION,
+    requestId: requestIdFrom(value),
+    ok: false,
+    error: invalid
+      ? { code: "invalid_request", message: error.message }
+      : { code: "internal_error", message: "pi-fleet encountered an internal error." },
+  });
+  socket.end();
+}
+
 class InvalidRequestError extends Error {
   override readonly name = "InvalidRequestError";
 }
@@ -311,33 +534,17 @@ function requestIdFrom(value: unknown): string {
 }
 
 async function prepareSocketPath(socketPath: string): Promise<void> {
-  const stats = await lstat(socketPath).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
-  if (stats === null) return;
-  if (!stats.isSocket()) throw new Error(`Refusing to replace non-socket path ${socketPath}`);
-  if (await canConnect(socketPath))
-    throw new Error(`A pi-fleet runtime already owns ${socketPath}`);
-  await unlink(socketPath);
-}
-
-async function canConnect(socketPath: string): Promise<boolean> {
-  return new Promise((resolveConnect) => {
-    const socket = createConnection(socketPath);
-    const timer = setTimeout(() => {
-      socket.destroy();
-      resolveConnect(false);
-    }, 200);
-    socket.once("connect", () => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolveConnect(true);
-    });
-    socket.once("error", () => {
-      clearTimeout(timer);
-      resolveConnect(false);
-    });
+  const ownership = await inspectControlSocketOwnership(socketPath);
+  if (ownership === "absent") return;
+  if (ownership !== "stale") {
+    throw new RuntimeOwnershipBlockedError(
+      ownership === "responsive"
+        ? `A responsive pi-fleet runtime already owns ${socketPath}`
+        : `pi-fleet control socket ownership is uncertain for ${socketPath}`,
+    );
+  }
+  await unlink(socketPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
   });
 }
 

@@ -216,16 +216,23 @@ describe("packed and materialized runtime", () => {
         agents: [{ name: "packaged-agent" }],
       });
 
-      const watch = spawn(process.execPath, [cliPath, "watch", "packaged-agent"], {
+      const receive = spawn(process.execPath, [cliPath, "receive", "packaged-agent"], {
         cwd: root,
         env: clientEnv,
         stdio: ["ignore", "pipe", "pipe"],
       });
-      let watched = "";
-      let watchError = "";
-      watch.stdout.setEncoding("utf8").on("data", (chunk: string) => (watched += chunk));
-      watch.stderr.setEncoding("utf8").on("data", (chunk: string) => (watchError += chunk));
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+      let received = "";
+      let receiveControl = "";
+      receive.stdout.setEncoding("utf8").on("data", (chunk: string) => (received += chunk));
+      receive.stderr.setEncoding("utf8").on("data", (chunk: string) => (receiveControl += chunk));
+      for (
+        let attempt = 0;
+        attempt < 200 && !receiveControl.includes('"type":"receive.ready"');
+        attempt += 1
+      ) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+      }
+      expect(receiveControl).toContain('"type":"receive.ready"');
 
       const sent = await execFileAsync(
         process.execPath,
@@ -233,12 +240,24 @@ describe("packed and materialized runtime", () => {
         { cwd: root, env: clientEnv },
       );
       expect(JSON.parse(sent.stdout)).toMatchObject({ type: "message.accepted" });
-      const received = await execFileAsync(
-        process.execPath,
-        [cliPath, "receive", "packaged-agent", "--human"],
-        { cwd: root, env: clientEnv },
+      for (
+        let attempt = 0;
+        attempt < 200 && !received.includes("packaged response 1");
+        attempt += 1
+      ) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+      }
+      const receivedEvents = received
+        .trim()
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line) as { type: string; text?: string });
+      expect(receivedEvents).toContainEqual(
+        expect.objectContaining({
+          type: "assistant.message.finished",
+          text: "packaged response 1",
+        }),
       );
-      expect(received.stdout).toBe("packaged response 1\n");
       const status = await execFileAsync(process.execPath, [cliPath, "status", "packaged-agent"], {
         cwd: root,
         env: clientEnv,
@@ -253,28 +272,20 @@ describe("packed and materialized runtime", () => {
         agents: [{ name: "packaged-agent" }],
       });
 
-      for (
-        let attempt = 0;
-        attempt < 200 && !watched.includes("packaged response 1");
-        attempt += 1
-      ) {
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
-      }
-      expect(watched, watchError).toContain("packaged response 1");
-
       await execFileAsync(process.execPath, [cliPath, "destroy", "packaged-agent"], {
         cwd: root,
         env: clientEnv,
       });
-      if (watch.exitCode === null) {
+      if (receive.exitCode === null) {
         await Promise.race([
-          once(watch, "exit"),
+          once(receive, "exit"),
           new Promise<never>((_resolve, reject) =>
-            setTimeout(() => reject(new Error(`watch did not close: ${watchError}`)), 2_000),
+            setTimeout(() => reject(new Error(`receive did not close: ${receiveControl}`)), 2_000),
           ),
         ]);
       }
-      expect(watch.exitCode).toBe(0);
+      expect(receive.exitCode).toBe(1);
+      expect(receiveControl).toContain('"code":"agent_destroyed"');
       await expect(readFile(sessionPath, "utf8")).resolves.toContain("packaged response 1");
     } finally {
       await stopMaterializedRuntime(applicationRoot);
@@ -303,8 +314,11 @@ describe("packed and materialized runtime", () => {
     expect(paths).toContain("bin/pifleet.mjs");
     expect(paths).toContain("bin/pifleet-runtime.mjs");
     expect(paths).toContain("dist/runtime.mjs");
-    expect(paths).toContain("dist/sqlite-worker.mjs");
+    expect(paths).toContain("dist/journal-sqlite-worker.mjs");
+    expect(paths).toContain("dist/client.mjs");
+    expect(paths).toContain("dist/client/index.d.ts");
     expect(paths).toContain("dist/runtime-manifest.json");
+    expect(paths).not.toContain("dist/sqlite-worker.mjs");
     expect(paths.some((path) => path.startsWith("research/") || path.startsWith("pi/"))).toBe(
       false,
     );

@@ -2,6 +2,8 @@ import { Readable, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
 
 import type { FleetClient } from "../../src/client/fleet-client.js";
+import { createPiFleetClient, type PiFleetClient } from "../../src/client/sdk-facade.js";
+import { FleetClientSdkTransport } from "../../src/client/sdk-transport.js";
 import { unavailableFleetClient } from "../../src/client/unavailable-client.js";
 import { runCli, type CliDependencies } from "../../src/entry/cli.js";
 import { PRODUCT_VERSION } from "../../src/shared/product-identity.js";
@@ -18,15 +20,24 @@ function createHarness() {
       },
     });
   const dependencies: CliDependencies = {
-    client: unavailableFleetClient,
+    client: sdkClient(unavailableFleetClient),
     cwd: "/workspace",
     stdin: Readable.from([]),
     stdout: stream((chunk) => (stdout += chunk)),
     stderr: stream((chunk) => (stderr += chunk)),
     signal: new AbortController().signal,
-    operationIds: () => ({ operationId: "operation-1", createdAt: "2026-01-01T00:00:00.000Z" }),
   };
   return { dependencies, read: () => ({ stderr, stdout }) };
+}
+
+function sdkClient(client: FleetClient): PiFleetClient {
+  return createPiFleetClient(
+    new FleetClientSdkTransport(
+      client,
+      () => ({ operationId: "operation-1", createdAt: "2026-01-01T00:00:00.000Z" }),
+      { reconnectDelayMs: 0 },
+    ),
+  );
 }
 
 describe("runCli", () => {
@@ -48,7 +59,7 @@ describe("runCli", () => {
     });
   });
 
-  it("treats a closed watch output pipe as normal client disconnection", async () => {
+  it("treats a closed receive output pipe as normal client disconnection", async () => {
     const harness = createHarness();
     const error = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
     const stdout = new Writable({
@@ -59,15 +70,46 @@ describe("runCli", () => {
     });
     const client: FleetClient = {
       ...unavailableFleetClient,
-      watch: async function* () {
-        yield ok({ type: "ready" });
-        yield ok({ type: "chunk", bytes: Buffer.from('{"type":"message"}\n') });
+      status: async () =>
+        ok({
+          schemaVersion: 1,
+          type: "agent.status",
+          agent: {
+            id: "agent-1",
+            name: "agent",
+            state: "idle",
+            process: { state: "absent" },
+            session: { id: null, path: null },
+          },
+        }),
+      receive: async function* () {
+        yield ok({ type: "ready", cursor: "cursor-0" as never });
+        yield ok({
+          type: "event",
+          cursor: "cursor-1" as never,
+          event: {
+            id: "event-1",
+            activityId: "activity-1",
+            cursor: "cursor-1",
+            agentId: "agent-1",
+            epoch: 0,
+            sourceRawPosition: 1,
+            observedAt: "2026-01-01T00:00:00.000Z",
+            type: "assistant.message.started",
+          } as never,
+        });
       },
     };
 
-    expect(await runCli(["watch", "agent"], { ...harness.dependencies, client, stdout })).toBe(0);
+    expect(
+      await runCli(["receive", "agent"], {
+        ...harness.dependencies,
+        client: sdkClient(client),
+        stdout,
+      }),
+    ).toBe(0);
     expect(harness.read().stderr).toBe(
-      `${JSON.stringify({ schemaVersion: 1, type: "watch.ready", agent: { name: "agent" } })}\n`,
+      `${JSON.stringify({ schemaVersion: 1, type: "receive.ready", cursor: "cursor-0" })}\n`,
     );
   });
 });
