@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-beta.11 — 2026-07-27
+## 0.1.0-beta.12 — 2026-07-27
 
 Makes local programs first-class pi-fleet clients: a supported TypeScript SDK plus continuous, replayable semantic receive over shared per-user agents. This beta replaces the previous receive and watch contracts and resets pi-fleet-owned state.
 

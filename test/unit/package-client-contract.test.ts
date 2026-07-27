@@ -72,3 +72,20 @@ describe("one-package client contract", () => {
     expect(imported.stderr).toBe("");
   });
 });
+
+describe("type-check project boundaries", () => {
+  it("keeps the packed client consumer check out of the source typecheck", async () => {
+    const root = JSON.parse(await readFile("tsconfig.json", "utf8")) as {
+      include: readonly string[];
+      exclude: readonly string[];
+    };
+    const consumer = JSON.parse(await readFile("tsconfig.client-consumer.json", "utf8")) as {
+      include: readonly string[];
+    };
+
+    // `npm run typecheck` must not require built declarations, so the consumer
+    // fixture belongs only to the post-build client-types project.
+    expect(root.exclude).toContain("test/types");
+    expect(consumer.include).toEqual(["test/types/client-consumer.ts"]);
+  });
+});
