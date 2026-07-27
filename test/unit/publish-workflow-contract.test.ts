@@ -97,3 +97,18 @@ describe("published registry SDK smoke contract", () => {
     expect(workflow).toContain('event.text === "deterministic response 1"');
   });
 });
+
+describe("registry smoke diagnostics", () => {
+  it("captures CLI failures and proves the control plane stayed reachable", async () => {
+    const workflow = await readFile(".github/workflows/publish.yml", "utf8");
+
+    // Mutating smoke commands must not lose their typed stderr error on failure.
+    for (const capture of ["create.stderr", "status.stderr", "destroy.stderr"]) {
+      expect(workflow).toContain(capture);
+    }
+    expect(workflow).toContain("trap report_smoke_diagnostics ERR");
+    expect(workflow).toContain("Started control plane did not stay reachable");
+    // Unreadable /proc entries of foreign processes must not emit redirect errors.
+    expect(workflow).toContain("{ { tr '\\0' '\\n' <\"$environ\"; } 2>/dev/null || true; }");
+  });
+});

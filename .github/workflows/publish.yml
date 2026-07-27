@@ -132,7 +132,7 @@ jobs:
               pid="${environ#/proc/}"
               pid="${pid%/environ}"
               before="$(read_process_identity "$pid")" || continue
-              if tr '\0' '\n' <"$environ" 2>/dev/null |
+              if { { tr '\0' '\n' <"$environ"; } 2>/dev/null || true; } |
                 grep -Fxq "PIFLEET_STATE_ROOT=$root/state"; then
                 after="$(read_process_identity "$pid")" || continue
                 [ "$after" = "$before" ] || continue
@@ -208,6 +208,17 @@ jobs:
             fi
             exit "$cleanup_status"
           }
+          report_smoke_diagnostics() {
+            local file
+            for file in "$root"/*.stderr "$root"/*.json; do
+              [ -s "$file" ] || continue
+              echo "--- ${file#"$root/"}" >&2
+              tail -c 2000 "$file" >&2
+            done
+            echo "--- control socket" >&2
+            ls -l "$root/state" 2>&1 >&2 || true
+          }
+          trap report_smoke_diagnostics ERR
           trap cleanup EXIT
 
           metadata="$root/package.json"
@@ -317,8 +328,18 @@ jobs:
               value.agents.length !== 0
             ) process.exit(1);
           ' "$root/list.json"
-          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" create registry-smoke -- --provider pifleet-smoke --model deterministic --no-extensions --no-skills --no-prompt-templates >"$root/create.json"
-          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" status registry-smoke >"$root/status.json"
+          for attempt in $(seq 1 60); do
+            if env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" list >"$root/list-ready.json" 2>"$root/list-ready.stderr"; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "Started control plane did not stay reachable" >&2
+              exit 1
+            fi
+            sleep 0.5
+          done
+          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" create registry-smoke -- --provider pifleet-smoke --model deterministic --no-extensions --no-skills --no-prompt-templates >"$root/create.json" 2>"$root/create.stderr"
+          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" status registry-smoke >"$root/status.json" 2>"$root/status.stderr"
           cat >"$root/sdk/smoke.mjs" <<'EOF'
           import { connectPiFleet } from "@elpapi42/pi-fleet/client";
 
@@ -353,7 +374,7 @@ jobs:
           }
           EOF
           env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" node "$root/sdk/smoke.mjs"
-          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" destroy registry-smoke >"$root/destroy.json"
+          env HOME="$root/home" XDG_RUNTIME_DIR="$root/runtime" PIFLEET_STATE_ROOT="$root/state" PIFLEET_APPLICATION_ROOT="$root/application" PIFLEET_DISABLE_REGISTERED_SERVICE=1 PI_CODING_AGENT_DIR="$root/pi-agent" PIFLEET_PI_EXECUTABLE="$pi" PIFLEET_PI_NODE="$(command -v node)" "$cli" destroy registry-smoke >"$root/destroy.json" 2>"$root/destroy.stderr"
           package_root="$root/npm/lib/node_modules/@elpapi42/pi-fleet"
           test -f "$package_root/dist/client.mjs"
           test -f "$package_root/dist/client/index.d.ts"
