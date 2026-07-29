@@ -66,34 +66,39 @@ export async function runReceive(
   }
 }
 
-/** Renders one lifecycle event as a readable line without inventing activity. */
+/** Renders one lifecycle event as a readable, pairable tail line. */
 function renderHumanEvent(event: SemanticEvent): string {
   const at = event.observedAt;
+  const activity = activityRef(event.activityId);
   switch (event.type) {
     case "assistant.thinking.started":
-      return `${at} thinking…`;
+      return `${at} start thinking ${activity}`;
     case "assistant.thinking.finished":
-      return `${at} thinking: ${collapse(event.text)}`;
+      return `${at} end   thinking ${activity} ${collapse(event.text, 400)}`;
     case "assistant.message.started":
-      return `${at} message…`;
+      return `${at} start message ${activity}`;
     case "assistant.message.finished":
-      return `${at} message: ${collapse(event.text)}`;
+      return `${at} end   message ${activity} ${collapse(event.text, 400)}`;
     case "tool.execution.started":
-      return `${at} tool ${event.tool.name} started: ${collapse(inspectValue(event.tool.input))}`;
+      return `${at} start tool ${event.tool.name} ${activity} input=${displayValue(event.tool.input, 160)}`;
     case "tool.execution.finished":
-      return `${at} tool ${event.tool.name} ${event.tool.isError ? "failed" : "finished"}: ${collapse(
-        inspectValue(event.tool.output),
-      )}`;
+      return `${at} end   tool ${event.tool.name} ${activity} ${event.tool.isError ? "error" : "ok"} input=${displayValue(event.tool.input, 160)} output=${displayValue(event.tool.output, 160)}`;
   }
 }
 
-function inspectValue(value: unknown): string {
-  if (value === undefined) return "";
-  return typeof value === "string" ? value : JSON.stringify(value);
+/** A compact stable suffix preserves pair correlation without printing opaque UUIDs in full. */
+function activityRef(activityId: string): string {
+  return `#${activityId.slice(-6)}`;
+}
+
+function displayValue(value: unknown, limit: number): string {
+  const rendered =
+    value === undefined ? "undefined" : typeof value === "string" ? value : JSON.stringify(value);
+  return collapse(rendered ?? "undefined", limit);
 }
 
 /** Keeps one event on one line so a human tail stays scannable. */
-function collapse(text: string, limit = 400): string {
+function collapse(text: string, limit: number): string {
   const single = text.replace(/\s+/gu, " ").trim();
   return single.length > limit ? `${single.slice(0, limit)}…` : single;
 }

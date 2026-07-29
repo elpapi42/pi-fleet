@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.17 — 2026-07-29
+
+### Changed
+
+- Made `pifleet receive --human` lifecycle lines explicit and pairable: each line starts with `start` or `end`, carries a short `#activity` reference shared by a pair, and tool ends keep their `ok`/`error` status with both input and output. Machine JSONL remains authoritative for exact text, cursors, and identifiers.
+
 ## 0.1.0-beta.16 — 2026-07-27
 
 ### Added

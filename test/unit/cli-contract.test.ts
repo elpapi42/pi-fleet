@@ -155,40 +155,102 @@ describe("public CLI contract", () => {
     });
   });
 
-  it("renders readable receive lines and a readable readiness line with --human", async () => {
-    const thinking = {
-      id: "event-1",
-      activityId: "activity-1",
-      cursor: "cursor-1",
+  it("renders readable, pairable lifecycle lines with --human", async () => {
+    const base = {
       agentId: agent.id,
       epoch: 0,
       sourceRawPosition: 1,
-      observedAt: "2026-01-01T00:00:00.000Z",
-      type: "assistant.thinking.finished",
-      text: "  weighing\n  options  ",
     } as const;
-    const tool = {
-      id: "event-2",
-      activityId: "call-1",
-      cursor: "cursor-2",
-      agentId: agent.id,
-      epoch: 0,
-      sourceRawPosition: 2,
-      observedAt: "2026-01-01T00:00:01.000Z",
-      type: "tool.execution.finished",
-      tool: {
-        callId: "call-1",
-        name: "bash",
-        input: { command: "ls" },
-        output: "a\nb",
-        isError: false,
+    const events = [
+      {
+        ...base,
+        id: "event-1",
+        activityId: "thinking-a1b2c3",
+        cursor: "cursor-1",
+        observedAt: "2026-01-01T00:00:00.000Z",
+        type: "assistant.thinking.started",
       },
-    } as const;
+      {
+        ...base,
+        id: "event-2",
+        activityId: "thinking-a1b2c3",
+        cursor: "cursor-2",
+        observedAt: "2026-01-01T00:00:01.000Z",
+        type: "assistant.thinking.finished",
+        text: "  weighing\n  options  ",
+      },
+      {
+        ...base,
+        id: "event-3",
+        activityId: "message-d4e5f6",
+        cursor: "cursor-3",
+        observedAt: "2026-01-01T00:00:02.000Z",
+        type: "assistant.message.started",
+      },
+      {
+        ...base,
+        id: "event-4",
+        activityId: "message-d4e5f6",
+        cursor: "cursor-4",
+        observedAt: "2026-01-01T00:00:03.000Z",
+        type: "assistant.message.finished",
+        text: " Here is\n the result. ",
+      },
+      {
+        ...base,
+        id: "event-5",
+        activityId: "call-7f8091",
+        cursor: "cursor-5",
+        observedAt: "2026-01-01T00:00:04.000Z",
+        type: "tool.execution.started",
+        tool: { callId: "call-7f8091", name: "bash", input: { command: "ls", paths: ["a", "b"] } },
+      },
+      {
+        ...base,
+        id: "event-6",
+        activityId: "call-7f8091",
+        cursor: "cursor-6",
+        observedAt: "2026-01-01T00:00:05.000Z",
+        type: "tool.execution.finished",
+        tool: {
+          callId: "call-7f8091",
+          name: "bash",
+          input: { command: "ls", paths: ["a", "b"] },
+          output: ["file-a", "file-b"],
+          isError: false,
+        },
+      },
+      {
+        ...base,
+        id: "event-7",
+        activityId: "call-112233",
+        cursor: "cursor-7",
+        observedAt: "2026-01-01T00:00:06.000Z",
+        type: "tool.execution.started",
+        tool: { callId: "call-112233", name: "write", input: null },
+      },
+      {
+        ...base,
+        id: "event-8",
+        activityId: "call-112233",
+        cursor: "cursor-8",
+        observedAt: "2026-01-01T00:00:07.000Z",
+        type: "tool.execution.finished",
+        tool: {
+          callId: "call-112233",
+          name: "write",
+          input: null,
+          output: undefined,
+          isError: true,
+        },
+      },
+    ] as const;
     const client = fakeClient({
       receive: async function* () {
         yield ok({ type: "ready", cursor: "cursor-0" as never });
-        yield ok({ type: "event", cursor: "cursor-1" as never, event: thinking as never });
-        yield ok({ type: "event", cursor: "cursor-2" as never, event: tool as never });
+        for (const event of events) {
+          yield ok({ type: "event", cursor: event.cursor as never, event: event as never });
+        }
       },
     });
     const harness = createHarness(client);
@@ -199,8 +261,14 @@ describe("public CLI contract", () => {
     const output = harness.output();
     expect(output.stderr).toBe("receive ready at cursor-0\n");
     expect(output.stdout).toBe(
-      "2026-01-01T00:00:00.000Z thinking: weighing options\n" +
-        "2026-01-01T00:00:01.000Z tool bash finished: a b\n",
+      "2026-01-01T00:00:00.000Z start thinking #a1b2c3\n" +
+        "2026-01-01T00:00:01.000Z end   thinking #a1b2c3 weighing options\n" +
+        "2026-01-01T00:00:02.000Z start message #d4e5f6\n" +
+        "2026-01-01T00:00:03.000Z end   message #d4e5f6 Here is the result.\n" +
+        '2026-01-01T00:00:04.000Z start tool bash #7f8091 input={"command":"ls","paths":["a","b"]}\n' +
+        '2026-01-01T00:00:05.000Z end   tool bash #7f8091 ok input={"command":"ls","paths":["a","b"]} output=["file-a","file-b"]\n' +
+        "2026-01-01T00:00:06.000Z start tool write #112233 input=null\n" +
+        "2026-01-01T00:00:07.000Z end   tool write #112233 error input=null output=undefined\n",
     );
     expect(output.stdout).not.toContain('"type"');
   });
