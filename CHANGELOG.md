@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-beta.16 — 2026-07-27
+
+### Added
+
+- Made `pifleet receive --human` a readable projection of semantic activity, with timestamped one-line thinking, assistant-message, and tool-execution events. Machine JSONL remains authoritative for exact text, cursors, IDs, and tool payloads.
+
+### Fixed
+
+- Isolated client connection failures so resetting a receive connection no longer crashes the shared pi-fleet runtime or leaves its control socket orphaned.
+- Finite requests now retry once across a runtime death after readiness, reusing the same durable mutation identity so accepted work is not duplicated. Held receive streams retain cursor-aware reconnection.
+
 ## 0.1.0-beta.15 — 2026-07-27
 
 ### Fixed

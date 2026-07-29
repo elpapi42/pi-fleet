@@ -148,7 +148,7 @@ pifleet receive reviewer --from-start       # retained history then follow
 pifleet receive reviewer --until-idle       # live one-off projection
 ```
 
-Readiness and the initial cursor are written to stderr. Semantic event JSONL is written to stdout. `--until-idle` cannot be combined with history; it exits with no history if already idle and otherwise emits through the exact observed idle boundary.
+Readiness and the initial cursor are written to stderr. Semantic event JSONL is written to stdout by default; `--human` renders a lossy readable projection for manual use, while machine JSONL remains authoritative for exact text, cursors, IDs, and tool payloads. `--until-idle` cannot be combined with history; it exits with no history if already idle and otherwise emits through the exact observed idle boundary.
 
 The old raw `watch` command and finite latest-response receive contract no longer exist. Do not parse terminal output, raw Pi RPC, logs, or native session tailing as a substitute for semantic receive.
 
@@ -206,7 +206,7 @@ Do not destroy a reusable agent merely because one assignment completed.
 
 The private durable journal stores every complete Pi RPC stdout record before parsing. It can contain prompts, thinking, tools, paths, extension data, and secrets for the agent's lifetime. Do not expose journal payloads in logs, errors, diagnostics, or reports.
 
-Finite CLI commands emit one JSON object on stdout. Receive emits JSONL only. Keep stderr separate. Treat receive EPIPE as normal local disconnection. Do not use `--human` for programmatic orchestration.
+Finite CLI commands emit one JSON object on stdout. Receive emits JSONL by default; use `--human` only for a lossy readable manual view. Keep stderr separate. Treat receive EPIPE as normal local disconnection. Do not use `--human` for programmatic orchestration.
 
 ## Service and destructive beta transition
 

@@ -33,7 +33,7 @@ export interface ControlServer {
   close(): Promise<void>;
 }
 
-interface ControlLimits {
+export interface ControlLimits {
   readonly maxProtocolFrameBytes: number;
   readonly maxSemanticFrameBytes: number;
   readonly maxSemanticSegments: number;
@@ -95,7 +95,7 @@ export async function startControlServer(options: {
   };
 }
 
-function handleConnection(
+export function handleConnection(
   socket: Socket,
   service: Promise<FleetService>,
   journal: () => Promise<JournalRuntimeComposition>,
@@ -103,7 +103,15 @@ function handleConnection(
 ): void {
   let handled = false;
   const abort = new AbortController();
-  socket.once("close", () => abort.abort());
+  const abortConnection = (reason?: unknown) => {
+    if (!abort.signal.aborted) abort.abort(reason);
+    if (reason !== undefined && !socket.destroyed) socket.destroy();
+  };
+  // Client resets are connection failures, not runtime failures. Keep a listener
+  // for the accepted socket's entire lifetime so an asynchronous ECONNRESET can
+  // never become an uncaught EventEmitter error and terminate the shared runtime.
+  socket.on("error", abortConnection);
+  socket.once("close", () => abortConnection());
   const stopReading = readJsonLines(
     socket,
     (value) => {
@@ -114,9 +122,13 @@ function handleConnection(
         .then((readyService) =>
           dispatch(value, readyService, journal, socket, abort.signal, limits),
         )
-        .catch((error: unknown) => writeConnectionError(socket, value, error));
+        .catch((error: unknown) => {
+          writeConnectionError(socket, value, error);
+        });
     },
-    (error) => writeConnectionError(socket, undefined, new InvalidRequestError(error.message)),
+    (error) => {
+      writeConnectionError(socket, undefined, new InvalidRequestError(error.message));
+    },
     limits.maxProtocolFrameBytes,
   );
 }
@@ -513,15 +525,22 @@ async function writeFrame(
 function writeConnectionError(socket: Socket, value: unknown, error: unknown): void {
   if (socket.destroyed) return;
   const invalid = error instanceof InvalidRequestError;
-  writeJsonLine(socket, {
-    v: PROTOCOL_VERSION,
-    requestId: requestIdFrom(value),
-    ok: false,
-    error: invalid
-      ? { code: "invalid_request", message: error.message }
-      : { code: "internal_error", message: "pi-fleet encountered an internal error." },
-  });
-  socket.end();
+  try {
+    writeJsonLine(socket, {
+      v: PROTOCOL_VERSION,
+      requestId: requestIdFrom(value),
+      ok: false,
+      error: invalid
+        ? { code: "invalid_request", message: error.message }
+        : { code: "internal_error", message: "pi-fleet encountered an internal error." },
+    });
+    socket.end();
+  } catch {
+    // The peer may have reset between the destroyed check and this fallback.
+    // Contain the failure to this connection; the permanent socket error listener
+    // handles asynchronous write errors that occur after writeJsonLine returns.
+    socket.destroy();
+  }
 }
 
 class InvalidRequestError extends Error {

@@ -108,7 +108,7 @@ pifleet compact NAME [--human]
 pifleet destroy NAME [--human]
 ```
 
-Finite commands emit one compact JSON object on stdout. Expected failures emit one structured JSON error on stderr. `receive` emits semantic event JSONL on stdout and one readiness record with the initial cursor on stderr. Downstream EPIPE is a successful caller disconnect.
+Finite commands emit one compact JSON object on stdout. Expected failures emit one structured JSON error on stderr. `receive` emits semantic event JSONL on stdout and one readiness record with the initial cursor on stderr. `receive --human` renders a lossy readable projection for manual use; machine JSONL remains authoritative for exact text, cursors, IDs, and tool payloads. Downstream EPIPE is a successful caller disconnect.
 
 Normal `receive` stays open across work, idle periods, absent Pi processes, and same-agent restorations. `--until-idle` is a CLI-only live convenience: it atomically attaches, emits subsequent events through the exact durable idle boundary, and exits. If the agent is already idle at attachment it exits successfully with no historical output. Historical modes cannot be combined with `--until-idle`.
 

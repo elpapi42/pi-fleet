@@ -7,7 +7,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { frameIterator, SocketFleetClient } from "../../src/client/socket-fleet-client.js";
 import type { PiRuntimeIdentity } from "../../src/protocol/pi-identity.js";
 import { PROTOCOL_VERSION } from "../../src/protocol/version.js";
-import { startControlServer, type ControlServer } from "../../src/runtime/control-server.js";
+import {
+  handleConnection,
+  startControlServer,
+  type ControlLimits,
+  type ControlServer,
+} from "../../src/runtime/control-server.js";
 import { FleetService } from "../../src/runtime/fleet-service.js";
 import type { RuntimeLimits } from "../../src/shared/runtime-limits.js";
 import { MemoryFleetStore } from "../../src/store/memory-store.js";
@@ -245,6 +250,265 @@ describe("private socket runtime", () => {
       state: "completed",
       result: rejected,
     });
+  });
+
+  it("contains an accepted receive socket error and continues serving new clients", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-reset-containment-"));
+    const socketPath = join(root, "control.sock");
+    const service = new FleetService(new MemoryFleetStore());
+    let accepted: Socket | undefined;
+    const limits: ControlLimits = {
+      maxProtocolFrameBytes: 1024 * 1024,
+      maxSemanticFrameBytes: 1024 * 1024,
+      maxSemanticSegments: 16,
+      maxSemanticEventBytes: 1024 * 1024,
+      maxSocketWriteMs: 1_000,
+    };
+    const server = createServer((socket) => {
+      accepted = socket;
+      handleConnection(
+        socket,
+        Promise.resolve(service),
+        () => Promise.reject(new Error("Semantic receive is unavailable")),
+        limits,
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    cleanups.push(async () => {
+      accepted?.destroy();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error === undefined ? resolve() : reject(error))),
+      );
+      await service.close();
+      await rm(root, { recursive: true, force: true });
+    });
+
+    const reset = createConnection(socketPath);
+    reset.on("error", () => undefined);
+    await new Promise<void>((resolve, reject) => {
+      reset.once("connect", resolve);
+      reset.once("error", reject);
+    });
+    reset.write(
+      `${JSON.stringify({
+        v: PROTOCOL_VERSION,
+        requestId: "reset-receive",
+        method: "agent.receive",
+        params: {
+          name: "missing",
+          expectedAgentId: "11111111-1111-4111-8111-111111111111",
+        },
+      })}\n`,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    accepted?.emit("error", Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }));
+    reset.destroy();
+
+    const client = new SocketFleetClient({ socketPath });
+    await expect(client.list({ signal })).resolves.toMatchObject({
+      ok: true,
+      value: { type: "agent.list", agents: [] },
+    });
+  });
+
+  it("retries one finite connection failure with the same mutation identity", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-finite-retry-"));
+    const socketPath = join(root, "control.sock");
+    const requests: Array<Record<string, unknown>> = [];
+    let beforeConnects = 0;
+    const server = createServer((socket) => {
+      socket.on("error", () => undefined);
+      socket.once("data", (chunk) => {
+        const request = JSON.parse(chunk.toString("utf8").trim()) as Record<string, unknown>;
+        requests.push(request);
+        if (requests.length === 1) {
+          socket.destroy();
+          return;
+        }
+        socket.end(
+          `${JSON.stringify({
+            v: PROTOCOL_VERSION,
+            requestId: request.requestId,
+            ok: true,
+            result: { type: "agent.created", agent: { id: "agent-1", name: "reviewer" } },
+          })}\n`,
+        );
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    cleanups.push(async () => {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error === undefined ? resolve() : reject(error))),
+      );
+      await rm(root, { recursive: true, force: true });
+    });
+    const client = new SocketFleetClient({
+      socketPath,
+      beforeConnect: async () => {
+        beforeConnects += 1;
+      },
+    });
+
+    await expect(
+      client.create({ name: "reviewer", cwd: "/workspace", piArgv: [] }, { signal, operation }),
+    ).resolves.toMatchObject({ ok: true, value: { type: "agent.created" } });
+    expect(beforeConnects).toBe(2);
+    expect(requests).toHaveLength(2);
+    expect(requests.map((request) => request.operation)).toEqual([operation, operation]);
+  });
+
+  it.each([
+    {
+      label: "malformed JSON",
+      response: "{not-json}\n",
+    },
+    {
+      label: "an oversized frame",
+      response: `${JSON.stringify({ payload: "x".repeat(1024 * 1024) })}\n`,
+    },
+    {
+      label: "a response for another request",
+      response: JSON.stringify({
+        v: PROTOCOL_VERSION,
+        requestId: "other-request",
+        ok: true,
+        result: { type: "agent.list", agents: [] },
+      }).concat("\n"),
+    },
+  ])("does not retry $label", async ({ response }) => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-protocol-read-failure-"));
+    const socketPath = join(root, "control.sock");
+    let connections = 0;
+    let beforeConnects = 0;
+    const server = createServer((socket) => {
+      connections += 1;
+      socket.once("data", () => socket.end(response));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    cleanups.push(async () => {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error === undefined ? resolve() : reject(error))),
+      );
+      await rm(root, { recursive: true, force: true });
+    });
+    const client = new SocketFleetClient({
+      socketPath,
+      beforeConnect: async () => {
+        beforeConnects += 1;
+      },
+    });
+
+    await expect(client.list({ signal })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "protocol_error", message: "Invalid runtime response." },
+    });
+    expect(connections).toBe(1);
+    expect(beforeConnects).toBe(1);
+  });
+
+  it.each([
+    {
+      label: "protocol incompatibility",
+      frame: (requestId: string) => ({
+        v: PROTOCOL_VERSION + 1,
+        requestId,
+        ok: true,
+        result: { type: "agent.list", agents: [] },
+      }),
+      expected: "protocol_incompatible",
+    },
+    {
+      label: "a typed runtime error",
+      frame: (requestId: string) => ({
+        v: PROTOCOL_VERSION,
+        requestId,
+        ok: false,
+        error: { code: "storage_unavailable", message: "Storage is unavailable." },
+      }),
+      expected: "storage_unavailable",
+    },
+  ])("does not retry $label after a valid response frame", async ({ frame, expected }) => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-no-retry-frame-"));
+    const socketPath = join(root, "control.sock");
+    let connections = 0;
+    let beforeConnects = 0;
+    const server = createServer((socket) => {
+      connections += 1;
+      socket.once("data", (chunk) => {
+        const request = JSON.parse(chunk.toString("utf8").trim()) as { requestId: string };
+        socket.end(`${JSON.stringify(frame(request.requestId))}\n`);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    cleanups.push(async () => {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error === undefined ? resolve() : reject(error))),
+      );
+      await rm(root, { recursive: true, force: true });
+    });
+    const client = new SocketFleetClient({
+      socketPath,
+      beforeConnect: async () => {
+        beforeConnects += 1;
+      },
+    });
+
+    await expect(client.list({ signal })).resolves.toMatchObject({
+      ok: false,
+      error: { code: expected },
+    });
+    expect(connections).toBe(1);
+    expect(beforeConnects).toBe(1);
+  });
+
+  it("does not retry a connection failure after caller cancellation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pifleet-no-retry-cancel-"));
+    const socketPath = join(root, "control.sock");
+    const controller = new AbortController();
+    let connections = 0;
+    let beforeConnects = 0;
+    const server = createServer((socket) => {
+      connections += 1;
+      socket.once("data", () => {
+        controller.abort();
+        socket.destroy();
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    cleanups.push(async () => {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error === undefined ? resolve() : reject(error))),
+      );
+      await rm(root, { recursive: true, force: true });
+    });
+    const client = new SocketFleetClient({
+      socketPath,
+      beforeConnect: async () => {
+        beforeConnects += 1;
+      },
+    });
+
+    await expect(client.list({ signal: controller.signal })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "runtime_unavailable" },
+    });
+    expect(connections).toBe(1);
+    expect(beforeConnects).toBe(1);
   });
 
   it("accepts a matching protocol-major response and closes the connection", async () => {

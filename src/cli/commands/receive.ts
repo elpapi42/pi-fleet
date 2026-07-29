@@ -1,7 +1,7 @@
 import { once } from "node:events";
 
 import { PiFleetError, receiveAgentUntilIdle } from "../../client/sdk-facade.js";
-import type { ReceiveCursor } from "../../client/contracts.js";
+import type { ReceiveCursor, SemanticEvent } from "../../client/contracts.js";
 import { isAgentName } from "../../shared/identifiers.js";
 import type { CommandContext } from "../context.js";
 import { writeError } from "../output.js";
@@ -66,6 +66,34 @@ export async function runReceive(
   }
 }
 
-function renderHumanEvent(event: { readonly type: string }): string {
-  return JSON.stringify(event);
+/** Renders one lifecycle event as a readable line without inventing activity. */
+function renderHumanEvent(event: SemanticEvent): string {
+  const at = event.observedAt;
+  switch (event.type) {
+    case "assistant.thinking.started":
+      return `${at} thinking…`;
+    case "assistant.thinking.finished":
+      return `${at} thinking: ${collapse(event.text)}`;
+    case "assistant.message.started":
+      return `${at} message…`;
+    case "assistant.message.finished":
+      return `${at} message: ${collapse(event.text)}`;
+    case "tool.execution.started":
+      return `${at} tool ${event.tool.name} started: ${collapse(inspectValue(event.tool.input))}`;
+    case "tool.execution.finished":
+      return `${at} tool ${event.tool.name} ${event.tool.isError ? "failed" : "finished"}: ${collapse(
+        inspectValue(event.tool.output),
+      )}`;
+  }
+}
+
+function inspectValue(value: unknown): string {
+  if (value === undefined) return "";
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+/** Keeps one event on one line so a human tail stays scannable. */
+function collapse(text: string, limit = 400): string {
+  const single = text.replace(/\s+/gu, " ").trim();
+  return single.length > limit ? `${single.slice(0, limit)}…` : single;
 }

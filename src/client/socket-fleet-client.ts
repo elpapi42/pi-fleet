@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 
-import { readJsonLines, writeJsonLine } from "../protocol/jsonl.js";
+import { ProtocolReadError, readJsonLines, writeJsonLine } from "../protocol/jsonl.js";
 import { MANAGED_PI_RUNTIME_IDENTITY, type PiRuntimeIdentity } from "../protocol/pi-identity.js";
 import {
   SemanticEventReassembler,
@@ -87,7 +87,10 @@ export class SocketFleetClient implements FleetClient {
     let ended = false;
     try {
       for await (const frame of frames) {
-        if (!isRecord(frame) || frame.requestId !== requestId) continue;
+        if (!isRecord(frame) || frame.requestId !== requestId) {
+          yield err({ code: "protocol_error", message: "Invalid receive stream frame." });
+          return;
+        }
         if (frame.v !== PROTOCOL_VERSION) {
           yield err(protocolIncompatible());
           return;
@@ -155,7 +158,13 @@ export class SocketFleetClient implements FleetClient {
         });
       }
     } catch (error: unknown) {
-      if (!options.signal.aborted) yield err(connectionError(error));
+      if (!options.signal.aborted) {
+        yield err(
+          error instanceof ProtocolReadError
+            ? { code: "protocol_error", message: "Invalid receive stream frame." }
+            : connectionError(error),
+        );
+      }
     } finally {
       socket.destroy();
     }
@@ -213,12 +222,44 @@ export class SocketFleetClient implements FleetClient {
     params: object,
     options: RequestOptions | MutationOptions,
   ): Promise<Result<T, FleetClientError>> {
-    let socket: Socket;
+    // A readiness probe and the actual request cannot be atomic: the observed
+    // runtime may die between them. Retry one connection-level failure so
+    // beforeConnect can replace a now-stale runtime. Mutations reuse the exact
+    // durable operation identity carried in `options`.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const outcome = await this.#requestAttempt<T>(method, params, options);
+      if (outcome.kind === "result") return outcome.result;
+      if (outcome.kind === "protocol_failure") {
+        return err({ code: "protocol_error", message: "Invalid runtime response." });
+      }
+      if (options.signal.aborted || attempt === 1) return err(connectionError(outcome.error));
+    }
+    return err({ code: "internal_error", message: "pi-fleet client operation failed." });
+  }
+
+  async #requestAttempt<T>(
+    method: string,
+    params: object,
+    options: RequestOptions | MutationOptions,
+  ): Promise<
+    | { readonly kind: "result"; readonly result: Result<T, FleetClientError> }
+    | { readonly kind: "connection_failure"; readonly error: unknown }
+    | { readonly kind: "protocol_failure" }
+  > {
     try {
       await this.options.beforeConnect?.();
+    } catch (error: unknown) {
+      return { kind: "result", result: err(connectionError(error)) };
+    }
+    if (options.signal.aborted) {
+      return { kind: "result", result: err(connectionError(options.signal.reason)) };
+    }
+
+    let socket: Socket;
+    try {
       socket = await connect(this.options.socketPath, options.signal);
     } catch (error: unknown) {
-      return err(connectionError(error));
+      return { kind: "connection_failure", error };
     }
     const requestId = randomUUID();
     let piIdentity: PiRuntimeIdentity | undefined;
@@ -226,28 +267,43 @@ export class SocketFleetClient implements FleetClient {
       piIdentity = requiresPiIdentity(method) ? await this.#piIdentity() : undefined;
     } catch (error: unknown) {
       socket.destroy();
-      return err(piSelectionError(error));
+      return { kind: "result", result: err(piSelectionError(error)) };
     }
     const response = firstMatchingFrame(socket, requestId, options.signal);
-    writeJsonLine(socket, {
-      v: PROTOCOL_VERSION,
-      requestId,
-      method,
-      params,
-      ...(isMutationOptions(options) ? { operation: options.operation } : {}),
-      ...(piIdentity === undefined ? {} : { runtime: { pi: piIdentity } }),
-    });
+    // If the synchronous write itself fails, the socket close will also reject
+    // this waiter after this method has already selected the retry path.
+    void response.catch(() => undefined);
     try {
+      writeJsonLine(socket, {
+        v: PROTOCOL_VERSION,
+        requestId,
+        method,
+        params,
+        ...(isMutationOptions(options) ? { operation: options.operation } : {}),
+        ...(piIdentity === undefined ? {} : { runtime: { pi: piIdentity } }),
+      });
       const frame = await response;
       if (!isRecord(frame) || frame.requestId !== requestId || typeof frame.ok !== "boolean") {
-        return err({ code: "protocol_error", message: "Invalid runtime response." });
+        return {
+          kind: "result",
+          result: err({ code: "protocol_error", message: "Invalid runtime response." }),
+        };
       }
-      if (frame.v !== PROTOCOL_VERSION) return err(protocolIncompatible());
-      if (frame.ok) return ok(frame.result as T);
-      if (isErrorRecord(frame.error)) return err(frame.error);
-      return err({ code: "protocol_error", message: "Runtime returned an invalid error." });
+      if (frame.v !== PROTOCOL_VERSION) {
+        return { kind: "result", result: err(protocolIncompatible()) };
+      }
+      if (frame.ok) return { kind: "result", result: ok(frame.result as T) };
+      if (isErrorRecord(frame.error)) return { kind: "result", result: err(frame.error) };
+      return {
+        kind: "result",
+        result: err({ code: "protocol_error", message: "Runtime returned an invalid error." }),
+      };
     } catch (error: unknown) {
-      return err(connectionError(error));
+      if (options.signal.aborted) {
+        return { kind: "result", result: err(connectionError(error)) };
+      }
+      if (error instanceof ProtocolReadError) return { kind: "protocol_failure" };
+      return { kind: "connection_failure", error };
     } finally {
       socket.destroy();
     }
@@ -335,7 +391,13 @@ function firstMatchingFrame(
     const stop = readJsonLines(
       socket,
       (frame) => {
-        if (!isRecord(frame) || frame.requestId !== requestId) return;
+        // This protocol permits exactly one request per connection. A complete
+        // response for another request therefore proves a framing/peer error,
+        // rather than a recoverable transport close.
+        if (!isRecord(frame) || frame.requestId !== requestId) {
+          finish(() => rejectFrame(new ProtocolReadError("Unexpected protocol response frame")));
+          return;
+        }
         finish(() => resolveFrame(frame));
       },
       (error) => finish(() => rejectFrame(error)),

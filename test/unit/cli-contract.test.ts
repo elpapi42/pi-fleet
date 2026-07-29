@@ -155,6 +155,56 @@ describe("public CLI contract", () => {
     });
   });
 
+  it("renders readable receive lines and a readable readiness line with --human", async () => {
+    const thinking = {
+      id: "event-1",
+      activityId: "activity-1",
+      cursor: "cursor-1",
+      agentId: agent.id,
+      epoch: 0,
+      sourceRawPosition: 1,
+      observedAt: "2026-01-01T00:00:00.000Z",
+      type: "assistant.thinking.finished",
+      text: "  weighing\n  options  ",
+    } as const;
+    const tool = {
+      id: "event-2",
+      activityId: "call-1",
+      cursor: "cursor-2",
+      agentId: agent.id,
+      epoch: 0,
+      sourceRawPosition: 2,
+      observedAt: "2026-01-01T00:00:01.000Z",
+      type: "tool.execution.finished",
+      tool: {
+        callId: "call-1",
+        name: "bash",
+        input: { command: "ls" },
+        output: "a\nb",
+        isError: false,
+      },
+    } as const;
+    const client = fakeClient({
+      receive: async function* () {
+        yield ok({ type: "ready", cursor: "cursor-0" as never });
+        yield ok({ type: "event", cursor: "cursor-1" as never, event: thinking as never });
+        yield ok({ type: "event", cursor: "cursor-2" as never, event: tool as never });
+      },
+    });
+    const harness = createHarness(client);
+
+    expect(
+      await runCli(["receive", "reviewer", "--until-idle", "--human"], harness.dependencies),
+    ).toBe(0);
+    const output = harness.output();
+    expect(output.stderr).toBe("receive ready at cursor-0\n");
+    expect(output.stdout).toBe(
+      "2026-01-01T00:00:00.000Z thinking: weighing options\n" +
+        "2026-01-01T00:00:01.000Z tool bash finished: a b\n",
+    );
+    expect(output.stdout).not.toContain('"type"');
+  });
+
   it("returns structured invalid-argument errors without stdout", async () => {
     const harness = createHarness(fakeClient());
 

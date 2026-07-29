@@ -2,6 +2,19 @@ import type { Socket } from "node:net";
 
 import { MAX_PROTOCOL_FRAME_BYTES } from "./version.js";
 
+/** A complete protocol record was invalid; unlike a transport close, never retry it. */
+export class ProtocolReadError extends Error {
+  constructor(
+    message:
+      | "Malformed JSON protocol frame"
+      | "Protocol frame exceeds maximum size"
+      | "Unexpected protocol response frame",
+  ) {
+    super(message);
+    this.name = "ProtocolReadError";
+  }
+}
+
 export function readJsonLines(
   socket: Socket,
   onValue: (value: unknown) => void,
@@ -15,12 +28,12 @@ export function readJsonLines(
       const newline = buffer.indexOf(0x0a);
       if (newline < 0) {
         if (buffer.length > maxFrameBytes) {
-          onError(new Error("Protocol frame exceeds maximum size"));
+          onError(new ProtocolReadError("Protocol frame exceeds maximum size"));
         }
         return;
       }
       if (newline > maxFrameBytes) {
-        onError(new Error("Protocol frame exceeds maximum size"));
+        onError(new ProtocolReadError("Protocol frame exceeds maximum size"));
         return;
       }
       const line = buffer.subarray(0, newline).toString("utf8").replace(/\r$/, "");
@@ -29,7 +42,7 @@ export function readJsonLines(
       try {
         onValue(JSON.parse(line));
       } catch {
-        onError(new Error("Malformed JSON protocol frame"));
+        onError(new ProtocolReadError("Malformed JSON protocol frame"));
         return;
       }
     }
