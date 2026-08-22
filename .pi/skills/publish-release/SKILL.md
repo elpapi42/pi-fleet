@@ -1,5 +1,5 @@
 ---
-name: pi-fleet-npm-release
+name: publish-release
 description: Create and verify an independent GitHub release for either the pi-fleet SDK or CLI so `.github/workflows/publish.yml` publishes it to npm. Use this skill whenever the user asks to release, publish, or create a GitHub release for `@elpapi42/pi-fleet-sdk` or `@elpapi42/pi-fleet-cli`, including beta or other prerelease versions. Check immutable tags, package versions, the CLI's pinned SDK dependency, GitHub Actions, npm dist-tags, provenance, and installation.
 compatibility: Requires authenticated `gh` and `git`, an npm CLI for registry checks, and existing npm trusted publishers for both packages.
 source: opm
