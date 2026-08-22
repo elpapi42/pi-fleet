@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "SDK for durable, host-local Pi agents",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elpapi42/pi-fleet-v2.git",
+    "directory": "packages/sdk"
+  },
   "type": "module",
   "engines": {
     "node": ">=22"
