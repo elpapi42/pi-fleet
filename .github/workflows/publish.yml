@@ -1,0 +1,109 @@
+name: Publish npm package
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: >-
+      startsWith(github.event.release.tag_name, 'sdk-v') ||
+      startsWith(github.event.release.tag_name, 'cli-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.16.0
+          cache: npm
+
+      - run: npm ci
+
+      - name: Select and validate release package
+        id: package
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$RELEASE_TAG" in
+            sdk-v*)
+              package_dir="packages/sdk"
+              package_name="@elpapi42/pi-fleet-sdk"
+              version="${RELEASE_TAG#sdk-v}"
+              ;;
+            cli-v*)
+              package_dir="packages/cli"
+              package_name="@elpapi42/pi-fleet-cli"
+              version="${RELEASE_TAG#cli-v}"
+              ;;
+            *)
+              echo "Unsupported release tag: $RELEASE_TAG" >&2
+              exit 1
+              ;;
+          esac
+
+          test -n "$version"
+          actual_name="$(node -p "require('./$package_dir/package.json').name")"
+          actual_version="$(node -p "require('./$package_dir/package.json').version")"
+          test "$actual_name" = "$package_name"
+          test "$actual_version" = "$version"
+
+          if [[ "$version" == *-* ]]; then
+            version_is_prerelease=true
+            dist_tag=next
+          else
+            version_is_prerelease=false
+            dist_tag=latest
+          fi
+
+          test "$IS_PRERELEASE" = "$version_is_prerelease"
+
+          {
+            echo "directory=$package_dir"
+            echo "name=$package_name"
+            echo "version=$version"
+            echo "dist_tag=$dist_tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify pinned SDK dependency
+        if: steps.package.outputs.name == '@elpapi42/pi-fleet-cli'
+        working-directory: packages/cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_version="$(node -p "require('./package.json').dependencies['@elpapi42/pi-fleet-sdk']")"
+          [[ "$sdk_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          npm view "@elpapi42/pi-fleet-sdk@$sdk_version" version --registry=https://registry.npmjs.org
+
+      - name: Build selected package
+        env:
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$PACKAGE_NAME" = "@elpapi42/pi-fleet-cli" ]; then
+            npm run build --workspace @elpapi42/pi-fleet-sdk
+          fi
+          npm run build --workspace "$PACKAGE_NAME"
+
+      - name: Test selected package
+        env:
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+        run: npm run test --workspace "$PACKAGE_NAME"
+
+      - name: Publish package
+        env:
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+          DIST_TAG: ${{ steps.package.outputs.dist_tag }}
+        run: npm publish --workspace "$PACKAGE_NAME" --access public --tag "$DIST_TAG" --provenance
