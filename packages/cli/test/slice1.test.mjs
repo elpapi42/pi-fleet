@@ -96,4 +96,13 @@ test("uses Commander help and errors", async () => {
       return true
     },
   )
+
+  await assert.rejects(
+    run(["list", "--", "--session", "user-session"], {}),
+    (error) => {
+      assert.match(error.stderr, /^Arguments after -- are supported only by pif create$/m)
+      assert.match(error.stderr, /Usage: pif \[options\] \[command\]/)
+      return true
+    },
+  )
 })

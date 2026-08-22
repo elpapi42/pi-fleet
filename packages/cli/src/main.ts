@@ -75,11 +75,11 @@ function createProgram(piArgs: string[]): Command {
 
 async function main(args: string[]): Promise<void> {
   const { pifArgs, piArgs } = splitPiArgs(args)
+  const program = createProgram(piArgs)
   if (piArgs.length > 0 && pifArgs[0] !== "create") {
-    throw new Error("Arguments after -- are supported only by pif create")
+    program.error("Arguments after -- are supported only by pif create")
   }
 
-  const program = createProgram(piArgs)
   if (pifArgs.length === 0) {
     program.help()
     return
