@@ -2,7 +2,7 @@
 import { Command } from "commander"
 import { connectPiFleet } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.3.0"
+const version = "0.3.1"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -17,6 +17,21 @@ function printAgent(id: string, name: string, state: string): void {
   console.log(`ID: ${id}`)
   console.log(`Name: ${name}`)
   console.log(`State: ${state}`)
+}
+
+function printAgentList(agents: Array<{ id: string; name: string; state: string }>): void {
+  if (agents.length === 0) {
+    console.log("No agents.")
+    return
+  }
+
+  const sorted = [...agents].sort((left, right) => left.name.localeCompare(right.name))
+  const nameWidth = Math.max("NAME".length, ...sorted.map((agent) => agent.name.length))
+  const stateWidth = Math.max("STATE".length, ...sorted.map((agent) => agent.state.length))
+  console.log(`${"NAME".padEnd(nameWidth)}  ${"STATE".padEnd(stateWidth)}  ID`)
+  for (const agent of sorted) {
+    console.log(`${agent.name.padEnd(nameWidth)}  ${agent.state.padEnd(stateWidth)}  ${agent.id}`)
+  }
 }
 
 async function withClient<T>(action: (client: Awaited<ReturnType<typeof connectPiFleet>>) => Promise<T>): Promise<T> {
@@ -61,13 +76,7 @@ function createProgram(piArgs: string[]): Command {
     .command("list")
     .description("List durable Pi agents")
     .action(async () => {
-      const agents = await withClient((client) => client.list())
-      if (agents.length === 0) {
-        console.log("No agents.")
-        return
-      }
-      console.log("NAME\tID\tSTATE")
-      for (const agent of agents) console.log(`${agent.name}\t${agent.id}\t${agent.state}`)
+      printAgentList(await withClient((client) => client.list()))
     })
 
   return program

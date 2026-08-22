@@ -1,12 +1,12 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { chmod, mkdtemp, rm, stat, symlink } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
 import { AgentNameTakenError } from "../dist/index.js"
-import { createStateDirectories } from "../dist/internal/paths.js"
+import { createStateDirectories, resolveStateDir } from "../dist/internal/paths.js"
 import { openRegistry } from "../dist/internal/registry.js"
 
 const execFileAsync = promisify(execFile)
@@ -38,6 +38,17 @@ async function withRegistry(run) {
     await rm(stateDir, { recursive: true, force: true })
   }
 }
+
+test("uses ~/.pi-fleet as the default state directory regardless of XDG_STATE_HOME", { concurrency: false }, () => {
+  const previous = process.env.XDG_STATE_HOME
+  process.env.XDG_STATE_HOME = "/tmp/other-state-home"
+  try {
+    assert.equal(resolveStateDir(), join(homedir(), ".pi-fleet"))
+  } finally {
+    if (previous === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = previous
+  }
+})
 
 test("creates an agent and resolves it from the durable name index", async () => {
   await withRegistry(async (registry) => {

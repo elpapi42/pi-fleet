@@ -42,14 +42,14 @@ async function terminateWorker(stateDir, id) {
 
 test("creates, lists, and checks a durable agent through the CLI", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-"))
-  const stateHome = join(root, "state")
-  const stateDir = join(stateHome, "pi-fleet")
+  const home = join(root, "home")
+  const stateDir = join(home, ".pi-fleet")
   const argsFile = join(root, "fake-pi-args.json")
   let createdId
   try {
     await chmod(fakePi, 0o755)
     const env = {
-      XDG_STATE_HOME: stateHome,
+      HOME: home,
       PI_FLEET_PI_COMMAND: fakePi,
       PI_FLEET_FAKE_PI_ARGS_FILE: argsFile,
     }
@@ -71,13 +71,52 @@ test("creates, lists, and checks a durable agent through the CLI", async () => {
 
     const listed = await run(["list"], env)
     const status = await run(["status", "researcher"], env)
-    assert.match(listed.stdout, /^NAME\s+ID\s+STATE$/m)
-    assert.match(listed.stdout, new RegExp(`^researcher\\s+${createdId}\\s+idle$`, "m"))
+    assert.match(listed.stdout, /^NAME\s+STATE\s+ID$/m)
+    assert.match(listed.stdout, new RegExp(`^researcher\\s+idle\\s+${createdId}$`, "m"))
     assert.match(status.stdout, new RegExp(`^ID: ${createdId}$`, "m"))
     assert.match(status.stdout, /^Name: researcher$/m)
     assert.match(status.stdout, /^State: idle$/m)
   } finally {
     if (createdId) await terminateWorker(stateDir, createdId)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("lists agents in sorted fixed-width columns", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-list-"))
+  const home = join(root, "home")
+  const stateDir = join(home, ".pi-fleet")
+  const env = { HOME: home }
+  const registry = await openRegistry(stateDir)
+  try {
+    const now = Date.now()
+    for (const [id, name, state] of [
+      ["agent-researcher", "researcher", "starting"],
+      ["agent-coder", "coder", "idle"],
+      ["agent-helper", "helper", "working"],
+    ]) {
+      await registry.create({
+        id,
+        name,
+        cwd: process.cwd(),
+        piArgs: [],
+        state,
+        lastEventSeq: 0,
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
+
+    const listed = await run(["list"], env)
+    assert.equal(listed.stdout, [
+      "NAME        STATE     ID",
+      "coder       idle      agent-coder",
+      "helper      working   agent-helper",
+      "researcher  starting  agent-researcher",
+      "",
+    ].join("\n"))
+  } finally {
+    await registry.close()
     await rm(root, { recursive: true, force: true })
   }
 })

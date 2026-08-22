@@ -6,8 +6,7 @@ import type { ConnectOptions } from "../types.js"
 
 export function resolveStateDir(options: ConnectOptions = {}): string {
   if (options.stateDir) return resolve(options.stateDir)
-  const stateHome = process.env.XDG_STATE_HOME ?? resolve(homedir(), ".local", "state")
-  return resolve(stateHome, "pi-fleet")
+  return resolve(homedir(), ".pi-fleet")
 }
 
 export function workerEndpoint(stateDir: string, agentId: string, generation: string): string {

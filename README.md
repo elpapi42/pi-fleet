@@ -28,6 +28,8 @@ pif --help
 pif create existing --cwd "$PWD" -- --session /path/to/session.jsonl
 ```
 
+By default, pi-fleet stores its LMDB state and IPC sockets in `~/.pi-fleet`. Pre-stable releases do not migrate state from earlier locations automatically.
+
 ## Develop locally
 
 Requirements: Node.js 22.12 or later and npm 10 or later.
