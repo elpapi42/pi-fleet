@@ -22,7 +22,15 @@ The packages have independent versions. The CLI must keep an exact SDK dependenc
 
 Infer `sdk` or `cli` from the request. Ask one short question if the target is unclear.
 
-Read the selected package version from its `package.json`. Do not change the version as part of release creation. If the requested version differs, stop and ask the user to update and commit it first.
+Every npm release requires a new version because published npm versions are immutable. Read the selected package version from its `package.json`. Do not choose or change the version during release creation. If the requested version differs or the current version already exists on npm, stop and ask the user to update and commit the release version first.
+
+Before release creation, require these version changes in the committed source:
+
+- The selected package's `package.json` has the new version.
+- `package-lock.json` has the same selected workspace version.
+- For an SDK release, `packages/sdk/src/index.ts` exports the same version.
+- For a CLI release, `packages/cli/package.json` pins the intended SDK version exactly and `package-lock.json` has the same dependency.
+- When the CLI adopts a newly released SDK, release the SDK before the CLI.
 
 Set the release type from the version:
 
@@ -38,7 +46,7 @@ Run these checks before creating a tag:
 1. Confirm `gh auth status` succeeds and the npm CLI is available.
 2. Confirm the working tree is clean.
 3. Fetch `origin` and confirm `HEAD` equals `origin/master`.
-4. Confirm the selected package version is valid and not already on npm.
+4. Confirm the selected package version is valid, consistent across the required files above, and not already on npm.
 5. Confirm the release tag does not exist locally, on `origin`, or as a GitHub release.
 6. Confirm `.github/workflows/publish.yml` exists at `HEAD`.
 7. Confirm the selected package declares `repository.url` as `https://github.com/elpapi42/pi-fleet-v2.git`.
