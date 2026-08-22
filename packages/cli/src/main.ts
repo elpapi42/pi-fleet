@@ -1,63 +1,94 @@
 #!/usr/bin/env node
-import { connectPiFleet, version } from "@elpapi42/pi-fleet-sdk"
+import { Command } from "commander"
+import { connectPiFleet } from "@elpapi42/pi-fleet-sdk"
 
-const usage = `pi-fleet CLI ${version}
+const version = "0.3.0"
 
-Usage:
-  pif create NAME [INSTRUCTIONS] [--cwd PATH] [-- PI_ARGS...]
-  pif status NAME
-  pif list
-  pif --help
-
-Arguments after -- pass through to Pi.
-Pi-fleet manages --mode and --no-session.`
-
-async function main(args: string[]): Promise<void> {
-  if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
-    console.log(usage)
-    return
+function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
+  const separator = args.indexOf("--")
+  if (separator < 0) return { pifArgs: args, piArgs: [] }
+  return {
+    pifArgs: args.slice(0, separator),
+    piArgs: args.slice(separator + 1),
   }
+}
 
+function printAgent(id: string, name: string, state: string): void {
+  console.log(`ID: ${id}`)
+  console.log(`Name: ${name}`)
+  console.log(`State: ${state}`)
+}
+
+async function withClient<T>(action: (client: Awaited<ReturnType<typeof connectPiFleet>>) => Promise<T>): Promise<T> {
   const client = await connectPiFleet()
   try {
-    switch (args[0]) {
-      case "create": {
-        const [name, ...remaining] = args.slice(1)
-        if (!name) throw new Error("Usage: pif create NAME [INSTRUCTIONS] [--cwd PATH] [-- PI_ARGS...]")
-        const instructions = remaining[0] && !remaining[0].startsWith("--") ? remaining.shift() : undefined
-        const separator = remaining.indexOf("--")
-        const options = separator < 0 ? remaining : remaining.slice(0, separator)
-        const piArgs = separator < 0 ? [] : remaining.slice(separator + 1)
-        const cwdIndex = options.indexOf("--cwd")
-        if (cwdIndex >= 0 && (cwdIndex + 1 >= options.length || options.length !== 2)) {
-          throw new Error("Usage: pif create NAME [INSTRUCTIONS] [--cwd PATH] [-- PI_ARGS...]")
-        }
-        if (cwdIndex < 0 && options.length !== 0) throw new Error("Usage: pif create NAME [INSTRUCTIONS] [--cwd PATH] [-- PI_ARGS...]")
-        const cwd = cwdIndex < 0 ? process.cwd() : options[cwdIndex + 1]
-        const agent = await client.create({ name, instructions, cwd, piArgs })
-        console.log(JSON.stringify({ id: agent.id, name: agent.name }))
-        return
-      }
-      case "status": {
-        const name = args[1]
-        if (!name || args.length !== 2) throw new Error("Usage: pif status NAME")
-        console.log(JSON.stringify(await (await client.get(name)).status()))
-        return
-      }
-      case "list":
-        if (args.length !== 1) throw new Error("Usage: pif list")
-        for (const agent of await client.list()) console.log(JSON.stringify(agent))
-        return
-      default:
-        throw new Error(`Unknown command: ${args[0]}`)
-    }
+    return await action(client)
   } finally {
     await client.close()
   }
 }
 
+function createProgram(piArgs: string[]): Command {
+  const program = new Command()
+
+  program
+    .name("pif")
+    .description("Manage durable, host-local Pi agents")
+    .version(version)
+    .showSuggestionAfterError()
+    .showHelpAfterError()
+
+  program
+    .command("create <name> [instructions]")
+    .description("Create a durable Pi agent")
+    .option("--cwd <path>", "working directory", process.cwd())
+    .addHelpText("after", "\nArguments after -- pass through to Pi.")
+    .action(async (name: string, instructions: string | undefined, options: { cwd: string }) => {
+      const agent = await withClient((client) => client.create({ name, instructions, cwd: options.cwd, piArgs }))
+      console.log(`Created agent ${agent.name}`)
+      printAgent(agent.id, agent.name, "idle")
+    })
+
+  program
+    .command("status <name>")
+    .description("Show an agent's current state")
+    .action(async (name: string) => {
+      const status = await withClient(async (client) => (await client.get(name)).status())
+      printAgent(status.id, status.name, status.state)
+    })
+
+  program
+    .command("list")
+    .description("List durable Pi agents")
+    .action(async () => {
+      const agents = await withClient((client) => client.list())
+      if (agents.length === 0) {
+        console.log("No agents.")
+        return
+      }
+      console.log("NAME\tID\tSTATE")
+      for (const agent of agents) console.log(`${agent.name}\t${agent.id}\t${agent.state}`)
+    })
+
+  return program
+}
+
+async function main(args: string[]): Promise<void> {
+  const { pifArgs, piArgs } = splitPiArgs(args)
+  if (piArgs.length > 0 && pifArgs[0] !== "create") {
+    throw new Error("Arguments after -- are supported only by pif create")
+  }
+
+  const program = createProgram(piArgs)
+  if (pifArgs.length === 0) {
+    program.help()
+    return
+  }
+  await program.parseAsync(["node", "pif", ...pifArgs])
+}
+
 void main(process.argv.slice(2)).catch((error) => {
   const message = error instanceof Error ? error.message : String(error)
-  process.stderr.write(`${JSON.stringify({ error: message })}\n`)
+  console.error(message)
   process.exitCode = 1
 })

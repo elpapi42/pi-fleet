@@ -10,6 +10,16 @@ test("shows help from the built executable", () => {
 
   assert.equal(result.status, 0)
   assert.match(result.stdout, /Usage:/)
-  assert.match(result.stdout, /pif --help/)
-  assert.match(result.stdout, /Arguments after -- pass through to Pi/)
+  assert.match(result.stdout, /Usage: pif \[options\] \[command\]/)
+  assert.match(result.stdout, /create \[options\] <name> \[instructions\]/)
+})
+
+test("shows the CLI package version", () => {
+  const result = spawnSync(process.execPath, ["../dist/main.js", "--version"], {
+    cwd: import.meta.dirname,
+    encoding: "utf8"
+  })
+
+  assert.equal(result.status, 0)
+  assert.equal(result.stdout, "0.3.0\n")
 })

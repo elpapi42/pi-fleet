@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { chmod, mkdtemp, rm } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { promisify } from "node:util"
@@ -44,27 +44,55 @@ test("creates, lists, and checks a durable agent through the CLI", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-"))
   const stateHome = join(root, "state")
   const stateDir = join(stateHome, "pi-fleet")
-  let created
+  const argsFile = join(root, "fake-pi-args.json")
+  let createdId
   try {
     await chmod(fakePi, 0o755)
-    const env = { XDG_STATE_HOME: stateHome, PI_FLEET_PI_COMMAND: fakePi }
-    created = JSON.parse((await run(["create", "researcher", "--cwd", process.cwd()], env)).stdout)
-    const listed = (await run(["list"], env)).stdout.trim().split("\n").map(JSON.parse)
-    const status = JSON.parse((await run(["status", "researcher"], env)).stdout)
-    assert.equal(created.name, "researcher")
-    assert.equal(listed[0].id, created.id)
-    assert.deepEqual(status, { id: created.id, name: "researcher", state: "idle" })
+    const env = {
+      XDG_STATE_HOME: stateHome,
+      PI_FLEET_PI_COMMAND: fakePi,
+      PI_FLEET_FAKE_PI_ARGS_FILE: argsFile,
+    }
+    const created = await run(
+      ["create", "researcher", "Use concise answers.", "--cwd", process.cwd(), "--", "--session-id", "existing"],
+      env,
+    )
+    createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.match(created.stdout, /^Created agent researcher$/m)
+    assert.ok(createdId)
+    assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
+      "--mode",
+      "rpc",
+      "--session-id",
+      "existing",
+      "--append-system-prompt",
+      "Use concise answers.",
+    ])
+
+    const listed = await run(["list"], env)
+    const status = await run(["status", "researcher"], env)
+    assert.match(listed.stdout, /^NAME\s+ID\s+STATE$/m)
+    assert.match(listed.stdout, new RegExp(`^researcher\\s+${createdId}\\s+idle$`, "m"))
+    assert.match(status.stdout, new RegExp(`^ID: ${createdId}$`, "m"))
+    assert.match(status.stdout, /^Name: researcher$/m)
+    assert.match(status.stdout, /^State: idle$/m)
   } finally {
-    if (created) await terminateWorker(stateDir, created.id)
+    if (createdId) await terminateWorker(stateDir, createdId)
     await rm(root, { recursive: true, force: true })
   }
 })
 
-test("writes command errors as compact JSONL", async () => {
+test("uses Commander help and errors", async () => {
+  const help = await run(["create", "--help"], {})
+  assert.match(help.stdout, /Usage: pif create \[options\] <name> \[instructions\]/)
+  assert.match(help.stdout, /--cwd <path>/)
+  assert.match(help.stdout, /Arguments after -- pass through to Pi/)
+
   await assert.rejects(
     run(["status", "researcher", "extra"], {}),
     (error) => {
-      assert.deepEqual(JSON.parse(error.stderr), { error: "Usage: pif status NAME" })
+      assert.match(error.stderr, /error: too many arguments for 'status'/)
+      assert.doesNotMatch(error.stderr, /\{"error":/)
       return true
     },
   )

@@ -22,6 +22,7 @@ npm install --global @elpapi42/pi-fleet-cli
 pif create researcher --cwd "$PWD"
 pif list
 pif status researcher
+pif --help
 
 # Pass session selection directly to Pi
 pif create existing --cwd "$PWD" -- --session /path/to/session.jsonl
@@ -29,7 +30,7 @@ pif create existing --cwd "$PWD" -- --session /path/to/session.jsonl
 
 ## Develop locally
 
-Requirements: Node.js 22 or later and npm 10 or later.
+Requirements: Node.js 22.12 or later and npm 10 or later.
 
 ```bash
 npm install
