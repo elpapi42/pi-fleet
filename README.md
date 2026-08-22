@@ -1,6 +1,6 @@
 # pi-fleet
 
-pi-fleet provides durable, host-local Pi agents through an SDK and CLI. The project is in active development. Slice 1 will add agent creation and discovery.
+pi-fleet provides durable, host-local Pi agents through an SDK and CLI. Slice 1 supports agent creation, discovery, and status checks on Unix-like hosts.
 
 ## Packages
 
@@ -9,7 +9,7 @@ pi-fleet provides durable, host-local Pi agents through an SDK and CLI. The proj
 
 ## Install
 
-After the first release, install the SDK in an application:
+Install the SDK in an application:
 
 ```bash
 npm install @elpapi42/pi-fleet-sdk
@@ -19,7 +19,9 @@ Install the CLI globally:
 
 ```bash
 npm install --global @elpapi42/pi-fleet-cli
-pif --help
+pif create researcher --cwd "$PWD"
+pif list
+pif status researcher
 ```
 
 ## Develop locally
@@ -51,9 +53,7 @@ The matching package version must equal the tag version. For example, publish SD
 
 A stable GitHub release publishes npm tag `latest`. A GitHub prerelease requires an npm prerelease version such as `0.2.0-beta.1` and publishes npm tag `next`. The workflow rejects a stable release with a prerelease version, and the reverse mismatch.
 
-Trusted publishing can only be configured after a package exists on npm. For any new package name, publish its first version once with an npm account or temporary token. Publish the SDK before bootstrapping a CLI version that pins it.
-
-After that bootstrap, configure npm trusted publishing in each package's **Publishing access** settings. Add the GitHub repository and this workflow file:
+Trusted publishing is configured independently for both npm packages. Each package trusts this GitHub repository and workflow file:
 
 ```text
 .github/workflows/publish.yml
