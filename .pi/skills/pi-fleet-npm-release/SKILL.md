@@ -1,7 +1,7 @@
 ---
 name: pi-fleet-npm-release
 description: Create and verify an independent GitHub release for either the pi-fleet SDK or CLI so `.github/workflows/publish.yml` publishes it to npm. Use this skill whenever the user asks to release, publish, or create a GitHub release for `@elpapi42/pi-fleet-sdk` or `@elpapi42/pi-fleet-cli`, including beta or other prerelease versions. Check immutable tags, package versions, the CLI's pinned SDK dependency, GitHub Actions, npm dist-tags, provenance, and installation.
-compatibility: Requires authenticated `gh`, `git`, npm 11.15.0 or newer, and npm trusted publishers for both packages.
+compatibility: Requires authenticated `gh` and `git`, an npm CLI for registry checks, and existing npm trusted publishers for both packages.
 source: opm
 ---
 
@@ -35,18 +35,28 @@ Set the release type from the version:
 
 Run these checks before creating a tag:
 
-1. Confirm `gh auth status` and `npm whoami` succeed.
-2. Confirm npm is version `11.15.0` or newer.
-3. Confirm the working tree is clean.
-4. Fetch `origin` and confirm `HEAD` equals `origin/master`.
-5. Confirm the selected package version is valid and not already on npm.
-6. Confirm the release tag does not exist locally, on `origin`, or as a GitHub release.
-7. Confirm `.github/workflows/publish.yml` exists at `HEAD`.
-8. Confirm the selected package declares `repository.url` as `https://github.com/elpapi42/pi-fleet-v2.git`.
-9. Confirm `npm trust list <package>` points to:
-   - repository `elpapi42/pi-fleet-v2`
-   - file `publish.yml`
-   - permission `publish`
+1. Confirm `gh auth status` succeeds and the npm CLI is available.
+2. Confirm the working tree is clean.
+3. Fetch `origin` and confirm `HEAD` equals `origin/master`.
+4. Confirm the selected package version is valid and not already on npm.
+5. Confirm the release tag does not exist locally, on `origin`, or as a GitHub release.
+6. Confirm `.github/workflows/publish.yml` exists at `HEAD`.
+7. Confirm the selected package declares `repository.url` as `https://github.com/elpapi42/pi-fleet-v2.git`.
+8. For an existing package, confirm its previous release has npm provenance from this repository and the trusted workflow identity has not changed.
+
+Do not run `npm whoami` or `npm trust list` during a routine release. Local npm authentication does not participate in GitHub OIDC publishing, and these account commands can force unnecessary browser authentication.
+
+Run `npm trust list <package>` only when:
+
+- this is the package's first trusted release;
+- the repository, workflow filename, or GitHub environment changed since the last successful release; or
+- GitHub publishing failed with an npm authentication or authorization error.
+
+When a trust check is required, use npm 11.15.0 or newer and confirm:
+
+- repository `elpapi42/pi-fleet-v2`;
+- file `publish.yml`;
+- permission `publish`.
 
 For a CLI release, also:
 
