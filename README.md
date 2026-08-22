@@ -22,6 +22,9 @@ npm install --global @elpapi42/pi-fleet-cli
 pif create researcher --cwd "$PWD"
 pif list
 pif status researcher
+
+# Pass session selection directly to Pi
+pif create existing --cwd "$PWD" -- --session /path/to/session.jsonl
 ```
 
 ## Develop locally

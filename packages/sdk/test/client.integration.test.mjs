@@ -116,6 +116,49 @@ test("stops serving status after Pi exits", { concurrency: false }, async () => 
   })
 })
 
+test("passes user session selection arguments to Pi", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const argsFile = join(stateDir, "fake-pi-args.json")
+    process.env.PI_FLEET_FAKE_PI_ARGS_FILE = argsFile
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({
+        name: "researcher",
+        cwd: process.cwd(),
+        piArgs: ["--session", "/sessions/user-selected.jsonl"],
+      })
+      assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
+        "--mode",
+        "rpc",
+        "--session",
+        "/sessions/user-selected.jsonl",
+      ])
+      await terminateWorker(stateDir, agent.id)
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_ARGS_FILE
+      await client.close()
+    }
+  })
+})
+
+test("rejects only Pi arguments required for fleet durability and RPC", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const client = await connectPiFleet({ stateDir })
+    try {
+      await assert.rejects(
+        client.create({ name: "mode", cwd: process.cwd(), piArgs: ["--mode", "text"] }),
+        /managed by pi-fleet/,
+      )
+      await assert.rejects(
+        client.create({ name: "ephemeral", cwd: process.cwd(), piArgs: ["--no-session"] }),
+        /managed by pi-fleet/,
+      )
+    } finally {
+      await client.close()
+    }
+  })
+})
+
 test("removes an agent record when Pi cannot become ready", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     process.env.PI_FLEET_FAKE_PI_MODE = "exit"

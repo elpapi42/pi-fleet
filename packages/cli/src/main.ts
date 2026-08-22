@@ -7,7 +7,10 @@ Usage:
   pif create NAME [INSTRUCTIONS] [--cwd PATH] [-- PI_ARGS...]
   pif status NAME
   pif list
-  pif --help`
+  pif --help
+
+Arguments after -- pass through to Pi.
+Pi-fleet manages --mode and --no-session.`
 
 async function main(args: string[]): Promise<void> {
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {

@@ -3,6 +3,7 @@ dist/
 *.tgz
 .DS_Store
 .codegraph
+/vendor/pi/
 
 # Local planning artifacts
 plan.md

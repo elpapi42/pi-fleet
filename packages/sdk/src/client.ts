@@ -11,7 +11,7 @@ import { launchWorker } from "./internal/worker-launcher.js"
 import { requestStatus } from "./internal/worker-client.js"
 
 const STARTUP_TIMEOUT_MS = 10_000
-const OWNED_PI_OPTIONS = new Set(["--mode", "--session", "--session-id", "--no-session"])
+const OWNED_PI_OPTIONS = new Set(["--mode", "--no-session"])
 
 class PiFleetClientImpl implements PiFleetClient {
   readonly #registry: Registry

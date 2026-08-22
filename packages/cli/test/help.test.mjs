@@ -11,4 +11,5 @@ test("shows help from the built executable", () => {
   assert.equal(result.status, 0)
   assert.match(result.stdout, /Usage:/)
   assert.match(result.stdout, /pif --help/)
+  assert.match(result.stdout, /Arguments after -- pass through to Pi/)
 })

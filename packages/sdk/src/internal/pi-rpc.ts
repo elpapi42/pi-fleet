@@ -9,11 +9,23 @@ export type PiState = {
 
 export class PiStartupError extends Error {}
 
+const USER_SESSION_SELECTORS = new Set([
+  "--session",
+  "--session-id",
+  "--continue",
+  "-c",
+  "--resume",
+  "-r",
+  "--fork",
+])
+
 export async function startPi(record: AgentRecord, timeoutMs = 10_000): Promise<{ process: ChildProcessWithoutNullStreams; state: PiState }> {
   const command = process.env.PI_FLEET_PI_COMMAND ?? "pi"
   const args = ["--mode", "rpc", ...record.piArgs]
   if (record.instructions) args.push("--append-system-prompt", record.instructions)
-  if (record.sessionPath) args.push("--session", record.sessionPath)
+  if (record.sessionPath && !record.piArgs.some((arg) => USER_SESSION_SELECTORS.has(arg))) {
+    args.push("--session", record.sessionPath)
+  }
 
   const child = spawn(command, args, { cwd: record.cwd, stdio: "pipe" })
   let stderr = ""
