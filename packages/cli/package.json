@@ -1,0 +1,24 @@
+{
+  "name": "@elpapi42/pi-fleet-cli",
+  "version": "0.1.0",
+  "description": "CLI for durable, host-local Pi agents",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "pif": "./dist/main.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@elpapi42/pi-fleet-sdk": "0.1.0"
+  }
+}

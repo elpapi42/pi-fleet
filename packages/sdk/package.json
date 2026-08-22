@@ -1,0 +1,25 @@
+{
+  "name": "@elpapi42/pi-fleet-sdk",
+  "version": "0.1.0",
+  "description": "SDK for durable, host-local Pi agents",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "test": "node --test test/*.test.mjs"
+  }
+}

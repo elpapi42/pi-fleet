@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.tgz
+.DS_Store
+.codegraph
+
+# Local planning artifacts
+plan.md
+proposal.md
