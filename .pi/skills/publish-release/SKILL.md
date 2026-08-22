@@ -29,7 +29,7 @@ Before release creation, require these version changes in the committed source:
 - The selected package's `package.json` has the new version.
 - `package-lock.json` has the same selected workspace version.
 - For an SDK release, `packages/sdk/src/index.ts` exports the same version.
-- For a CLI release, `packages/cli/package.json` pins the intended SDK version exactly and `package-lock.json` has the same dependency.
+- For a CLI release, `packages/cli/src/main.ts` reports the same CLI version, `packages/cli/package.json` pins the intended SDK version exactly, and `package-lock.json` has the same dependency.
 - When the CLI adopts a newly released SDK, release the SDK before the CLI.
 
 Set the release type from the version:
