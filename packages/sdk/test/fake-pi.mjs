@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline"
-import { writeFile } from "node:fs/promises"
+import { access, writeFile } from "node:fs/promises"
 
 if (process.env.PI_FLEET_FAKE_PI_ARGS_FILE) {
   await writeFile(process.env.PI_FLEET_FAKE_PI_ARGS_FILE, JSON.stringify(process.argv.slice(2)))
@@ -48,6 +48,9 @@ function respondToState(request) {
 }
 
 async function handlePrompt(request) {
+  if (process.env.PI_FLEET_FAKE_PI_PROMPT_STARTED_FILE) {
+    await writeFile(process.env.PI_FLEET_FAKE_PI_PROMPT_STARTED_FILE, "started")
+  }
   if (mode === "exit-on-prompt") process.exit(0)
   if (mode === "ignore-prompt") return
   if (mode === "reject-prompt") {
@@ -67,8 +70,25 @@ async function handlePrompt(request) {
   }
   if (mode === "prompt-event") write({ type: "agent_start" })
   write({ type: "response", id: request.id, success: true, command: "prompt" })
+  const settleGate = process.env.PI_FLEET_FAKE_PI_SETTLE_FILE
+  if (settleGate) {
+    await waitForFile(settleGate)
+    write({ type: "agent_settled" })
+    return
+  }
   const settleAfterPromptMs = Number(process.env.PI_FLEET_FAKE_PI_SETTLE_AFTER_PROMPT_MS ?? 0)
   if (settleAfterPromptMs > 0) setTimeout(() => write({ type: "agent_settled" }), settleAfterPromptMs)
+}
+
+async function waitForFile(path) {
+  while (true) {
+    try {
+      await access(path)
+      return
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+  }
 }
 
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity })

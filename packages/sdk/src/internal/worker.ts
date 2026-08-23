@@ -22,6 +22,7 @@ async function main(): Promise<void> {
   let pi: PiProcess | undefined
   let stateUpdates = Promise.resolve()
   let replies = Promise.resolve()
+  const handlers = new Set<Promise<void>>()
 
   const closeRouter = () => {
     if (routerClosed) return
@@ -70,16 +71,25 @@ async function main(): Promise<void> {
     state = "idle"
 
     for await (const [route, frame] of router) {
-      void handleRequest(route, frame, record, generation, pi, () => state, queueReply)
+      const handler = handleRequest(route, frame, record, generation, pi, () => state, queueReply)
+      handlers.add(handler)
+      void handler.then(
+        () => handlers.delete(handler),
+        () => {
+          handlers.delete(handler)
+          closeRouter()
+        },
+      )
     }
   } finally {
     process.off("SIGTERM", stop)
     process.off("SIGINT", stop)
     pi?.process.off("exit", closeRouter)
     closeRouter()
+    await stopPi(pi?.process)
+    await Promise.allSettled(handlers)
     await stateUpdates
     await replies
-    await stopPi(pi?.process)
     await registry.close()
   }
 }

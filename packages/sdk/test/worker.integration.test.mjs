@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { chmod, mkdtemp, rm } from "node:fs/promises"
+import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -46,7 +46,8 @@ async function waitFor(check, message) {
 async function withWorker(options, run) {
   const stateDir = await mkdtemp(join(tmpdir(), "pi-fleet-worker-"))
   const previous = new Map()
-  for (const [key, value] of Object.entries(options)) {
+  const resolvedOptions = typeof options === "function" ? options(stateDir) : options
+  for (const [key, value] of Object.entries(resolvedOptions)) {
     previous.set(key, process.env[key])
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
@@ -77,7 +78,9 @@ async function withWorker(options, run) {
 }
 
 test("worker returns Pi acceptance and persists working then idle", { concurrency: false }, async () => {
-  await withWorker({ PI_FLEET_FAKE_PI_MODE: "prompt-event", PI_FLEET_FAKE_PI_SETTLE_AFTER_PROMPT_MS: "150" }, async ({ stateDir, record }) => {
+  await withWorker(
+    (stateDir) => ({ PI_FLEET_FAKE_PI_MODE: "prompt-event", PI_FLEET_FAKE_PI_SETTLE_FILE: join(stateDir, "settle") }),
+    async ({ stateDir, record }) => {
     assert.ok(record)
     const accepted = await requestSend(record, "Investigate NATS", "steer")
     assert.equal(typeof accepted.acceptedAt, "number")
@@ -90,6 +93,7 @@ test("worker returns Pi acceptance and persists working then idle", { concurrenc
       await registry.close()
     }
 
+    await writeFile(join(stateDir, "settle"), "settle")
     await waitFor(async () => (await requestStatus(record)).state === "idle", "Worker did not return to idle")
     const finalRegistry = await openRegistry(stateDir)
     try {
@@ -97,7 +101,8 @@ test("worker returns Pi acceptance and persists working then idle", { concurrenc
     } finally {
       await finalRegistry.close()
     }
-  })
+    },
+  )
 })
 
 test("worker rejects invalid messages and returns a Pi prompt rejection without retrying", { concurrency: false }, async () => {
@@ -107,6 +112,30 @@ test("worker rejects invalid messages and returns a Pi prompt rejection without 
     await assert.rejects(requestSend(record, "Rejected work", "steer"), { message: "fake prompt rejected" })
     assert.equal((await requestStatus(record)).state, "idle")
   })
+})
+
+test("waits for a pending send handler during worker shutdown", { concurrency: false }, async () => {
+  await withWorker(
+    (stateDir) => ({
+      PI_FLEET_FAKE_PI_MODE: "ignore-prompt",
+      PI_FLEET_FAKE_PI_PROMPT_STARTED_FILE: join(stateDir, "prompt-started"),
+    }),
+    async ({ stateDir, record }) => {
+      assert.ok(record)
+      const send = requestSend(record, "Pending work", "steer", 1_000)
+      await waitFor(async () => {
+        try {
+          await access(join(stateDir, "prompt-started"))
+          return true
+        } catch {
+          return false
+        }
+      }, "Fake Pi did not receive the pending prompt")
+
+      await terminateWorker(stateDir, record.id)
+      await assert.rejects(send)
+    },
+  )
 })
 
 test("worker correlates concurrent sends and keeps status responsive", { concurrency: false }, async () => {

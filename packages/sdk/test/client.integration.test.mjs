@@ -48,6 +48,18 @@ async function terminateAllWorkers(stateDir) {
   for (const id of ids) await terminateWorker(stateDir, id)
 }
 
+async function waitForUnavailable(status) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      await status()
+    } catch {
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error("Worker continued serving status after Pi exited")
+}
+
 async function withState(run) {
   const stateDir = await mkdtemp(join(tmpdir(), "pi-fleet-client-"))
   const previous = process.env.PI_FLEET_PI_COMMAND
@@ -103,14 +115,15 @@ test("keeps a ready worker alive after an early status request times out", { con
 
 test("stops serving status after Pi exits", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
-    process.env.PI_FLEET_FAKE_PI_EXIT_AFTER_READY_MS = "100"
+    const piPidFile = join(stateDir, "fake-pi.pid")
+    process.env.PI_FLEET_FAKE_PI_PID_FILE = piPidFile
     const client = await connectPiFleet({ stateDir })
     try {
       const agent = await client.create({ name: "researcher", cwd: process.cwd() })
-      await new Promise((resolve) => setTimeout(resolve, 200))
-      await assert.rejects(agent.status())
+      process.kill(Number(await readFile(piPidFile, "utf8")), "SIGTERM")
+      await waitForUnavailable(() => agent.status())
     } finally {
-      delete process.env.PI_FLEET_FAKE_PI_EXIT_AFTER_READY_MS
+      delete process.env.PI_FLEET_FAKE_PI_PID_FILE
       await client.close()
     }
   })
