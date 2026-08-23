@@ -153,6 +153,16 @@ npm install --prefix "$temp_prefix" "@elpapi42/pi-fleet-cli@<version>"
 rm -rf "$temp_prefix"
 ```
 
+After the clean installation passes, update the user's global `pif` installation to the exact released CLI version:
+
+```bash
+npm install --global "@elpapi42/pi-fleet-cli@<version>"
+pif --version
+npm list --global @elpapi42/pi-fleet-cli @elpapi42/pi-fleet-sdk --depth=1
+```
+
+Require `pif --version` to equal the released CLI version. Require the global CLI to contain the exact SDK dependency declared by the released CLI package. This global update is an approved project release action. For an SDK-only release, do not change global `pif`; wait until the matching CLI version is published.
+
 ## 7. Report
 
 Report:
@@ -163,6 +173,7 @@ Report:
 - npm dist-tag;
 - provenance result;
 - clean-install result for CLI;
+- global `pif` and pinned SDK versions after a CLI release;
 - any check that could not run.
 
 Do not deprecate versions, remove dist-tags, change package access, or modify trusted publishers unless the user asks for that separate operation.
