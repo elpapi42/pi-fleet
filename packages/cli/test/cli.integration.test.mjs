@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { execFile } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import { chmod, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -15,6 +15,23 @@ const fakePi = resolve(testDir, "../../sdk/test/pi/fake-pi.mjs")
 
 async function run(args, env) {
   return execFileAsync(process.execPath, [pif, ...args], { env: { ...process.env, ...env } })
+}
+
+async function waitForText(child, getText, expected, timeoutMs = 5_000) {
+  if (getText().includes(expected)) return
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.stdout.off("data", onData)
+      reject(new Error(`Timed out waiting for ${JSON.stringify(expected)} in ${JSON.stringify(getText())}`))
+    }, timeoutMs)
+    const onData = () => {
+      if (!getText().includes(expected)) return
+      clearTimeout(timeout)
+      child.stdout.off("data", onData)
+      resolve()
+    }
+    child.stdout.on("data", onData)
+  })
 }
 
 async function terminateWorker(stateDir, id) {
@@ -90,6 +107,51 @@ test("creates, lists, and checks a durable agent through the CLI", async () => {
     assert.match(status.stdout, /^Name: researcher$/m)
     assert.match(status.stdout, /^State: idle$/m)
   } finally {
+    if (createdId) await terminateWorker(stateDir, createdId)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("receives and renders live activity through the CLI", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-receive-"))
+  const home = join(root, "home")
+  const stateDir = join(home, ".pi-fleet")
+  const env = {
+    ...process.env,
+    HOME: home,
+    PI_FLEET_PI_COMMAND: fakePi,
+    PI_FLEET_FAKE_PI_MODE: "semantic-events",
+  }
+  let createdId
+  let receiver
+  try {
+    await chmod(fakePi, 0o755)
+    const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
+    createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.ok(createdId)
+
+    receiver = spawn(process.execPath, [pif, "receive", "researcher"], { env, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    receiver.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
+    receiver.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk })
+    const exited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
+
+    await run(["send", "researcher", "Warmup one"], env)
+    await run(["send", "researcher", "Warmup two"], env)
+    await run(["send", "researcher", "CLI activity"], env)
+    await waitForText(receiver, () => stdout, "Message finished: Handled: CLI activity")
+    await waitForText(receiver, () => stdout, "Tool finished: bash")
+
+    receiver.kill("SIGINT")
+    assert.deepEqual(await exited, { code: 130, signal: null })
+    assert.match(stdout, /^Thinking started\.$/m)
+    assert.match(stdout, /^Thinking finished: I will check\.$/m)
+    assert.match(stdout, /^Message started\.$/m)
+    assert.match(stdout, /^Tool started: bash$/m)
+    assert.equal(stderr, "")
+  } finally {
+    if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
     if (createdId) await terminateWorker(stateDir, createdId)
     await rm(root, { recursive: true, force: true })
   }

@@ -111,8 +111,11 @@ test("publishes the same ordered semantic events to independent subscribers", { 
     const second = await subscribe(record)
     try {
       await requestSend(record, "Inspect the project", "steer")
-      const firstEvents = await Promise.all(Array.from({ length: 6 }, () => receiveEvent(first)))
-      const secondEvents = await Promise.all(Array.from({ length: 6 }, () => receiveEvent(second)))
+      assert.match((await requestStatus(record)).state, /^(working|idle)$/)
+      const firstEvents = []
+      const secondEvents = []
+      for (let index = 0; index < 6; index += 1) firstEvents.push(await receiveEvent(first))
+      for (let index = 0; index < 6; index += 1) secondEvents.push(await receiveEvent(second))
       const types = ["message.started", "thinking.started", "thinking.finished", "message.finished", "tool.started", "tool.finished"]
       assert.deepEqual(firstEvents.map((event) => event.event.type), types)
       assert.deepEqual(secondEvents.map((event) => event.event.type), types)
@@ -120,12 +123,28 @@ test("publishes the same ordered semantic events to independent subscribers", { 
       assert.equal(firstEvents[0].event.activityId, firstEvents[3].event.activityId)
       assert.equal(firstEvents[1].event.activityId, firstEvents[2].event.activityId)
       assert.equal(firstEvents[2].event.content, "I will check.")
-      assert.equal(firstEvents[3].event.text, "I will check.")
+      assert.equal(firstEvents[3].event.text, "Handled: Inspect the project")
       assert.deepEqual(firstEvents[4].event.args, { command: "pwd" })
       assert.equal(firstEvents[5].event.isError, false)
     } finally {
       first.socket.close()
       second.socket.close()
+    }
+  })
+})
+
+test("does not replay activity produced before subscription", { concurrency: false }, async () => {
+  await withWorker({ PI_FLEET_FAKE_PI_MODE: "semantic-events" }, async ({ record }) => {
+    assert.ok(record)
+    await requestSend(record, "Before subscription", "steer")
+
+    const subscription = await subscribe(record)
+    try {
+      await requestSend(record, "After subscription", "steer")
+      const first = await receiveEvent(subscription)
+      assert.equal(first.event.type, "message.started")
+    } finally {
+      subscription.socket.close()
     }
   })
 })

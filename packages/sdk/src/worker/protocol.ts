@@ -32,6 +32,15 @@ export type UnsubscribeRequest = {
   command: "unsubscribe"
   agentId: string
   runtimeGeneration: string
+  subscriptionId?: string
+}
+
+export type SubscriptionStatusRequest = {
+  version: 1
+  requestId: string
+  command: "subscription.status"
+  agentId: string
+  runtimeGeneration: string
   subscriptionId: string
 }
 
@@ -72,6 +81,17 @@ export type UnsubscribeResponse = {
   ok: boolean
   agentId: string
   runtimeGeneration: string
+  subscriptionId?: string
+  error?: string
+}
+
+export type SubscriptionStatusResponse = {
+  version: 1
+  requestId: string
+  command: "subscription.status"
+  ok: boolean
+  agentId: string
+  runtimeGeneration: string
   subscriptionId: string
   error?: string
 }
@@ -90,10 +110,12 @@ export type WorkerMessage =
   | SendRequest
   | SubscribeRequest
   | UnsubscribeRequest
+  | SubscriptionStatusRequest
   | StatusResponse
   | SendResponse
   | SubscribeResponse
   | UnsubscribeResponse
+  | SubscriptionStatusResponse
   | EventFrame
 
 export function encode(message: WorkerMessage): string {

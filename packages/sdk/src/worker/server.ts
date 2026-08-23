@@ -1,30 +1,27 @@
-import { randomUUID } from "node:crypto"
 import { Router, capability } from "zeromq"
-import { type AgentEvent } from "../fleet/agent.js"
 import { startPi, type PiProcess } from "../pi/runtime.js"
 import { openStore, type AgentRecord } from "../state/store.js"
 import {
   decode,
   encode,
-  type EventFrame,
   type SendRequest,
   type SendResponse,
   type StatusRequest,
   type StatusResponse,
   type SubscribeRequest,
   type SubscribeResponse,
+  type SubscriptionStatusRequest,
+  type SubscriptionStatusResponse,
   type UnsubscribeRequest,
   type UnsubscribeResponse,
   type WorkerMessage,
 } from "./protocol.js"
+import { LiveActivity } from "./activity.js"
 
 type Arguments = { stateDir: string; agentId: string; generation: string }
-type WorkerRequest = StatusRequest | SendRequest | SubscribeRequest | UnsubscribeRequest
-type WorkerResponse = StatusResponse | SendResponse | SubscribeResponse | UnsubscribeResponse
-type Subscriber = { route: Buffer; subscriptionId: string; events: EventFrame[] }
+type WorkerRequest = StatusRequest | SendRequest | SubscribeRequest | UnsubscribeRequest | SubscriptionStatusRequest
+type WorkerResponse = StatusResponse | SendResponse | SubscribeResponse | UnsubscribeResponse | SubscriptionStatusResponse
 type Outbound = { route: Buffer; message: WorkerMessage; subscriptionId?: string }
-
-const SUBSCRIBER_QUEUE_LIMIT = 128
 
 async function main(): Promise<void> {
   const { stateDir, agentId, generation } = parseArguments(process.argv.slice(2))
@@ -42,12 +39,12 @@ async function main(): Promise<void> {
   let outbound = Promise.resolve()
   const handlers = new Set<Promise<void>>()
   const controlFrames: Outbound[] = []
-  const subscribers = new Map<string, Subscriber>()
+  const activity = new LiveActivity(record.id, generation)
 
   const closeRouter = () => {
     if (routerClosed) return
     routerClosed = true
-    subscribers.clear()
+    activity.close()
     router.close()
   }
   const stop = () => closeRouter()
@@ -61,15 +58,7 @@ async function main(): Promise<void> {
       state = nextState
     }).catch(() => closeRouter())
   }
-  const nextOutbound = (): Outbound | undefined => {
-    const control = controlFrames.shift()
-    if (control) return control
-    for (const subscriber of subscribers.values()) {
-      const event = subscriber.events.shift()
-      if (event) return { route: subscriber.route, message: event, subscriptionId: subscriber.subscriptionId }
-    }
-    return undefined
-  }
+  const nextOutbound = (): Outbound | undefined => controlFrames.shift() ?? activity.nextOutbound()
   const drainOutbound = async () => {
     while (!routerClosed) {
       const next = nextOutbound()
@@ -77,7 +66,7 @@ async function main(): Promise<void> {
       try {
         await router.send([next.route, encode(next.message)])
       } catch (error) {
-        if (next.subscriptionId) subscribers.delete(next.subscriptionId)
+        if (next.subscriptionId) activity.deliveryFailed(next.subscriptionId)
         else if (!isUnreachablePeer(error)) throw error
       }
     }
@@ -89,39 +78,11 @@ async function main(): Promise<void> {
     controlFrames.push({ route: Buffer.from(route), message: response })
     scheduleOutbound()
   }
-  const subscribe = (route: Buffer): string => {
-    const subscriptionId = randomUUID()
-    subscribers.set(subscriptionId, { route: Buffer.from(route), subscriptionId, events: [] })
-    return subscriptionId
-  }
-  const unsubscribe = (route: Buffer, subscriptionId: string) => {
-    const subscriber = subscribers.get(subscriptionId)
-    if (subscriber?.route.equals(route)) subscribers.delete(subscriptionId)
-  }
-  const publish = (event: AgentEvent) => {
-    for (const subscriber of subscribers.values()) {
-      if (subscriber.events.length >= SUBSCRIBER_QUEUE_LIMIT) {
-        subscribers.delete(subscriber.subscriptionId)
-        continue
-      }
-      subscriber.events.push({
-        version: 1,
-        command: "event",
-        agentId: record.id,
-        runtimeGeneration: generation,
-        subscriptionId: subscriber.subscriptionId,
-        event,
-      })
-    }
-    scheduleOutbound()
-  }
-  const normalizeEvent = createEventNormalizer()
   const onPiEvent = (event: unknown) => {
     if (!isRecord(event)) return
     if (event.type === "agent_start") queueStateUpdate("working")
     if (event.type === "agent_settled") queueStateUpdate("idle")
-    const normalized = normalizeEvent(event)
-    if (normalized) publish(normalized)
+    if (activity.publishPiEvent(event)) scheduleOutbound()
   }
 
   process.once("SIGTERM", stop)
@@ -140,7 +101,7 @@ async function main(): Promise<void> {
     state = "idle"
 
     for await (const [route, frame] of router) {
-      const handler = handleRequest(route, frame, record, generation, pi, () => state, reply, subscribe, unsubscribe)
+      const handler = handleRequest(route, frame, record, generation, pi, () => state, reply, activity)
       handlers.add(handler)
       void handler.then(
         () => handlers.delete(handler),
@@ -171,8 +132,7 @@ async function handleRequest(
   pi: PiProcess,
   getState: () => AgentRecord["state"],
   reply: (route: Buffer, response: WorkerResponse) => void,
-  subscribe: (route: Buffer) => string,
-  unsubscribe: (route: Buffer, subscriptionId: string) => void,
+  activity: LiveActivity,
 ): Promise<void> {
   const request = decodeRequest(frame)
   if (!request || request.agentId !== record.id || request.runtimeGeneration !== generation) {
@@ -191,14 +151,29 @@ async function handleRequest(
   }
 
   if (request.command === "subscribe") {
-    const subscriptionId = subscribe(route)
+    const subscriptionId = activity.subscribe(route)
     reply(route, { version: 1, requestId: request.requestId, command: "subscribe", ok: true, agentId: record.id, runtimeGeneration: generation, subscriptionId })
     return
   }
 
   if (request.command === "unsubscribe") {
-    unsubscribe(route, request.subscriptionId)
+    activity.unsubscribe(route, request.subscriptionId)
     reply(route, { version: 1, requestId: request.requestId, command: "unsubscribe", ok: true, agentId: record.id, runtimeGeneration: generation, subscriptionId: request.subscriptionId })
+    return
+  }
+
+  if (request.command === "subscription.status") {
+    const ok = activity.hasSubscription(route, request.subscriptionId)
+    reply(route, {
+      version: 1,
+      requestId: request.requestId,
+      command: "subscription.status",
+      ok,
+      agentId: record.id,
+      runtimeGeneration: generation,
+      subscriptionId: request.subscriptionId,
+      ...(ok ? {} : { error: "Subscription is no longer active" }),
+    })
     return
   }
 
@@ -219,51 +194,6 @@ async function handleRequest(
   }
 }
 
-function createEventNormalizer(): (event: Record<string, unknown>) => AgentEvent | undefined {
-  let assistantActivityId: string | undefined
-
-  return (event) => {
-    const timestamp = Date.now()
-    if (event.type === "message_start" && isAssistantMessage(event.message)) {
-      assistantActivityId = randomUUID()
-      return { type: "message.started", eventId: randomUUID(), activityId: assistantActivityId, timestamp }
-    }
-    if (event.type === "message_end" && isAssistantMessage(event.message)) {
-      const activityId = assistantActivityId ?? randomUUID()
-      assistantActivityId = undefined
-      return { type: "message.finished", eventId: randomUUID(), activityId, timestamp, text: assistantText(event.message) }
-    }
-    if (event.type === "message_update" && isRecord(event.assistantMessageEvent)) {
-      const update = event.assistantMessageEvent
-      if (!assistantActivityId || typeof update.contentIndex !== "number") return undefined
-      const activityId = `${assistantActivityId}:thinking:${update.contentIndex}`
-      if (update.type === "thinking_start") return { type: "thinking.started", eventId: randomUUID(), activityId, timestamp }
-      if (update.type === "thinking_end" && typeof update.content === "string") {
-        return { type: "thinking.finished", eventId: randomUUID(), activityId, timestamp, content: update.content }
-      }
-    }
-    if (event.type === "tool_execution_start" && typeof event.toolCallId === "string" && typeof event.toolName === "string" && "args" in event) {
-      return { type: "tool.started", eventId: randomUUID(), activityId: event.toolCallId, timestamp, toolName: event.toolName, args: event.args }
-    }
-    if (event.type === "tool_execution_end" && typeof event.toolCallId === "string" && typeof event.toolName === "string" && typeof event.isError === "boolean") {
-      return { type: "tool.finished", eventId: randomUUID(), activityId: event.toolCallId, timestamp, toolName: event.toolName, isError: event.isError }
-    }
-    return undefined
-  }
-}
-
-function isAssistantMessage(value: unknown): value is { role: "assistant"; content?: unknown } {
-  return isRecord(value) && value.role === "assistant"
-}
-
-function assistantText(message: { content?: unknown }): string {
-  if (!Array.isArray(message.content)) return ""
-  return message.content
-    .filter((content): content is { type: "text"; text: string } => isRecord(content) && content.type === "text" && typeof content.text === "string")
-    .map((content) => content.text)
-    .join("")
-}
-
 function decodeRequest(frame: Buffer): WorkerRequest | undefined {
   try {
     const request = decode(frame)
@@ -271,7 +201,8 @@ function decodeRequest(frame: Buffer): WorkerRequest | undefined {
     if (request.command === "status") return request as StatusRequest
     if (request.command === "send" && typeof request.message === "string" && typeof request.delivery === "string") return request as SendRequest
     if (request.command === "subscribe") return request as SubscribeRequest
-    if (request.command === "unsubscribe" && typeof request.subscriptionId === "string") return request as UnsubscribeRequest
+    if (request.command === "unsubscribe" && (request.subscriptionId === undefined || typeof request.subscriptionId === "string")) return request as UnsubscribeRequest
+    if (request.command === "subscription.status" && typeof request.subscriptionId === "string") return request as SubscriptionStatusRequest
   } catch {}
   return undefined
 }
@@ -280,6 +211,7 @@ function invalidResponse(request: WorkerRequest | undefined, agentId: string, ge
   if (request?.command === "send") return sendResponse(request, agentId, generation, "Worker identity does not match the request")
   if (request?.command === "subscribe") return { version: 1, requestId: request.requestId, command: "subscribe", ok: false, agentId, runtimeGeneration: generation, error: "Worker identity does not match the request" }
   if (request?.command === "unsubscribe") return { version: 1, requestId: request.requestId, command: "unsubscribe", ok: false, agentId, runtimeGeneration: generation, subscriptionId: request.subscriptionId, error: "Worker identity does not match the request" }
+  if (request?.command === "subscription.status") return { version: 1, requestId: request.requestId, command: "subscription.status", ok: false, agentId, runtimeGeneration: generation, subscriptionId: request.subscriptionId, error: "Worker identity does not match the request" }
   return { version: 1, requestId: request?.requestId ?? "", ok: false, error: "Worker identity does not match the request" }
 }
 

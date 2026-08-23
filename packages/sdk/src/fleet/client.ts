@@ -17,7 +17,8 @@ import {
   type SendResult,
 } from "./agent.js"
 import { openStore, type AgentRecord, type FleetStore } from "../state/store.js"
-import { launchWorker, receiveEvents, requestSend, requestStatus, stopWorker, workerEndpoint, type WorkerTarget } from "../worker/control.js"
+import { launchWorker, requestSend, requestStatus, stopWorker, workerEndpoint, type WorkerTarget } from "../worker/control.js"
+import { receiveEvents, type WorkerEventStream } from "../worker/stream.js"
 import { validatePiArguments } from "../pi/runtime.js"
 
 const STARTUP_TIMEOUT_MS = 10_000
@@ -43,7 +44,7 @@ export interface PiFleetClient {
 class PiFleetClientImpl implements PiFleetClient {
   readonly #store: FleetStore
   readonly #stateDir: string
-  readonly #streamControllers = new Set<AbortController>()
+  readonly #streams = new Set<WorkerEventStream>()
   #closed = false
 
   constructor(store: FleetStore, stateDir: string) {
@@ -121,16 +122,17 @@ class PiFleetClientImpl implements PiFleetClient {
     this.assertOpen()
     const record = this.#store.getById(id)
     if (!record || record.name !== name) throw new AgentNotFoundError(name)
-    const controller = new AbortController()
-    this.#streamControllers.add(controller)
-    return trackStream(receiveEvents(workerTarget(record), controller.signal), controller, this.#streamControllers)
+    const stream = receiveEvents(workerTarget(record))
+    this.#streams.add(stream)
+    return trackStream(stream, this.#streams)
   }
 
-  close(): Promise<void> {
-    if (this.#closed) return Promise.resolve()
+  async close(): Promise<void> {
+    if (this.#closed) return
     this.#closed = true
-    for (const controller of this.#streamControllers) controller.abort()
-    return this.#store.close()
+    await Promise.all([...this.#streams].map((stream) => stream.close()))
+    this.#streams.clear()
+    await this.#store.close()
   }
 
   private assertOpen(): void {
@@ -164,15 +166,17 @@ async function validateCreateOptions(options: CreateAgentOptions): Promise<{ nam
   return { name, cwd, piArgs }
 }
 
-function trackStream(stream: AsyncIterable<AgentEvent>, controller: AbortController, controllers: Set<AbortController>): AsyncIterable<AgentEvent> {
+function trackStream(stream: WorkerEventStream, streams: Set<WorkerEventStream>): AsyncIterable<AgentEvent> {
+  let claimed = false
+  const release = () => streams.delete(stream)
   return {
     [Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
-      const iterator = stream[Symbol.asyncIterator]()
-      const release = () => controllers.delete(controller)
+      if (claimed) throw new Error("An agent event stream can only be consumed once")
+      claimed = true
       return {
         async next(): Promise<IteratorResult<AgentEvent>> {
           try {
-            const result = await iterator.next()
+            const result = await stream.next()
             if (result.done) release()
             return result
           } catch (error) {
@@ -181,19 +185,19 @@ function trackStream(stream: AsyncIterable<AgentEvent>, controller: AbortControl
           }
         },
         async return(): Promise<IteratorResult<AgentEvent>> {
-          controller.abort()
           try {
-            return await iterator.return?.() ?? { done: true, value: undefined }
+            await stream.close()
+            return { done: true, value: undefined }
           } finally {
             release()
           }
         },
         async throw(error?: unknown): Promise<IteratorResult<AgentEvent>> {
-          controller.abort()
           try {
-            if (iterator.throw) return await iterator.throw(error)
+            if (stream.throw) return await stream.throw(error)
             throw error
           } finally {
+            await stream.close()
             release()
           }
         },

@@ -50,4 +50,6 @@ await agent.send("Summarize the findings", { delivery: "followUp" })
 
 `agent.receive()` provides best-effort live activity after the subscription starts. Each client receives an independent stream. Slice 3 does not replay missed events. The stream reports `thinking.started`, `thinking.finished`, `message.started`, `message.finished`, `tool.started`, and `tool.finished`. It ends normally when the consumer stops or the client closes. It throws if the worker or Pi becomes unavailable.
 
+Each event has a live `eventId`, an `activityId` that connects matching start and finish events, and a worker-assigned Unix-millisecond `timestamp`. A late subscriber can receive only one side of an activity pair. Stream order is authoritative; timestamps do not define ordering. `eventId` is not a replay cursor. `message.finished.text` contains concatenated assistant text blocks only. Each value returned by `agent.receive()` is a single-consumer stream; call `receive()` again for another independent subscription. Slice 4 will add durable sequence cursors and replay.
+
 Slice 3 supports Unix-like hosts with ZeroMQ `ipc://` support. It provides create, get, list, status, send, and live receive. Recovery, durable replay, retirement, compact, and destroy come in later slices.

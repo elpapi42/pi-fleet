@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
-import { connectPiFleet, AgentNameTakenError, AgentNotFoundError } from "../../dist/index.js"
+import { connectPiFleet, AgentNameTakenError, AgentNotFoundError, AgentUnavailableError } from "../../dist/index.js"
 import { openStore } from "../../dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
@@ -176,6 +176,101 @@ test("sends work through an immutable agent handle", { concurrency: false }, asy
       await terminateWorker(stateDir, agent.id)
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_COMMANDS_FILE
+      await client.close()
+    }
+  })
+})
+
+test("receives live semantic activity through the public agent handle", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    process.env.PI_FLEET_FAKE_PI_MODE = "semantic-events"
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      const events = []
+      const receiving = (async () => {
+        let sawExpectedMessage = false
+        for await (const event of agent.receive()) {
+          events.push(event)
+          if (event.type === "message.finished" && event.text === "Handled: Public stream") sawExpectedMessage = true
+          if (sawExpectedMessage && event.type === "tool.finished") break
+        }
+      })()
+
+      await agent.send("Warmup")
+      await agent.send("Public stream")
+      await receiving
+
+      assert.deepEqual(events.slice(-6).map(({ type }) => type), [
+        "message.started",
+        "thinking.started",
+        "thinking.finished",
+        "message.finished",
+        "tool.started",
+        "tool.finished",
+      ])
+      await terminateWorker(stateDir, agent.id)
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_MODE
+      await client.close()
+    }
+  })
+})
+
+test("worker failure rejects a public live stream", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    process.env.PI_FLEET_FAKE_PI_MODE = "semantic-events"
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      const iterator = agent.receive()[Symbol.asyncIterator]()
+      const firstEvent = iterator.next()
+      await agent.send("Warmup")
+      await agent.send("Failure stream")
+
+      let sawExpectedMessage = false
+      let current = await firstEvent
+      while (!current.done) {
+        if (current.value.type === "message.finished" && current.value.text === "Handled: Failure stream") sawExpectedMessage = true
+        if (sawExpectedMessage && current.value.type === "tool.finished") break
+        current = await iterator.next()
+      }
+      await terminateWorker(stateDir, agent.id)
+      await assert.rejects(iterator.next(), AgentUnavailableError)
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_MODE
+      await client.close()
+    }
+  })
+})
+
+test("client close ends a pending live stream", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const client = await connectPiFleet({ stateDir })
+    const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+    const pending = agent.receive()[Symbol.asyncIterator]().next()
+
+    await client.close()
+    assert.deepEqual(await pending, { done: true, value: undefined })
+  })
+})
+
+test("client close releases a live stream paused after an event", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    process.env.PI_FLEET_FAKE_PI_MODE = "semantic-events"
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      const iterator = agent.receive()[Symbol.asyncIterator]()
+      const firstEvent = iterator.next()
+      await agent.send("Warmup")
+      await agent.send("Close stream")
+      assert.equal((await firstEvent).done, false)
+
+      await client.close()
+      assert.deepEqual(await iterator.next(), { done: true, value: undefined })
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_MODE
       await client.close()
     }
   })
