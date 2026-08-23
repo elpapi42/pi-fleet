@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { Dealer } from "zeromq"
 import { fileURLToPath } from "node:url"
 import { join } from "node:path"
-import { AgentUnavailableError } from "../fleet/agent.js"
+import { AgentRecoveryQueueFullError, AgentSendUncertainError, AgentUnavailableError } from "../fleet/agent.js"
 import { decode, encode, type SendRequest, type SendResponse, type StatusRequest, type StatusResponse } from "./protocol.js"
 
 export type WorkerTarget = {
@@ -59,7 +59,7 @@ export async function requestStatus(record: WorkerTarget, timeoutMs = 1_000): Pr
   return response.status
 }
 
-export async function requestSend(record: WorkerTarget, message: string, delivery: "steer" | "followUp", timeoutMs = 10_000): Promise<{ acceptedAt: number }> {
+export async function requestSend(record: WorkerTarget, message: string, delivery: "steer" | "followUp", timeoutMs = 45_000): Promise<{ acceptedAt: number }> {
   const request: SendRequest = {
     version: 1,
     requestId: randomUUID(),
@@ -68,6 +68,7 @@ export async function requestSend(record: WorkerTarget, message: string, deliver
     runtimeGeneration: record.runtime?.generation ?? "",
     message,
     delivery,
+    deadlineAt: Date.now() + 40_000,
   }
   const response = await requestWorker(record, request, timeoutMs)
 
@@ -75,6 +76,9 @@ export async function requestSend(record: WorkerTarget, message: string, deliver
     throw new AgentUnavailableError(record.name)
   }
   if (!response.ok) {
+    if (response.errorCode === "recovery-queue-full") throw new AgentRecoveryQueueFullError(record.name)
+    if (response.errorCode === "send-uncertain") throw new AgentSendUncertainError(record.name)
+    if (response.errorCode === "unavailable") throw new AgentUnavailableError(record.name)
     if (typeof response.error === "string" && response.error) throw new Error(response.error)
     throw new AgentUnavailableError(record.name)
   }
@@ -105,7 +109,8 @@ function isStatusResponse(response: unknown): response is StatusResponse {
 
 function isSendResponse(response: unknown): response is SendResponse {
   return isRecord(response) && response.version === 1 && response.command === "send" && typeof response.requestId === "string" &&
-    typeof response.agentId === "string" && typeof response.runtimeGeneration === "string" && typeof response.ok === "boolean"
+    typeof response.agentId === "string" && typeof response.runtimeGeneration === "string" && typeof response.ok === "boolean" &&
+    (response.errorCode === undefined || response.errorCode === "recovery-queue-full" || response.errorCode === "send-uncertain" || response.errorCode === "send-expired" || response.errorCode === "unavailable")
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

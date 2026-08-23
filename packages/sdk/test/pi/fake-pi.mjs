@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline"
-import { access, writeFile } from "node:fs/promises"
+import { access, appendFile, readFile, writeFile } from "node:fs/promises"
+
+let incarnation = 1
+if (process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE) {
+  try {
+    incarnation = Number(await readFile(process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE, "utf8")) + 1
+  } catch {}
+  await writeFile(process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE, String(incarnation))
+}
 
 if (process.env.PI_FLEET_FAKE_PI_ARGS_FILE) {
   await writeFile(process.env.PI_FLEET_FAKE_PI_ARGS_FILE, JSON.stringify(process.argv.slice(2)))
@@ -8,13 +16,17 @@ if (process.env.PI_FLEET_FAKE_PI_ARGS_FILE) {
 if (process.env.PI_FLEET_FAKE_PI_PID_FILE) {
   await writeFile(process.env.PI_FLEET_FAKE_PI_PID_FILE, String(process.pid))
 }
-if (process.env.PI_FLEET_FAKE_PI_MODE === "exit") {
+if (process.env.PI_FLEET_FAKE_PI_MODE === "exit" || incarnation > 1 && process.env.PI_FLEET_FAKE_PI_FAIL_RECOVERY === "1") {
+  const delay = incarnation > 1 ? Number(process.env.PI_FLEET_FAKE_PI_RECOVERY_FAIL_DELAY_MS ?? 0) : 0
+  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
   process.stderr.write("fake Pi startup failed\n")
   process.exit(1)
 }
 
 const sessionFile = "/tmp/fake-pi-session.jsonl"
-const sessionId = process.env.PI_FLEET_FAKE_SESSION_ID ?? "fake-session"
+const sessionId = incarnation > 1
+  ? process.env.PI_FLEET_FAKE_PI_RECOVERY_SESSION_ID ?? process.env.PI_FLEET_FAKE_SESSION_ID ?? "fake-session"
+  : process.env.PI_FLEET_FAKE_SESSION_ID ?? "fake-session"
 const mode = process.env.PI_FLEET_FAKE_PI_MODE
 const commands = []
 const reversePrompts = []
@@ -23,8 +35,11 @@ function write(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`)
 }
 
-function respondToState(request) {
-  const delay = Number(process.env.PI_FLEET_FAKE_PI_DELAY_MS ?? 0)
+async function respondToState(request) {
+  if (incarnation > 1 && process.env.PI_FLEET_FAKE_PI_RECOVERY_STARTED_FILE) {
+    await writeFile(process.env.PI_FLEET_FAKE_PI_RECOVERY_STARTED_FILE, "started")
+  }
+  const delay = Number(incarnation > 1 ? process.env.PI_FLEET_FAKE_PI_RECOVERY_DELAY_MS ?? process.env.PI_FLEET_FAKE_PI_DELAY_MS ?? 0 : process.env.PI_FLEET_FAKE_PI_DELAY_MS ?? 0)
   const response = Buffer.from(`${JSON.stringify({
     type: "response",
     id: request.id,
@@ -40,6 +55,9 @@ function respondToState(request) {
     } else {
       process.stdout.write(response)
     }
+    if (process.env.PI_FLEET_FAKE_PI_READY_INCARNATION_FILE) {
+      await writeFile(process.env.PI_FLEET_FAKE_PI_READY_INCARNATION_FILE, String(incarnation))
+    }
   }
   if (delay > 0) setTimeout(() => void send(), delay)
   else void send()
@@ -49,7 +67,12 @@ async function handlePrompt(request) {
   if (process.env.PI_FLEET_FAKE_PI_PROMPT_STARTED_FILE) {
     await writeFile(process.env.PI_FLEET_FAKE_PI_PROMPT_STARTED_FILE, "started")
   }
-  if (mode === "exit-on-prompt") process.exit(0)
+  const exitThisPrompt = !process.env.PI_FLEET_FAKE_PI_EXIT_ON_PROMPT_INCARNATION || Number(process.env.PI_FLEET_FAKE_PI_EXIT_ON_PROMPT_INCARNATION) === incarnation
+  if (mode === "start-then-exit-on-prompt" && exitThisPrompt) {
+    write({ type: "agent_start" })
+    process.exit(0)
+  }
+  if (mode === "exit-on-prompt" && exitThisPrompt) process.exit(0)
   if (mode === "ignore-prompt") return
   if (mode === "reject-prompt") {
     write({ type: "response", id: request.id, success: false, error: "fake prompt rejected" })
@@ -130,7 +153,10 @@ input.on("line", (line) => {
     if (process.env.PI_FLEET_FAKE_PI_COMMANDS_FILE) {
       await writeFile(process.env.PI_FLEET_FAKE_PI_COMMANDS_FILE, JSON.stringify(commands))
     }
-    if (request.type === "get_state") respondToState(request)
+    if (process.env.PI_FLEET_FAKE_PI_COMMAND_LOG_FILE) {
+      await appendFile(process.env.PI_FLEET_FAKE_PI_COMMAND_LOG_FILE, `${JSON.stringify({ incarnation, request })}\n`)
+    }
+    if (request.type === "get_state") await respondToState(request)
     if (request.type === "prompt") await handlePrompt(request)
   })()
 })

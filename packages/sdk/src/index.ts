@@ -1,10 +1,12 @@
-export const version = "0.7.3"
+export const version = "0.8.0"
 
 export { connectPiFleet } from "./fleet/client.js"
 export {
   AgentNameTakenError,
   AgentNotFoundError,
   AgentUnavailableError,
+  AgentRecoveryQueueFullError,
+  AgentSendUncertainError,
   InvalidCursorError,
 } from "./fleet/agent.js"
 

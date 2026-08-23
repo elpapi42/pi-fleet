@@ -28,7 +28,7 @@ export class LiveActivity {
   readonly #agentId: string
   readonly #runtimeGeneration: string
   readonly #subscribers = new Map<string, Subscriber>()
-  readonly #normalize = createEventNormalizer()
+  #normalize = createEventNormalizer()
   #lastSubscriptionId: string | undefined
 
   constructor(agentId: string, runtimeGeneration: string) {
@@ -38,6 +38,10 @@ export class LiveActivity {
 
   normalizePiEvent(rawEvent: Record<string, unknown>): UnsequencedAgentEvent | undefined {
     return this.#normalize(rawEvent)
+  }
+
+  resetPiActivity(): void {
+    this.#normalize = createEventNormalizer()
   }
 
   subscribe(route: Buffer, replaying: boolean): string {

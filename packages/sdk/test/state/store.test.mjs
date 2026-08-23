@@ -231,6 +231,27 @@ test("marks only the claimed runtime generation ready", async () => {
   })
 })
 
+test("records recovered Pi session identity and settles interrupted work", async () => {
+  await withStore(async (store) => {
+    await store.create({ ...record("researcher", "agent-1"), state: "working" })
+
+    assert.equal(await store.markRecovered("agent-1", "wrong-runtime", {
+      sessionPath: "/tmp/wrong.jsonl",
+      sessionId: "wrong-session",
+    }), false)
+    assert.equal(await store.markRecovered("agent-1", "runtime-1", {
+      sessionPath: "/tmp/recovered.jsonl",
+      sessionId: "recovered-session",
+    }), true)
+
+    const recovered = store.getById("agent-1")
+    assert.equal(recovered?.state, "idle")
+    assert.equal(recovered?.sessionPath, "/tmp/recovered.jsonl")
+    assert.equal(recovered?.sessionId, "recovered-session")
+    assert.equal(recovered?.runtime?.generation, "runtime-1")
+  })
+})
+
 test("updates state only for the claimed runtime generation", async () => {
   await withStore(async (store) => {
     await store.create(record("researcher", "agent-1"))

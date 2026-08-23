@@ -123,22 +123,6 @@ test("waits for delayed Pi readiness and reaps Pi when the worker stops", { conc
   })
 })
 
-test("stops serving status after Pi exits", { concurrency: false }, async () => {
-  await withState(async (stateDir) => {
-    const piPidFile = join(stateDir, "fake-pi.pid")
-    process.env.PI_FLEET_FAKE_PI_PID_FILE = piPidFile
-    const client = await connectPiFleet({ stateDir })
-    try {
-      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
-      process.kill(Number(await readFile(piPidFile, "utf8")), "SIGTERM")
-      await waitForUnavailable(() => agent.status())
-    } finally {
-      delete process.env.PI_FLEET_FAKE_PI_PID_FILE
-      await client.close()
-    }
-  })
-})
-
 test("passes user session selection arguments to Pi", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const argsFile = join(stateDir, "fake-pi-args.json")

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
-import { PiRequestError, PiStartupError, startPi } from "../../dist/pi/runtime.js"
+import { PiRequestError, PiRequestUncertainError, PiStartupError, startPi } from "../../dist/pi/runtime.js"
 
 const fakePi = join(dirname(fileURLToPath(import.meta.url)), "fake-pi.mjs")
 
@@ -151,6 +151,32 @@ test("reports Pi startup stderr and reaps the failed process", { concurrency: fa
   })
 })
 
+test("cancels Pi startup and reaps the process", { concurrency: false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-pi-cancel-"))
+  const pidFile = join(root, "pi.pid")
+  try {
+    await withFakePi({ PI_FLEET_FAKE_PI_DELAY_MS: "5000", PI_FLEET_FAKE_PI_PID_FILE: pidFile }, async () => {
+      const controller = new AbortController()
+      const starting = startPi(record(), 10_000, undefined, controller.signal)
+      let pid
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        try {
+          pid = Number(await readFile(pidFile, "utf8"))
+          break
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 25))
+        }
+      }
+      assert.ok(pid)
+      controller.abort()
+      await assert.rejects(starting, PiStartupError)
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" })
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("sends a prompt after readiness and receives interleaved Pi events", { concurrency: false }, async () => {
   const events = []
   await withFakePi({ PI_FLEET_FAKE_PI_MODE: "prompt-event" }, async () => {
@@ -222,7 +248,7 @@ test("times out and rejects pending prompts when Pi exits", { concurrency: false
   await withFakePi({ PI_FLEET_FAKE_PI_MODE: "exit-on-prompt" }, async () => {
     const pi = await startPi(record())
     try {
-      await assert.rejects(pi.send("Exit before acknowledgment", "steer", 1_000), PiStartupError)
+      await assert.rejects(pi.send("Exit before acknowledgment", "steer", 1_000), PiRequestUncertainError)
     } finally {
       await stop(pi.process)
     }
@@ -231,7 +257,7 @@ test("times out and rejects pending prompts when Pi exits", { concurrency: false
   await withFakePi({ PI_FLEET_FAKE_PI_MODE: "ignore-prompt" }, async () => {
     const pi = await startPi(record())
     try {
-      await assert.rejects(pi.send("Timeout", "steer", 20), PiRequestError)
+      await assert.rejects(pi.send("Timeout", "steer", 20), PiRequestUncertainError)
     } finally {
       await stop(pi.process)
     }

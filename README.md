@@ -1,6 +1,6 @@
 # pi-fleet
 
-pi-fleet provides durable, host-local Pi agents through an SDK and CLI. Slice 4 supports agent creation, discovery, status checks, sending work, and durable activity replay on Unix-like hosts.
+pi-fleet provides durable, host-local Pi agents through an SDK and CLI. Slice 5 supports agent creation, discovery, status checks, sending work, durable activity replay, and transparent Pi process recovery on Unix-like hosts.
 
 ## Packages
 
@@ -40,7 +40,7 @@ pif create existing --cwd "$PWD" -- --session /path/to/session.jsonl
 
 By default, pi-fleet stores its LMDB state and IPC sockets in `~/.pi-fleet`. Event history includes bounded tool details and remains there until destroy support arrives. There is no expiry or retention setting yet, so disk use can grow. Pre-stable releases do not migrate state from earlier locations automatically.
 
-Running agents keep the worker version used at creation. After updating pi-fleet, create a new agent before testing new worker behavior such as live receive. Until `destroy` exists, use a new agent name.
+Running agents keep the worker version used at creation. After updating pi-fleet, create a new agent before testing new worker behavior such as Pi recovery. Until `destroy` exists, use a new agent name.
 
 ## Develop locally
 

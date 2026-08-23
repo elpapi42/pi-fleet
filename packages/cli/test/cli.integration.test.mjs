@@ -164,6 +164,58 @@ test("receives and renders live activity through the CLI", async () => {
   }
 })
 
+test("renders durable interrupted work after Pi recovery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-recovery-"))
+  const home = join(root, "home")
+  const stateDir = join(home, ".pi-fleet")
+  const piPidFile = join(root, "pi.pid")
+  const settleFile = join(root, "settle")
+  const env = {
+    ...process.env,
+    HOME: home,
+    PI_FLEET_PI_COMMAND: fakePi,
+    PI_FLEET_FAKE_PI_MODE: "prompt-event",
+    PI_FLEET_FAKE_PI_PID_FILE: piPidFile,
+    PI_FLEET_FAKE_PI_SETTLE_FILE: settleFile,
+  }
+  let createdId
+  let receiver
+  try {
+    await chmod(fakePi, 0o755)
+    const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
+    createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.ok(createdId)
+
+    await run(["send", "researcher", "Start recoverable work"], env)
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      if ((await run(["status", "researcher"], env)).stdout.includes("State: working")) break
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    process.kill(Number(await readFile(piPidFile, "utf8")), "SIGTERM")
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      if ((await run(["status", "researcher"], env)).stdout.includes("State: idle")) break
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+
+    receiver = spawn(process.execPath, [pif, "receive", "researcher", "--from-start"], { env, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    receiver.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
+    receiver.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk })
+    const exited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
+    await waitForText(receiver, () => stdout, "Work interrupted.")
+    receiver.kill("SIGINT")
+    assert.deepEqual(await exited, { code: 130, signal: null })
+    assert.match(stdout, /^Work interrupted\.$/m)
+    assert.match(stdout, /^Cursor: pf1\.[A-Za-z0-9_-]+$/m)
+    assert.equal(stderr, "")
+  } finally {
+    if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
+    if (createdId) await terminateWorker(stateDir, createdId)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("renders bounded tool errors without terminal control characters", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-bounded-output-"))
   const home = join(root, "home")

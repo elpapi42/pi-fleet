@@ -3,7 +3,7 @@ import { stripVTControlCharacters } from "node:util"
 import { Command, Option } from "commander"
 import { connectPiFleet, type AgentEvent } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.8.0"
+const version = "0.9.0"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -102,6 +102,9 @@ function printEvent(event: AgentEvent): void {
     case "tool.finished":
       console.log(`Tool finished: ${singleLine(event.toolName)}${event.isError ? " with an error" : ""}`)
       printOutput(event)
+      break
+    case "work.interrupted":
+      console.log("Work interrupted.")
       break
   }
   console.log(`Cursor: ${event.cursor}`)

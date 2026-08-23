@@ -25,6 +25,7 @@ export type PiProcess = {
 
 export class PiStartupError extends Error {}
 export class PiRequestError extends Error {}
+export class PiRequestUncertainError extends Error {}
 
 const FLEET_PI_OPTIONS = new Set(["--mode", "--no-session"])
 const USER_SESSION_SELECTORS = new Set([
@@ -36,6 +37,10 @@ const USER_SESSION_SELECTORS = new Set([
   "-r",
   "--fork",
 ])
+
+export function hasUserSessionSelector(piArgs: readonly string[]): boolean {
+  return piArgs.some((arg) => USER_SESSION_SELECTORS.has(arg))
+}
 
 export function validatePiArguments(piArgs: readonly string[]): void {
   for (const arg of piArgs) {
@@ -97,7 +102,9 @@ class PiRpcClient {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(id)
-        reject(new PiRequestError("Pi did not answer before the request deadline"))
+        reject(command.type === "prompt"
+          ? new PiRequestUncertainError("Pi did not acknowledge the prompt before the request deadline")
+          : new PiRequestError("Pi did not answer before the request deadline"))
       }, timeoutMs)
       this.#pending.set(id, { resolve, reject, timeout })
       try {
@@ -142,17 +149,17 @@ class PiRpcClient {
 
   private onExit = (code: number | null): void => {
     this.#closed = true
-    this.rejectPending(new PiStartupError(`Pi exited before completing the request (code ${code ?? "signal"})`))
+    this.rejectPending(new PiRequestUncertainError(`Pi exited before completing the request (code ${code ?? "signal"})`))
   }
 
   private onError = (error: Error): void => {
     this.#closed = true
-    this.rejectPending(new PiStartupError(`Pi failed: ${error.message}`))
+    this.rejectPending(new PiRequestUncertainError(`Pi failed: ${error.message}`))
   }
 
   private onStdinError = (error: Error): void => {
     this.#closed = true
-    this.rejectPending(new PiStartupError(`Pi stdin failed: ${error.message}`))
+    this.rejectPending(new PiRequestUncertainError(`Pi stdin failed: ${error.message}`))
   }
 
   private resolveRequest(id: string, response: Record<string, unknown>): void {
@@ -180,10 +187,10 @@ class PiRpcClient {
   }
 }
 
-export async function startPi(launch: PiLaunch, timeoutMs = 10_000, onEvent?: PiEventHandler): Promise<PiProcess> {
+export async function startPi(launch: PiLaunch, timeoutMs = 10_000, onEvent?: PiEventHandler, signal?: AbortSignal): Promise<PiProcess> {
   const command = process.env.PI_FLEET_PI_COMMAND ?? "pi"
   const args = ["--mode", "rpc", ...launch.piArgs]
-  if (launch.sessionPath && !launch.piArgs.some((arg) => USER_SESSION_SELECTORS.has(arg))) {
+  if (launch.sessionPath && !hasUserSessionSelector(launch.piArgs)) {
     args.push("--session", launch.sessionPath)
   }
 
@@ -194,7 +201,7 @@ export async function startPi(launch: PiLaunch, timeoutMs = 10_000, onEvent?: Pi
   })
   const rpc = new PiRpcClient(child, onEvent)
   try {
-    const state = await rpc.getState(timeoutMs)
+    const state = await abortable(rpc.getState(timeoutMs), signal)
     return {
       process: child,
       state,
@@ -217,6 +224,23 @@ export async function stopPi(child: ChildProcessWithoutNullStreams | undefined):
   if (await waitForExit(child, 1_000)) return
   child.kill("SIGKILL")
   await waitForExit(child, 1_000)
+}
+
+async function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) throw new PiStartupError("Pi startup was cancelled")
+  let onAbort: (() => void) | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(new PiStartupError("Pi startup was cancelled"))
+        signal.addEventListener("abort", onAbort, { once: true })
+      }),
+    ])
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort)
+  }
 }
 
 async function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {

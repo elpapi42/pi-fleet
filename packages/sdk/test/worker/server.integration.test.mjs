@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
-import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -61,6 +61,19 @@ async function subscribe(record, options = {}) {
 
 async function receiveEvent(subscription) {
   return decode((await subscription.socket.receive())[0])
+}
+
+function sendRequest(record, message, deadlineAt = Date.now() + 40_000) {
+  return {
+    version: 1,
+    requestId: randomUUID(),
+    command: "send",
+    agentId: record.id,
+    runtimeGeneration: record.runtime.generation,
+    message,
+    delivery: "steer",
+    deadlineAt,
+  }
 }
 
 async function waitFor(check, message) {
@@ -232,23 +245,118 @@ test("waits for a pending send handler during worker shutdown", { concurrency: f
   )
 })
 
-test("worker correlates concurrent sends and keeps status responsive", { concurrency: false }, async () => {
-  await withWorker({ PI_FLEET_FAKE_PI_MODE: "reverse-prompts" }, async ({ record }) => {
-    assert.ok(record)
-    const [first, second] = await Promise.all([
-      requestSend(record, "First", "steer"),
-      requestSend(record, "Second", "followUp"),
-    ])
-    assert.equal(typeof first.acceptedAt, "number")
-    assert.equal(typeof second.acceptedAt, "number")
-    assert.equal((await requestStatus(record)).state, "idle")
-  })
+test("serializes concurrent sends and keeps status responsive", { concurrency: false }, async () => {
+  await withWorker(
+    (stateDir) => ({
+      PI_FLEET_FAKE_PI_PROMPT_DELAY_MS: "200",
+      PI_FLEET_FAKE_PI_PROMPT_STARTED_FILE: join(stateDir, "prompt-started"),
+      PI_FLEET_FAKE_PI_COMMAND_LOG_FILE: join(stateDir, "commands.log"),
+    }),
+    async ({ stateDir, record }) => {
+      assert.ok(record)
+      const sends = Promise.all([
+        requestSend(record, "First", "steer"),
+        requestSend(record, "Second", "followUp"),
+      ])
+      await waitFor(async () => {
+        try { await access(join(stateDir, "prompt-started")); return true } catch { return false }
+      }, "Fake Pi did not receive the first prompt")
+      assert.equal((await requestStatus(record, 100)).state, "idle")
+      const [first, second] = await sends
+      assert.equal(typeof first.acceptedAt, "number")
+      assert.equal(typeof second.acceptedAt, "number")
+      const prompts = (await readFile(join(stateDir, "commands.log"), "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map(JSON.parse)
+        .map(({ request }) => request)
+        .filter(({ type }) => type === "prompt")
+      assert.deepEqual(prompts.map(({ message }) => message), ["First", "Second"])
+      assert.deepEqual(prompts.map(({ streamingBehavior }) => streamingBehavior), ["steer", "followUp"])
+    },
+  )
+})
 
-  await withWorker({ PI_FLEET_FAKE_PI_PROMPT_DELAY_MS: "200" }, async ({ record }) => {
-    assert.ok(record)
-    const send = requestSend(record, "Slow prompt", "steer")
-    await new Promise((resolve) => setTimeout(resolve, 25))
-    assert.equal((await requestStatus(record, 100)).state, "idle")
-    await send
-  })
+test("rejects expired sends before they reach Pi", { concurrency: false }, async () => {
+  await withWorker(
+    (stateDir) => ({ PI_FLEET_FAKE_PI_COMMAND_LOG_FILE: join(stateDir, "commands.log") }),
+    async ({ stateDir, record }) => {
+      assert.ok(record?.runtime?.endpoint)
+      const socket = new Dealer({ routingId: randomUUID(), immediate: true, linger: 0 })
+      socket.connect(record.runtime.endpoint)
+      try {
+        const request = sendRequest(record, "expired", Date.now() + 1_000)
+        await socket.send(encode(request))
+        const response = decode((await socket.receive())[0])
+        assert.equal(response.requestId, request.requestId)
+        assert.equal(response.errorCode, "send-expired")
+        const commands = await readFile(join(stateDir, "commands.log"), "utf8")
+        assert.equal(commands.split("\n").filter(Boolean).map(JSON.parse).some(({ request }) => request.type === "prompt"), false)
+      } finally {
+        socket.close()
+      }
+    },
+  )
+})
+
+test("bounds the recovery queue by count", { concurrency: false }, async () => {
+  await withWorker(
+    (stateDir) => ({
+      PI_FLEET_FAKE_PI_PID_FILE: join(stateDir, "pi.pid"),
+      PI_FLEET_FAKE_PI_INCARNATION_FILE: join(stateDir, "incarnation"),
+      PI_FLEET_FAKE_PI_RECOVERY_STARTED_FILE: join(stateDir, "recovery-started"),
+      PI_FLEET_FAKE_PI_RECOVERY_DELAY_MS: "5000",
+    }),
+    async ({ stateDir, record }) => {
+      assert.ok(record?.runtime?.endpoint)
+      process.kill(Number(await readFile(join(stateDir, "pi.pid"), "utf8")), "SIGTERM")
+      await waitFor(async () => {
+        try { await access(join(stateDir, "recovery-started")); return true } catch { return false }
+      }, "Replacement Pi did not start")
+
+      const socket = new Dealer({ routingId: randomUUID(), immediate: true, linger: 0 })
+      socket.connect(record.runtime.endpoint)
+      try {
+        const requests = Array.from({ length: 33 }, (_, index) => sendRequest(record, `queued-${index}`))
+        for (const request of requests) await socket.send(encode(request))
+        const response = decode((await socket.receive())[0])
+        assert.equal(response.requestId, requests[32].requestId)
+        assert.equal(response.errorCode, "recovery-queue-full")
+      } finally {
+        socket.close()
+      }
+    },
+  )
+})
+
+test("bounds recovery queue message bytes", { concurrency: false }, async () => {
+  await withWorker(
+    (stateDir) => ({
+      PI_FLEET_FAKE_PI_PID_FILE: join(stateDir, "pi.pid"),
+      PI_FLEET_FAKE_PI_INCARNATION_FILE: join(stateDir, "incarnation"),
+      PI_FLEET_FAKE_PI_RECOVERY_STARTED_FILE: join(stateDir, "recovery-started"),
+      PI_FLEET_FAKE_PI_RECOVERY_DELAY_MS: "5000",
+    }),
+    async ({ stateDir, record }) => {
+      assert.ok(record?.runtime?.endpoint)
+      process.kill(Number(await readFile(join(stateDir, "pi.pid"), "utf8")), "SIGTERM")
+      await waitFor(async () => {
+        try { await access(join(stateDir, "recovery-started")); return true } catch { return false }
+      }, "Replacement Pi did not start")
+
+      const socket = new Dealer({ routingId: randomUUID(), immediate: true, linger: 0 })
+      socket.connect(record.runtime.endpoint)
+      try {
+        const first = sendRequest(record, "a".repeat(600 * 1024))
+        const second = sendRequest(record, "b".repeat(600 * 1024))
+        await socket.send(encode(first))
+        await socket.send(encode(second))
+        const response = decode((await socket.receive())[0])
+        assert.equal(response.requestId, second.requestId)
+        assert.equal(response.errorCode, "recovery-queue-full")
+      } finally {
+        socket.close()
+      }
+    },
+  )
 })

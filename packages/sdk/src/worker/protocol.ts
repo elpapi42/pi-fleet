@@ -16,6 +16,7 @@ export type SendRequest = {
   runtimeGeneration: string
   message: string
   delivery: "steer" | "followUp"
+  deadlineAt: number
 }
 
 export type SubscribeRequest = {
@@ -63,6 +64,7 @@ export type SendResponse = {
   runtimeGeneration: string
   acceptedAt?: number
   error?: string
+  errorCode?: "recovery-queue-full" | "send-uncertain" | "send-expired" | "unavailable"
 }
 
 export type SubscribeResponse = {

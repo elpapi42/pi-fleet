@@ -1,8 +1,10 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { version } from "../../dist/index.js"
+import { AgentRecoveryQueueFullError, AgentSendUncertainError, version } from "../../dist/index.js"
 
-test("exports the package version", () => {
-  assert.equal(version, "0.7.3")
+test("exports the package version and recovery send errors", () => {
+  assert.equal(version, "0.8.0")
+  assert.equal(new AgentRecoveryQueueFullError("researcher").name, "AgentRecoveryQueueFullError")
+  assert.equal(new AgentSendUncertainError("researcher").name, "AgentSendUncertainError")
 })

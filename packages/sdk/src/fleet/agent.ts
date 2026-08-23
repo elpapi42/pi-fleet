@@ -60,6 +60,7 @@ export type AgentEvent =
   | (AgentEventBase & { type: "message.finished"; text: string })
   | (AgentEventBase & { type: "tool.started"; toolName: string; args: JsonValue; argsTruncated: boolean })
   | (AgentEventBase & { type: "tool.finished"; toolName: string; isError: boolean; output: ToolOutput })
+  | (AgentEventBase & { type: "work.interrupted" })
 
 export interface Agent {
   readonly id: string
@@ -87,6 +88,20 @@ export class AgentUnavailableError extends Error {
   constructor(name: string) {
     super(`Agent ${JSON.stringify(name)} is unavailable`)
     this.name = "AgentUnavailableError"
+  }
+}
+
+export class AgentRecoveryQueueFullError extends Error {
+  constructor(name: string) {
+    super(`Agent ${JSON.stringify(name)} recovery queue is full`)
+    this.name = "AgentRecoveryQueueFullError"
+  }
+}
+
+export class AgentSendUncertainError extends Error {
+  constructor(name: string) {
+    super(`Instruction sent to agent ${JSON.stringify(name)} may have been accepted by Pi`)
+    this.name = "AgentSendUncertainError"
   }
 }
 

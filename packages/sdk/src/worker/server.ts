@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto"
 import { Router, capability } from "zeromq"
-import { startPi, type PiProcess } from "../pi/runtime.js"
+import { type PiState } from "../pi/runtime.js"
 import { decodeEventCursor, encodeEventCursor, openStore, type AgentRecord } from "../state/store.js"
 import {
   decode,
@@ -17,6 +18,7 @@ import {
   type WorkerMessage,
 } from "./protocol.js"
 import { LiveActivity } from "./activity.js"
+import { PiSupervisor, SupervisorSendFailure, type SupervisorSendError } from "./supervisor.js"
 
 type Arguments = { stateDir: string; agentId: string; generation: string }
 type WorkerRequest = StatusRequest | SendRequest | SubscribeRequest | UnsubscribeRequest | SubscriptionStatusRequest
@@ -36,7 +38,8 @@ async function main(): Promise<void> {
   const router = new Router({ mandatory: true, immediate: true, linger: 0, sendTimeout: 50 })
   let routerClosed = false
   let state = record.state
-  let pi: PiProcess | undefined
+  let workActive = record.state === "working"
+  let supervisor: PiSupervisor | undefined
   let outbound = Promise.resolve()
   let eventOperations = Promise.resolve()
   const handlers = new Set<Promise<void>>()
@@ -87,8 +90,14 @@ async function main(): Promise<void> {
   }
   const onPiEvent = (event: unknown) => {
     if (!isRecord(event)) return
-    if (event.type === "agent_start") queueStateUpdate("working")
-    if (event.type === "agent_settled") queueStateUpdate("idle")
+    if (event.type === "agent_start") {
+      workActive = true
+      queueStateUpdate("working")
+    }
+    if (event.type === "agent_settled") {
+      workActive = false
+      queueStateUpdate("idle")
+    }
     const normalized = activity.normalizePiEvent(event)
     if (!normalized) return
     void queueEventOperation(async () => {
@@ -105,19 +114,51 @@ async function main(): Promise<void> {
   process.once("SIGINT", stop)
   try {
     await router.bind(record.runtime.endpoint)
-    pi = await startPi({ cwd: record.cwd, piArgs: record.piArgs, sessionPath: record.sessionPath }, 10_000, onPiEvent)
-    pi.process.once("exit", closeRouter)
+    supervisor = new PiSupervisor({
+      initial: record,
+      generation,
+      onPiEvent,
+      beforeRecovery: async () => {
+        const interrupted = workActive
+        workActive = false
+        await queueEventOperation(async () => {
+          if (interrupted) {
+            const appended = await store.appendEvent(agentId, generation, (cursor) => ({
+              type: "work.interrupted" as const,
+              cursor,
+              eventId: randomUUID(),
+              activityId: randomUUID(),
+              timestamp: Date.now(),
+            }))
+            if (!appended) throw new Error("Worker claim is no longer current")
+            if (activity.publishEvent(appended.sequence, appended.event)) scheduleOutbound()
+          }
+          activity.resetPiActivity()
+        })
+      },
+      loadRecord: () => store.getById(agentId),
+      onRecovered: (piState) => markRecovered(store, agentId, generation, piState, (next) => {
+        state = next
+        workActive = false
+      }),
+      onRecoveryFailed: async () => {
+        await Promise.resolve()
+        await outbound
+        closeRouter()
+      },
+    })
+    const initialState = await supervisor.start()
     const markedReady = await store.markReady(agentId, generation, {
       workerPid: process.pid,
       endpoint: record.runtime.endpoint,
-      sessionPath: pi.state.sessionFile,
-      sessionId: pi.state.sessionId,
+      sessionPath: initialState.sessionFile,
+      sessionId: initialState.sessionId,
     })
     if (!markedReady) throw new Error("Worker claim is no longer current")
     state = "idle"
 
     for await (const [route, frame] of router) {
-      const handler = handleRequest(route, frame, record, generation, pi, () => state, reply, activity, store, queueEventOperation, scheduleOutbound, () => outbound)
+      const handler = handleRequest(route, frame, record, generation, supervisor, () => state, reply, activity, store, queueEventOperation, scheduleOutbound, () => outbound)
       handlers.add(handler)
       void handler.then(
         () => handlers.delete(handler),
@@ -130,9 +171,8 @@ async function main(): Promise<void> {
   } finally {
     process.off("SIGTERM", stop)
     process.off("SIGINT", stop)
-    pi?.process.off("exit", closeRouter)
     closeRouter()
-    await pi?.stop()
+    await supervisor?.stop()
     await Promise.allSettled(handlers)
     await eventOperations
     await outbound
@@ -145,7 +185,7 @@ async function handleRequest(
   frame: Buffer,
   record: AgentRecord,
   generation: string,
-  pi: PiProcess,
+  supervisor: PiSupervisor,
   getState: () => AgentRecord["state"],
   reply: (route: Buffer, response: WorkerResponse) => void,
   activity: LiveActivity,
@@ -240,10 +280,12 @@ async function handleRequest(
   }
 
   try {
-    await pi.send(request.message, request.delivery)
-    reply(route, sendResponse(request, record.id, generation, undefined, Date.now()))
+    const acceptedAt = await supervisor.send(request.message, request.delivery, request.deadlineAt)
+    reply(route, sendResponse(request, record.id, generation, undefined, acceptedAt))
   } catch (error) {
-    reply(route, sendResponse(request, record.id, generation, error instanceof Error ? error.message : String(error)))
+    const code = error instanceof SupervisorSendFailure ? error.code : undefined
+    const message = code ? sendErrorMessage(code) : error instanceof Error ? error.message : String(error)
+    reply(route, sendResponse(request, record.id, generation, message, undefined, code))
   }
 }
 
@@ -292,7 +334,8 @@ function decodeRequest(frame: Buffer): WorkerRequest | undefined {
     const request = decode(frame)
     if (!isRecord(request) || request.version !== 1 || typeof request.requestId !== "string" || typeof request.agentId !== "string" || typeof request.runtimeGeneration !== "string") return undefined
     if (request.command === "status") return request as StatusRequest
-    if (request.command === "send" && typeof request.message === "string" && typeof request.delivery === "string") return request as SendRequest
+    if (request.command === "send" && typeof request.message === "string" && typeof request.delivery === "string" &&
+      typeof request.deadlineAt === "number" && Number.isSafeInteger(request.deadlineAt) && request.deadlineAt > 0) return request as SendRequest
     if (request.command === "subscribe" && (request.fromStart === undefined || request.fromStart === true) &&
       (request.after === undefined || typeof request.after === "string")) return request as SubscribeRequest
     if (request.command === "unsubscribe" && (request.subscriptionId === undefined || typeof request.subscriptionId === "string")) return request as UnsubscribeRequest
@@ -309,7 +352,7 @@ function invalidResponse(request: WorkerRequest | undefined, agentId: string, ge
   return { version: 1, requestId: request?.requestId ?? "", ok: false, error: "Worker identity does not match the request" }
 }
 
-function sendResponse(request: SendRequest, agentId: string, generation: string, error?: string, acceptedAt?: number): SendResponse {
+function sendResponse(request: SendRequest, agentId: string, generation: string, error?: string, acceptedAt?: number, errorCode?: SupervisorSendError): SendResponse {
   return {
     version: 1,
     requestId: request.requestId,
@@ -317,8 +360,21 @@ function sendResponse(request: SendRequest, agentId: string, generation: string,
     ok: error === undefined,
     agentId,
     runtimeGeneration: generation,
-    ...(error === undefined ? { acceptedAt } : { error }),
+    ...(error === undefined ? { acceptedAt } : { error, ...(errorCode === undefined ? {} : { errorCode }) }),
   }
+}
+
+async function markRecovered(store: Awaited<ReturnType<typeof openStore>>, agentId: string, generation: string, piState: PiState, setState: (state: "idle") => void): Promise<boolean> {
+  const recovered = await store.markRecovered(agentId, generation, { sessionPath: piState.sessionFile, sessionId: piState.sessionId })
+  if (recovered) setState("idle")
+  return recovered
+}
+
+function sendErrorMessage(error: SupervisorSendError | undefined): string {
+  if (error === "recovery-queue-full") return "Agent recovery queue is full"
+  if (error === "send-uncertain") return "Instruction may have been accepted by Pi"
+  if (error === "send-expired") return "Instruction expired before it reached Pi"
+  return "Agent is unavailable"
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

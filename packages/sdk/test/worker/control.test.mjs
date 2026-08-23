@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import { Router } from "zeromq"
-import { AgentUnavailableError } from "../../dist/index.js"
+import { AgentRecoveryQueueFullError, AgentSendUncertainError, AgentUnavailableError } from "../../dist/index.js"
 import { decode, encode } from "../../dist/worker/protocol.js"
 import { requestSend, requestStatus } from "../../dist/worker/control.js"
 
@@ -81,6 +81,8 @@ test("sends the message and returns a matching worker acknowledgement", async ()
         message: "Investigate NATS",
         delivery: "followUp",
       })
+      assert.equal(typeof request.deadlineAt, "number")
+      assert.ok(request.deadlineAt > Date.now())
       await router.send([route, encode({
         version: 1,
         requestId: request.requestId,
@@ -118,6 +120,34 @@ test("returns a valid worker rejection as a normal error", async () => {
     })
     await responder
   })
+})
+
+test("maps recovery send error codes to public errors", async () => {
+  for (const [errorCode, ErrorType] of [
+    ["recovery-queue-full", AgentRecoveryQueueFullError],
+    ["send-uncertain", AgentSendUncertainError],
+    ["unavailable", AgentUnavailableError],
+  ]) {
+    await withRouter(async (router, agent) => {
+      const responder = (async () => {
+        const [route, frame] = await router.receive()
+        const request = decode(frame)
+        await router.send([route, encode({
+          version: 1,
+          requestId: request.requestId,
+          command: "send",
+          ok: false,
+          agentId: request.agentId,
+          runtimeGeneration: request.runtimeGeneration,
+          error: "recovery send failed",
+          errorCode,
+        })])
+      })()
+
+      await assert.rejects(requestSend(agent, "Investigate NATS", "steer", 500), ErrorType)
+      await responder
+    })
+  }
 })
 
 test("rejects a send response with the wrong worker identity", async () => {

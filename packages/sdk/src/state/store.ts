@@ -111,6 +111,23 @@ export class FleetStore {
     return this.#agents.put(id, record, version + 1, version)
   }
 
+  async markRecovered(id: string, runtimeGeneration: string, ready: Pick<AgentRecord, "sessionPath" | "sessionId">): Promise<boolean> {
+    this.assertOpen()
+    while (true) {
+      const entry = this.#agents.getEntry(id)
+      if (!entry || entry.value.runtime?.generation !== runtimeGeneration) return false
+      const version = entry.version ?? 0
+      const updated: AgentRecord = {
+        ...entry.value,
+        sessionPath: ready.sessionPath,
+        sessionId: ready.sessionId,
+        state: "idle",
+        updatedAt: Date.now(),
+      }
+      if (await this.#agents.put(id, updated, version + 1, version)) return true
+    }
+  }
+
   async updateState(id: string, runtimeGeneration: string, state: "working" | "idle"): Promise<boolean> {
     this.assertOpen()
     while (true) {

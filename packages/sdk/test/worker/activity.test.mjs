@@ -102,6 +102,17 @@ test("omits malformed tool result data", () => {
   assert.deepEqual(event?.output, { content: [], detailsTruncated: true, truncated: true })
 })
 
+test("resets assistant activity correlation between Pi incarnations", () => {
+  const activity = new LiveActivity("agent-1", "runtime-1")
+  const started = activity.normalizePiEvent({ type: "message_start", message: { role: "assistant" } })
+  assert.equal(started?.type, "message.started")
+
+  activity.resetPiActivity()
+  const finished = activity.normalizePiEvent({ type: "message_end", message: { role: "assistant", content: [] } })
+  assert.equal(finished?.type, "message.finished")
+  assert.notEqual(finished?.activityId, started?.activityId)
+})
+
 test("removes a subscriber whose bounded activity queue overflows", () => {
   const activity = new LiveActivity("agent-1", "runtime-1")
   const route = Buffer.from("slow")
