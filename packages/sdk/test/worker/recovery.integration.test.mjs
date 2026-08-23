@@ -416,7 +416,7 @@ test("worker shutdown cancels a pending Pi restart", { concurrency: false }, asy
   })
 })
 
-test("stops recovery after three unexpected Pi exits in one crash window", { concurrency: false }, async () => {
+test("stops a crash-looping worker before a later operation replaces it", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const piPidFile = join(stateDir, "fake-pi.pid")
     const incarnationFile = join(stateDir, "fake-pi-incarnation")
@@ -437,17 +437,22 @@ test("stops recovery after three unexpected Pi exits in one crash window", { con
         await agent.send(`ready-${expectedIncarnation}`)
       }
 
+      const registry = await openStore(stateDir)
+      const oldWorkerPid = registry.getById(agent.id)?.runtime?.workerPid
+      await registry.close()
+      assert.ok(oldWorkerPid)
       process.kill(Number(await readFile(piPidFile, "utf8")), "SIGTERM")
       for (let attempt = 0; attempt < 80; attempt += 1) {
         try {
-          await agent.status()
+          process.kill(oldWorkerPid, 0)
+          await new Promise((resolve) => setTimeout(resolve, 25))
         } catch {
           break
         }
-        await new Promise((resolve) => setTimeout(resolve, 25))
       }
-      await assert.rejects(agent.status(), AgentUnavailableError)
-      assert.equal(Number(await readFile(incarnationFile, "utf8")), 3)
+      assert.throws(() => process.kill(oldWorkerPid, 0), { code: "ESRCH" })
+      assert.equal((await agent.status()).state, "idle")
+      assert.equal(Number(await readFile(readyIncarnationFile, "utf8")), 4)
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_PID_FILE
       delete process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE
@@ -475,7 +480,7 @@ test("stops the worker and rejects queued sends when Pi recovery fails", { concu
       }
       await assert.rejects(agent.send("queued during failed recovery"), AgentUnavailableError)
       await assert.rejects(agent.status(), AgentUnavailableError)
-      assert.equal(Number(await readFile(incarnationFile, "utf8")), 4)
+      assert.equal(Number(await readFile(incarnationFile, "utf8")), 6)
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_PID_FILE
       delete process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE

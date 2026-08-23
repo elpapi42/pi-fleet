@@ -70,6 +70,10 @@ export class PiSupervisor {
       await current.process.stop()
       throw new Error("Worker is stopping")
     }
+    if (!this.sessionMatches(this.#options.initial, current)) {
+      await current.process.stop()
+      throw new Error("Pi restored a different session")
+    }
     this.setCurrent(current)
     return current.process.state
   }
@@ -212,9 +216,7 @@ export class PiSupervisor {
           if (this.#stopping || this.#options.loadRecord()?.runtime?.generation !== this.#options.generation) {
             throw new RecoveryStoppedError()
           }
-          if (!hasUserSessionSelector(record.piArgs) && record.sessionId && current.process.state.sessionId !== record.sessionId) {
-            throw new Error("Pi restored a different session")
-          }
+          if (!this.sessionMatches(record, current)) throw new Error("Pi restored a different session")
           if (this.#current !== current || current.incarnation !== this.#incarnation) throw new Error("Replacement Pi exited before recovery completed")
           if (!(await this.#options.onRecovered(current.process.state))) throw new RecoveryStoppedError()
           if (this.#stopping) throw new RecoveryStoppedError()
@@ -231,6 +233,10 @@ export class PiSupervisor {
       this.rejectQueued("unavailable")
       if (!this.#stopping) await this.#options.onRecoveryFailed()
     }
+  }
+
+  private sessionMatches(record: AgentRecord, current: CurrentPi): boolean {
+    return hasUserSessionSelector(record.piArgs) || !record.sessionId || current.process.state.sessionId === record.sessionId
   }
 
   private async startRecord(record: AgentRecord, timeoutMs: number): Promise<CurrentPi> {
