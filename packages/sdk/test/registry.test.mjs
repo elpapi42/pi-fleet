@@ -15,7 +15,6 @@ const record = (name, id) => ({
   id,
   name,
   cwd: "/work",
-  instructions: "be concise",
   piArgs: ["--offline"],
   state: "starting",
   runtime: {

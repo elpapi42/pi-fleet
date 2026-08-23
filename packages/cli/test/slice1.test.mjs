@@ -56,7 +56,7 @@ test("creates, lists, and checks a durable agent through the CLI", async () => {
       PI_FLEET_FAKE_PI_COMMANDS_FILE: commandsFile,
     }
     const created = await run(
-      ["create", "researcher", "Use concise answers.", "--cwd", process.cwd(), "--", "--session-id", "existing"],
+      ["create", "researcher", "--cwd", process.cwd(), "--", "--session-id", "existing"],
       env,
     )
     createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
@@ -67,8 +67,6 @@ test("creates, lists, and checks a durable agent through the CLI", async () => {
       "rpc",
       "--session-id",
       "existing",
-      "--append-system-prompt",
-      "Use concise answers.",
     ])
 
     const sent = await run(["send", "researcher", "Investigate NATS", "--follow-up"], env)
@@ -136,7 +134,7 @@ test("lists agents in sorted fixed-width columns", async () => {
 
 test("uses Commander help and errors", async () => {
   const help = await run(["create", "--help"], {})
-  assert.match(help.stdout, /Usage: pif create \[options\] <name> \[instructions\]/)
+  assert.match(help.stdout, /Usage: pif create \[options\] <name>/)
   assert.match(help.stdout, /--cwd <path>/)
   assert.match(help.stdout, /Arguments after -- pass through to Pi/)
 

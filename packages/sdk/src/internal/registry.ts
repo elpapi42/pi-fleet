@@ -7,7 +7,6 @@ export type AgentRecord = {
   id: string
   name: string
   cwd: string
-  instructions?: string
   piArgs: string[]
   sessionPath?: string
   sessionId?: string

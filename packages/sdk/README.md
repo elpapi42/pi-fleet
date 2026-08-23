@@ -13,15 +13,12 @@ const client = await connectPiFleet()
 const agent = await client.create({
   name: "researcher",
   cwd: process.cwd(),
-  instructions: "Give concise answers.",
 })
 
 await agent.send("Investigate the database schema")
 console.log(await agent.status())
 await client.close()
 ```
-
-`instructions` adds durable system instructions. It does not send initial work.
 
 `piArgs` passes Pi options through unchanged. Pi-fleet adds `--mode rpc` and rejects `--mode` and `--no-session`. User session selectors remain authoritative:
 

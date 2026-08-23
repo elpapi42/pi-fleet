@@ -2,7 +2,7 @@
 import { Command } from "commander"
 import { connectPiFleet } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.4.0"
+const version = "0.5.0"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -54,12 +54,12 @@ function createProgram(piArgs: string[]): Command {
     .showHelpAfterError()
 
   program
-    .command("create <name> [instructions]")
+    .command("create <name>")
     .description("Create a durable Pi agent")
     .option("--cwd <path>", "working directory", process.cwd())
     .addHelpText("after", "\nArguments after -- pass through to Pi.")
-    .action(async (name: string, instructions: string | undefined, options: { cwd: string }) => {
-      const agent = await withClient((client) => client.create({ name, instructions, cwd: options.cwd, piArgs }))
+    .action(async (name: string, options: { cwd: string }) => {
+      const agent = await withClient((client) => client.create({ name, cwd: options.cwd, piArgs }))
       console.log(`Created agent ${agent.name}`)
       printAgent(agent.id, agent.name, "idle")
     })

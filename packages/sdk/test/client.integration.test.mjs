@@ -77,7 +77,7 @@ async function withState(run) {
 test("creates a durable agent that another SDK client can discover and query", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const creator = await connectPiFleet({ stateDir })
-    const agent = await creator.create({ name: "researcher", cwd: process.cwd(), instructions: "Use short answers" })
+    const agent = await creator.create({ name: "researcher", cwd: process.cwd() })
     assert.throws(() => { agent.id = "another-id" }, TypeError)
     await creator.close()
 

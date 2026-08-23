@@ -8,7 +8,6 @@ export type ConnectOptions = {
 export type CreateAgentOptions = {
   name: string
   cwd: string
-  instructions?: string
   piArgs?: string[]
 }
 

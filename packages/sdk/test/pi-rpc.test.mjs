@@ -13,7 +13,6 @@ const record = (overrides = {}) => ({
   id: "agent-1",
   name: "researcher",
   cwd: process.cwd(),
-  instructions: "Use concise answers.",
   piArgs: ["--offline"],
   state: "starting",
   runtime: { generation: "runtime-1", state: "starting" },
@@ -66,7 +65,7 @@ async function capturePiArgs(overrides) {
   }
 }
 
-test("starts Pi in RPC mode with durable instructions and arguments", { concurrency: false }, async () => {
+test("starts Pi in RPC mode with caller arguments", { concurrency: false }, async () => {
   const result = await capturePiArgs({})
   assert.deepEqual(result.state, {
     sessionFile: "/tmp/fake-pi-session.jsonl",
@@ -76,14 +75,11 @@ test("starts Pi in RPC mode with durable instructions and arguments", { concurre
     "--mode",
     "rpc",
     "--offline",
-    "--append-system-prompt",
-    "Use concise answers.",
   ])
 })
 
 test("preserves a user-selected session path instead of appending the observed path", { concurrency: false }, async () => {
   const result = await capturePiArgs({
-    instructions: undefined,
     piArgs: ["--session", "/sessions/user-selected.jsonl"],
     sessionPath: "/sessions/observed.jsonl",
   })
@@ -97,7 +93,6 @@ test("preserves a user-selected session path instead of appending the observed p
 
 test("preserves a user-selected session ID instead of appending a session path", { concurrency: false }, async () => {
   const result = await capturePiArgs({
-    instructions: undefined,
     piArgs: ["--session-id", "user-session"],
     sessionPath: "/sessions/observed.jsonl",
   })
@@ -112,7 +107,6 @@ test("preserves a user-selected session ID instead of appending a session path",
 test("preserves other user session selectors", { concurrency: false }, async () => {
   for (const piArgs of [["--continue"], ["-c"], ["--resume"], ["-r"], ["--fork", "source-session"]]) {
     const result = await capturePiArgs({
-      instructions: undefined,
       piArgs,
       sessionPath: "/sessions/observed.jsonl",
     })
@@ -122,7 +116,6 @@ test("preserves other user session selectors", { concurrency: false }, async () 
 
 test("appends the observed session path when the user supplied no selector", { concurrency: false }, async () => {
   const result = await capturePiArgs({
-    instructions: undefined,
     piArgs: ["--offline"],
     sessionPath: "/sessions/observed.jsonl",
   })

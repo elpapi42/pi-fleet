@@ -168,7 +168,6 @@ class PiRpcClient {
 export async function startPi(record: AgentRecord, timeoutMs = 10_000, onEvent?: PiEventHandler): Promise<PiProcess> {
   const command = process.env.PI_FLEET_PI_COMMAND ?? "pi"
   const args = ["--mode", "rpc", ...record.piArgs]
-  if (record.instructions) args.push("--append-system-prompt", record.instructions)
   if (record.sessionPath && !record.piArgs.some((arg) => USER_SESSION_SELECTORS.has(arg))) {
     args.push("--session", record.sessionPath)
   }

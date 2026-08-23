@@ -33,7 +33,6 @@ class PiFleetClientImpl implements PiFleetClient {
       id,
       name: input.name,
       cwd: input.cwd,
-      instructions: input.instructions,
       piArgs: input.piArgs,
       state: "starting",
       runtime: {
@@ -110,7 +109,7 @@ function isSendDelivery(value: unknown): value is SendDelivery {
   return value === "steer" || value === "followUp"
 }
 
-async function validateCreateOptions(options: CreateAgentOptions): Promise<{ name: string; cwd: string; instructions?: string; piArgs: string[] }> {
+async function validateCreateOptions(options: CreateAgentOptions): Promise<{ name: string; cwd: string; piArgs: string[] }> {
   const name = options.name?.trim()
   if (!name) throw new TypeError("Agent name must not be empty")
   if (name.includes("\0")) throw new TypeError("Agent name must not contain a null byte")
@@ -123,7 +122,7 @@ async function validateCreateOptions(options: CreateAgentOptions): Promise<{ nam
       throw new TypeError(`Pi argument ${JSON.stringify(arg)} is managed by pi-fleet`)
     }
   }
-  return { name, cwd, instructions: options.instructions, piArgs }
+  return { name, cwd, piArgs }
 }
 
 async function waitForWorkerReady(record: AgentRecord, worker: ChildProcess, timeoutMs: number): Promise<void> {
