@@ -74,7 +74,7 @@ export async function requestStatus(record: WorkerTarget, timeoutMs = 1_000): Pr
   return response.status
 }
 
-export async function requestSend(record: WorkerTarget, message: string, delivery: "steer" | "followUp", timeoutMs = 45_000): Promise<{ acceptedAt: number }> {
+export async function requestSend(record: WorkerTarget, message: string, delivery: "steer" | "followUp", timeoutMs = 60_000, deadlineAt = Date.now() + 60_000): Promise<{ acceptedAt: number }> {
   const request: SendRequest = {
     version: 1,
     requestId: randomUUID(),
@@ -83,9 +83,15 @@ export async function requestSend(record: WorkerTarget, message: string, deliver
     runtimeGeneration: record.runtime?.generation ?? "",
     message,
     delivery,
-    deadlineAt: Date.now() + 40_000,
+    deadlineAt,
   }
-  const response = await requestWorker(record, request, timeoutMs)
+  let response: unknown
+  try {
+    response = await requestWorker(record, request, timeoutMs)
+  } catch (error) {
+    if (error instanceof WorkerRequestFailure && error.accepted) throw new AgentSendUncertainError(record.name)
+    throw error
+  }
 
   if (!isSendResponse(response) || response.requestId !== request.requestId || response.agentId !== record.id || response.runtimeGeneration !== record.runtime?.generation) {
     throw new AgentUnavailableError(record.name)
@@ -101,18 +107,29 @@ export async function requestSend(record: WorkerTarget, message: string, deliver
   return { acceptedAt: response.acceptedAt }
 }
 
+class WorkerRequestFailure extends Error {
+  readonly accepted: boolean
+
+  constructor(accepted: boolean) {
+    super("Worker request failed")
+    this.accepted = accepted
+  }
+}
+
 async function requestWorker(record: WorkerTarget, request: StatusRequest | SendRequest, timeoutMs: number): Promise<unknown> {
   const runtime = record.runtime
   if (!runtime?.endpoint) throw new AgentUnavailableError(record.name)
 
   const socket = new Dealer({ routingId: randomUUID(), immediate: true, linger: 0, sendTimeout: timeoutMs })
+  let accepted = false
   try {
     socket.connect(runtime.endpoint)
     await socket.send(encode(request))
+    accepted = true
     return decode((await withTimeout(socket.receive(), timeoutMs, record.name))[0])
   } catch (error) {
-    if (error instanceof AgentUnavailableError) throw error
-    throw new AgentUnavailableError(record.name)
+    if (request.command === "status" || (error instanceof AgentUnavailableError && !accepted)) throw new AgentUnavailableError(record.name)
+    throw new WorkerRequestFailure(accepted)
   } finally {
     socket.close()
   }

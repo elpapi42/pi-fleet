@@ -103,6 +103,63 @@ test("creates a durable agent that another SDK client can discover and query", {
   })
 })
 
+test("replaces an unavailable worker before status and send", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      const store = await openStore(stateDir)
+      const before = store.getById(agent.id)
+      await store.close()
+      assert.ok(before?.runtime?.workerPid)
+      assert.ok(before?.runtime?.endpoint)
+      await terminateWorker(stateDir, agent.id)
+
+      assert.equal((await agent.status()).state, "idle")
+      assert.equal(typeof (await agent.send("Continue after worker replacement")).acceptedAt, "number")
+
+      const afterStore = await openStore(stateDir)
+      try {
+        const after = afterStore.getById(agent.id)
+        assert.notEqual(after?.runtime?.generation, before.runtime.generation)
+        assert.notEqual(after?.runtime?.workerPid, before.runtime.workerPid)
+        assert.notEqual(after?.runtime?.endpoint, before.runtime.endpoint)
+        assert.equal(after?.runtime?.state, "ready")
+      } finally {
+        await afterStore.close()
+      }
+    } finally {
+      await client.close()
+    }
+  })
+})
+
+test("converges concurrent SDK recovery calls on one replacement worker", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const first = await connectPiFleet({ stateDir })
+    const second = await connectPiFleet({ stateDir })
+    try {
+      const agent = await first.create({ name: "researcher", cwd: process.cwd() })
+      await terminateWorker(stateDir, agent.id)
+      const [firstStatus, secondStatus] = await Promise.all([
+        (await first.get("researcher")).status(),
+        (await second.get("researcher")).status(),
+      ])
+      assert.equal(firstStatus.state, "idle")
+      assert.equal(secondStatus.state, "idle")
+      const store = await openStore(stateDir)
+      try {
+        assert.equal(store.getById(agent.id)?.runtime?.state, "ready")
+      } finally {
+        await store.close()
+      }
+    } finally {
+      await first.close()
+      await second.close()
+    }
+  })
+})
+
 test("waits for delayed Pi readiness and reaps Pi when the worker stops", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const piPidFile = join(stateDir, "fake-pi.pid")

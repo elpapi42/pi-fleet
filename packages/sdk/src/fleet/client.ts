@@ -8,6 +8,7 @@ import {
   AgentHandle,
   AgentNameTakenError,
   AgentNotFoundError,
+  AgentUnavailableError,
   type Agent,
   type AgentEvent,
   type AgentStatus,
@@ -18,11 +19,13 @@ import {
   type SendResult,
 } from "./agent.js"
 import { openStore, type AgentRecord, type FleetStore } from "../state/store.js"
-import { launchWorker, requestSend, requestStatus, stopWorker, workerEndpoint, type WorkerTarget } from "../worker/control.js"
+import { launchWorker, requestSend, requestStatus, stopWorker, waitForWorkerProcessGroupExit, workerEndpoint, type WorkerTarget } from "../worker/control.js"
 import { receiveEvents, type WorkerEventStream } from "../worker/stream.js"
 import { validatePiArguments } from "../pi/runtime.js"
 
 const STARTUP_TIMEOUT_MS = 10_000
+const RECOVERY_TIMEOUT_MS = 45_000
+const OPERATION_TIMEOUT_MS = 60_000
 
 export type ConnectOptions = {
   /** A private state directory. Intended for isolated tests and advanced local setups. */
@@ -47,6 +50,7 @@ class PiFleetClientImpl implements PiFleetClient {
   readonly #stateDir: string
   readonly #streams = new Set<WorkerEventStream>()
   #closed = false
+  readonly #recoveries = new Map<string, Promise<WorkerTarget>>()
 
   constructor(store: FleetStore, stateDir: string) {
     this.#store = store
@@ -105,7 +109,8 @@ class PiFleetClientImpl implements PiFleetClient {
     this.assertOpen()
     const record = this.#store.getById(id)
     if (!record || record.name !== name) throw new AgentNotFoundError(name)
-    const status = await requestStatus(workerTarget(record))
+    const target = await this.resolveWorker(record, Date.now() + OPERATION_TIMEOUT_MS)
+    const status = await requestStatus(target)
     return { id: status.id, name: status.name, state: status.state }
   }
 
@@ -116,7 +121,15 @@ class PiFleetClientImpl implements PiFleetClient {
     if (typeof message !== "string" || !message.trim()) throw new TypeError("Message must not be empty")
     const delivery = options.delivery ?? "steer"
     if (!isSendDelivery(delivery)) throw new TypeError(`Invalid delivery: ${String(delivery)}`)
-    return requestSend(workerTarget(record), message, delivery)
+    const deadlineAt = Date.now() + OPERATION_TIMEOUT_MS
+    const target = await this.resolveWorker(record, deadlineAt)
+    try {
+      return await requestSend(target, message, delivery, Math.max(1, deadlineAt - Date.now()), deadlineAt)
+    } catch (error) {
+      if (!(error instanceof AgentUnavailableError)) throw error
+      const recovered = await this.reconcileWorker(record.id, record.name, deadlineAt)
+      return requestSend(recovered, message, delivery, Math.max(1, deadlineAt - Date.now()), deadlineAt)
+    }
   }
 
   receive(id: string, name: string, options: ReceiveOptions = {}): AsyncIterable<AgentEvent> {
@@ -135,6 +148,75 @@ class PiFleetClientImpl implements PiFleetClient {
     await Promise.all([...this.#streams].map((stream) => stream.close()))
     this.#streams.clear()
     await this.#store.close()
+  }
+
+  private async resolveWorker(record: AgentRecord, deadlineAt: number): Promise<WorkerTarget> {
+    const target = workerTarget(record)
+    try {
+      await requestStatus(target, Math.min(500, Math.max(1, deadlineAt - Date.now())))
+      return target
+    } catch (error) {
+      if (!(error instanceof AgentUnavailableError)) throw error
+      return this.reconcileWorker(record.id, record.name, deadlineAt)
+    }
+  }
+
+  private reconcileWorker(id: string, name: string, deadlineAt: number): Promise<WorkerTarget> {
+    const current = this.#recoveries.get(id)
+    if (current) return current
+    const recovery = this.recoverWorker(id, name, deadlineAt).finally(() => this.#recoveries.delete(id))
+    this.#recoveries.set(id, recovery)
+    return recovery
+  }
+
+  private async recoverWorker(id: string, name: string, deadlineAt: number): Promise<WorkerTarget> {
+    const recoveryDeadline = Math.min(deadlineAt, Date.now() + RECOVERY_TIMEOUT_MS)
+    while (Date.now() < recoveryDeadline) {
+      const record = this.#store.getById(id)
+      if (!record || record.name !== name) throw new AgentNotFoundError(name)
+      const runtime = record.runtime
+      if (!runtime?.endpoint) throw new AgentUnavailableError(name)
+      try {
+        await requestStatus(workerTarget(record), Math.min(500, recoveryDeadline - Date.now()))
+        return workerTarget(record)
+      } catch (error) {
+        if (!(error instanceof AgentUnavailableError)) throw error
+      }
+
+      const generation = randomUUID()
+      const claimId = randomUUID()
+      const claimedAt = Date.now()
+      const claim = await this.#store.claimRuntime(id, runtime.generation, {
+        generation,
+        claimId,
+        claimedAt,
+        endpoint: workerEndpoint(this.#stateDir, id, generation),
+        workerPid: runtime.workerPid,
+      }, (cursor) => ({ type: "work.interrupted" as const, cursor, eventId: randomUUID(), activityId: randomUUID(), timestamp: Date.now() }))
+      if (!claim) {
+        await wait(100)
+        continue
+      }
+
+      let worker: ChildProcess | undefined
+      try {
+        if (!(await waitForWorkerProcessGroupExit(claim.record.runtime?.workerPid, Math.min(5_000, recoveryDeadline - Date.now())))) {
+          throw new AgentUnavailableError(name)
+        }
+        worker = launchWorker(this.#stateDir, id, generation, claimId)
+        await waitForWorkerReady(workerTarget(claim.record), worker, Math.min(STARTUP_TIMEOUT_MS, recoveryDeadline - Date.now()))
+        const ready = this.#store.getById(id)
+        if (!ready || ready.runtime?.generation !== generation || ready.runtime.claimId !== claimId || ready.runtime.state !== "ready") {
+          throw new AgentUnavailableError(name)
+        }
+        return workerTarget(ready)
+      } catch (error) {
+        await stopWorker(worker)
+        await this.#store.releaseRuntimeClaim(id, generation, claimId)
+        throw error instanceof AgentUnavailableError ? error : new AgentUnavailableError(name)
+      }
+    }
+    throw new AgentUnavailableError(name)
   }
 
   private assertOpen(): void {
@@ -217,6 +299,10 @@ function trackStream(stream: WorkerEventStream, streams: Set<WorkerEventStream>)
       }
     },
   }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function workerTarget(record: AgentRecord): WorkerTarget {
