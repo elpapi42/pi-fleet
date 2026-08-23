@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 import test from "node:test"
 import { Dealer } from "zeromq"
 import { connectPiFleet } from "../../dist/index.js"
-import { openStore } from "../../dist/state/store.js"
+import { decodeEventCursor, openStore } from "../../dist/state/store.js"
 import { requestSend, requestStatus } from "../../dist/worker/control.js"
 import { decode, encode } from "../../dist/worker/protocol.js"
 
@@ -56,7 +56,7 @@ async function subscribe(record, options = {}) {
   assert.equal(response.agentId, record.id)
   assert.equal(response.runtimeGeneration, record.runtime.generation)
   assert.equal(typeof response.subscriptionId, "string")
-  return { socket, subscriptionId: response.subscriptionId }
+  return { socket, subscriptionId: response.subscriptionId, afterSequence: response.afterSequence, resumeCursor: response.resumeCursor }
 }
 
 async function receiveEvent(subscription) {
@@ -150,7 +150,14 @@ test("replays durable activity from the start then continues at the live tail", 
       try { return store.getById(record.id)?.lastEventSeq === 6 } finally { await store.close() }
     }, "Worker did not persist the first activity")
 
+    const liveTail = await subscribe(record)
+    assert.equal(liveTail.afterSequence, 6)
+    assert.deepEqual(decodeEventCursor(liveTail.resumeCursor), { agentId: record.id, sequence: 6 })
+    liveTail.socket.close()
+
     const replay = await subscribe(record, { fromStart: true })
+    assert.equal(replay.afterSequence, 0)
+    assert.equal(replay.resumeCursor, undefined)
     try {
       const replayed = []
       for (let index = 0; index < 6; index += 1) replayed.push(await receiveEvent(replay))

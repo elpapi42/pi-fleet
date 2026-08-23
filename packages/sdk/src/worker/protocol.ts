@@ -73,6 +73,8 @@ export type SubscribeResponse = {
   agentId: string
   runtimeGeneration: string
   subscriptionId?: string
+  afterSequence?: number
+  resumeCursor?: string
   error?: string
   errorCode?: "invalid-cursor"
 }

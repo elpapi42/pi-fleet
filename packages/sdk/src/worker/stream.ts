@@ -71,9 +71,9 @@ async function* readEvents(record: WorkerTarget, options: ReceiveOptions, signal
     } catch (error) {
       if (signal.aborted) return
       if (error instanceof InvalidCursorError) throw error
-      if (!(error instanceof StreamGapError) || repaired || !position.cursor) throw new AgentUnavailableError(record.name)
+      if (!(error instanceof StreamGapError) || repaired) throw new AgentUnavailableError(record.name)
       repaired = true
-      currentOptions = { after: position.cursor }
+      currentOptions = position.cursor ? { after: position.cursor } : { fromStart: true }
     }
   }
 }
@@ -111,6 +111,10 @@ async function* readSubscription(
       throw new StreamGapError()
     }
     subscriptionId = response.subscriptionId
+    if (position.sequence === undefined && response.afterSequence !== undefined) {
+      position.sequence = response.afterSequence
+      position.cursor = response.resumeCursor
+    }
 
     let nextFrame = socket.receive()
     void nextFrame.catch(() => {})
@@ -207,7 +211,9 @@ async function awaitStreamFrame(nextFrame: Promise<Buffer[]>, signal: AbortSigna
 function isSubscribeResponse(response: unknown): response is SubscribeResponse {
   return isRecord(response) && response.version === 1 && response.command === "subscribe" &&
     typeof response.requestId === "string" && typeof response.agentId === "string" &&
-    typeof response.runtimeGeneration === "string" && typeof response.ok === "boolean"
+    typeof response.runtimeGeneration === "string" && typeof response.ok === "boolean" &&
+    (response.afterSequence === undefined || typeof response.afterSequence === "number" && Number.isSafeInteger(response.afterSequence) && response.afterSequence >= 0) &&
+    (response.resumeCursor === undefined || typeof response.resumeCursor === "string")
 }
 
 function isSubscriptionStatusResponse(response: unknown): response is SubscriptionStatusResponse {

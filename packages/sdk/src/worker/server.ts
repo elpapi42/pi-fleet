@@ -1,6 +1,6 @@
 import { Router, capability } from "zeromq"
 import { startPi, type PiProcess } from "../pi/runtime.js"
-import { decodeEventCursor, openStore, type AgentRecord } from "../state/store.js"
+import { decodeEventCursor, encodeEventCursor, openStore, type AgentRecord } from "../state/store.js"
 import {
   decode,
   encode,
@@ -189,7 +189,17 @@ async function handleRequest(
       return
     }
 
-    reply(route, { version: 1, requestId: request.requestId, command: "subscribe", ok: true, agentId: record.id, runtimeGeneration: generation, subscriptionId: subscription.subscriptionId })
+    reply(route, {
+      version: 1,
+      requestId: request.requestId,
+      command: "subscribe",
+      ok: true,
+      agentId: record.id,
+      runtimeGeneration: generation,
+      subscriptionId: subscription.subscriptionId,
+      afterSequence: subscription.afterSequence,
+      ...(subscription.afterSequence > 0 ? { resumeCursor: encodeEventCursor(record.id, subscription.afterSequence) } : {}),
+    })
     if (subscription.afterSequence < subscription.tail) {
       await replaySubscription(store, activity, subscription.subscriptionId, record.id, subscription.afterSequence, subscription.tail, scheduleOutbound, currentOutbound)
     }
