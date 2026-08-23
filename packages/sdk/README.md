@@ -54,6 +54,10 @@ await agent.send("Summarize the findings", { delivery: "followUp" })
 
 Each event has a live `eventId`, an `activityId` that connects matching start and finish events, and a worker-assigned Unix-millisecond `timestamp`. A late subscriber can receive only one side of an activity pair. Stream order is authoritative; timestamps do not define ordering. `eventId` is not a replay cursor. `message.finished.text` contains concatenated assistant text blocks only. Each value returned by `agent.receive()` is a single-consumer stream; call `receive()` again for another independent subscription. Slice 4 will add durable sequence cursors and replay.
 
-`tool.started.args` contains Pi's model-requested parameters. Pi can validate or transform them before execution. `tool.finished.output` contains bounded final text, image omission metadata, and optional structured details. It never contains base64 image data. The worker limits requested parameters to 16 KiB, text output to 64 KiB, structured details to 16 KiB, and the CLI preview to 8 KiB. `tool.updated` is not available yet.
+`tool.started.args` contains Pi's model-requested parameters. Pi can validate or transform them before execution. When `argsTruncated` is `true`, `args` is `null` because the requested parameters exceeded 16 KiB.
+
+`tool.finished.output` contains bounded final text, image omission metadata, and optional structured details. `detailsTruncated` reports omitted structured details. `truncated` reports any omitted or shortened output, including image data. Semantic events never contain base64 image data. The worker limits text output to 64 KiB and structured details to 16 KiB. The CLI shows at most 8 KiB per parameter or output preview. `tool.updated` is not available yet.
+
+Tool parameters and output can contain sensitive local data. Pi-fleet does not silently redact this data because redaction can change its meaning. SDK consumers must treat event streams as having the same local trust level as the agent and its Pi session.
 
 Slice 3 supports Unix-like hosts with ZeroMQ `ipc://` support. It provides create, get, list, status, send, and live receive. Recovery, durable replay, retirement, compact, and destroy come in later slices.

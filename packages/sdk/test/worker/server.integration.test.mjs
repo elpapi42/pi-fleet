@@ -128,7 +128,7 @@ test("publishes the same ordered semantic events to independent subscribers", { 
       assert.equal(firstEvents[4].event.argsTruncated, false)
       assert.equal(firstEvents[5].event.isError, false)
       assert.deepEqual(firstEvents[5].event.output, {
-        content: [{ type: "text", text: "/workspace" }],
+        content: [{ type: "text", text: "\u001b[31m/workspace\u001b[0m\nsecond line" }],
         details: { exitCode: 0 },
         detailsTruncated: false,
         truncated: false,

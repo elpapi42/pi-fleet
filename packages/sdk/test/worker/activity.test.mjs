@@ -57,6 +57,33 @@ test("bounds requested arguments and final tool output before queueing", () => {
   assert.ok(Buffer.byteLength(JSON.stringify(finished)) <= 128 * 1024)
 })
 
+test("keeps a maximum-shaped normalized event below the complete event limit", () => {
+  const activity = new LiveActivity("agent-1", "runtime-1")
+  activity.subscribe(Buffer.from("subscriber"))
+  activity.publishPiEvent({
+    type: "tool_execution_end",
+    toolCallId: "i".repeat(256),
+    toolName: "t".repeat(256),
+    isError: false,
+    result: {
+      content: [
+        { type: "text", text: "x".repeat(64 * 1024) },
+        ...Array.from({ length: 63 }, () => ({
+          type: "image",
+          mimeType: "m".repeat(256),
+          data: "aGVsbG8=",
+        })),
+      ],
+      details: "d".repeat(16 * 1024 - 2),
+    },
+  })
+
+  const event = activity.nextOutbound()?.message.event
+  assert.equal(event?.type, "tool.finished")
+  assert.ok(event)
+  assert.ok(Buffer.byteLength(JSON.stringify(event)) <= 128 * 1024)
+})
+
 test("omits malformed tool result data", () => {
   const activity = new LiveActivity("agent-1", "runtime-1")
   activity.subscribe(Buffer.from("subscriber"))

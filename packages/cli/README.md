@@ -25,7 +25,7 @@ pif create named --cwd "$PWD" -- --session-id my-session
 
 Arguments after `--` pass through to Pi. Pi-fleet adds `--mode rpc` and rejects `--mode` and `--no-session`. Pi owns session lookup, working-directory selection, prompts, and failures.
 
-Commands print human-readable output. `pif send` confirms Pi accepted or queued an instruction. It does not wait for the work to finish. `pif receive` shows best-effort live activity after it subscribes. It shows model-requested tool parameters and bounded final tool output, but never raw base64 images. Press Ctrl-C to stop receiving. Missed events cannot replay until Slice 4. Use `pif --help` or `pif COMMAND --help` for generated usage.
+Commands print human-readable output. `pif send` confirms Pi accepted or queued an instruction. It does not wait for the work to finish. `pif receive` shows best-effort live activity after it subscribes. It shows model-requested tool parameters and bounded final tool output. It removes terminal control sequences, omits raw image data, and marks shortened or omitted values. Tool details can still contain sensitive local data. Press Ctrl-C to stop receiving. Missed events cannot replay until Slice 4. Use `pif --help` or `pif COMMAND --help` for generated usage.
 
 Running agents keep the worker version used at creation. After updating pi-fleet, create a new agent before testing new worker behavior such as live receive. Until `destroy` exists, use a new agent name.
 

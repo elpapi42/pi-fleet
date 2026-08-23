@@ -150,8 +150,59 @@ test("receives and renders live activity through the CLI", async () => {
     assert.match(stdout, /^Message started\.$/m)
     assert.match(stdout, /^Tool started: bash$/m)
     assert.match(stdout, /^  Params: {"command":"pwd"}$/m)
-    assert.match(stdout, /^  Output: \/workspace$/m)
+    assert.match(stdout, /^  Output:$/m)
+    assert.match(stdout, /^    \/workspace$/m)
+    assert.match(stdout, /^    second line$/m)
+    assert.doesNotMatch(stdout, /\u001b/)
     assert.match(stdout, /^  Details: {"exitCode":0}$/m)
+    assert.equal(stderr, "")
+  } finally {
+    if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
+    if (createdId) await terminateWorker(stateDir, createdId)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("renders bounded tool errors without terminal control characters", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-bounded-output-"))
+  const home = join(root, "home")
+  const stateDir = join(home, ".pi-fleet")
+  const env = {
+    ...process.env,
+    HOME: home,
+    PI_FLEET_PI_COMMAND: fakePi,
+    PI_FLEET_FAKE_PI_MODE: "semantic-bounded-error",
+  }
+  let createdId
+  let receiver
+  try {
+    await chmod(fakePi, 0o755)
+    const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
+    createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.ok(createdId)
+
+    receiver = spawn(process.execPath, [pif, "receive", "researcher"], { env, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    receiver.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
+    receiver.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk })
+    const exited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
+
+    await run(["send", "researcher", "Warmup"], env)
+    await run(["send", "researcher", "Bounded error"], env)
+    await waitForText(receiver, () => stdout, "Tool finished: bash unsafe with an error")
+
+    receiver.kill("SIGINT")
+    assert.deepEqual(await exited, { code: 130, signal: null })
+    assert.match(stdout, /^Tool started: bash unsafe$/m)
+    assert.match(stdout, /^  Params: \[omitted\]$/m)
+    assert.match(stdout, /^  Output:$/m)
+    assert.match(stdout, /^    command failed$/m)
+    assert.match(stdout, /^    next line$/m)
+    assert.match(stdout, /^  Output: \[image\/png unsafe omitted, 5 bytes\]$/m)
+    assert.match(stdout, /^  Details: \[omitted\]$/m)
+    assert.match(stdout, /^  Note: output was truncated or omitted\.$/m)
+    assert.doesNotMatch(stdout, /\u001b|\r/)
     assert.equal(stderr, "")
   } finally {
     if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")

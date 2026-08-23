@@ -67,7 +67,7 @@ async function handlePrompt(request) {
     return
   }
   if (mode === "prompt-event") write({ type: "agent_start" })
-  if (mode === "semantic-events" || mode === "semantic-error") {
+  if (mode === "semantic-events" || mode === "semantic-error" || mode === "semantic-bounded-error") {
     write({ type: "agent_start" })
     write({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "ignored" }] } })
     write({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "ignored" } })
@@ -77,15 +77,28 @@ async function handlePrompt(request) {
     write({ type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } })
     write({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "I will check." } })
     write({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `Handled: ${request.message}` }] } })
-    write({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: { command: "pwd" } })
+    write({
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: mode === "semantic-bounded-error" ? "\u001b[31mbash\runsafe\u001b[0m" : "bash",
+      args: mode === "semantic-bounded-error" ? { command: "x".repeat(16 * 1024 + 1) } : { command: "pwd" },
+    })
     write({
       type: "tool_execution_end",
       toolCallId: "tool-1",
-      toolName: "bash",
-      result: mode === "semantic-error"
-        ? { content: [{ type: "text", text: "command failed" }], details: { exitCode: 1 } }
-        : { content: [{ type: "text", text: "/workspace" }], details: { exitCode: 0 } },
-      isError: mode === "semantic-error",
+      toolName: mode === "semantic-bounded-error" ? "\u001b[31mbash\runsafe\u001b[0m" : "bash",
+      result: mode === "semantic-bounded-error"
+        ? {
+            content: [
+              { type: "text", text: "command failed\rnext line" },
+              { type: "image", mimeType: "\u001b[31mimage/png\runsafe\u001b[0m", data: "aGVsbG8=" },
+            ],
+            details: { stderr: "x".repeat(16 * 1024 + 1) },
+          }
+        : mode === "semantic-error"
+          ? { content: [{ type: "text", text: "command failed" }], details: { exitCode: 1 } }
+          : { content: [{ type: "text", text: "\u001b[31m/workspace\u001b[0m\nsecond line" }], details: { exitCode: 0 } },
+      isError: mode === "semantic-error" || mode === "semantic-bounded-error",
     })
     write({ type: "agent_settled" })
   }

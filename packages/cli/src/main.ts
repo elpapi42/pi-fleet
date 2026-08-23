@@ -1,8 +1,9 @@
 #!/usr/bin/env node
+import { stripVTControlCharacters } from "node:util"
 import { Command } from "commander"
 import { connectPiFleet, type AgentEvent } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.7.0"
+const version = "0.7.1"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -19,8 +20,14 @@ function printAgent(id: string, name: string, state: string): void {
   console.log(`State: ${state}`)
 }
 
+function safeText(text: string): string {
+  return stripVTControlCharacters(text)
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
+}
+
 function singleLine(text: string): string {
-  return text.replace(/\s+/g, " ").trim()
+  return safeText(text).replace(/\s+/g, " ").trim()
 }
 
 function truncateUtf8(value: string, maxBytes = 8 * 1024): { value: string; truncated: boolean } {
@@ -38,7 +45,7 @@ function truncateUtf8(value: string, maxBytes = 8 * 1024): { value: string; trun
 function printValue(label: string, value: unknown): void {
   let text: string
   try {
-    text = JSON.stringify(value)
+    text = JSON.stringify(value) ?? "[unavailable]"
   } catch {
     text = "[unavailable]"
   }
@@ -46,18 +53,31 @@ function printValue(label: string, value: unknown): void {
   console.log(`  ${label}: ${bounded.value}${bounded.truncated ? " [truncated]" : ""}`)
 }
 
+function printTextOutput(text: string): void {
+  const bounded = truncateUtf8(safeText(text))
+  const lines = bounded.value.split("\n")
+  if (lines.length === 1) {
+    console.log(`  Output: ${lines[0]}${bounded.truncated ? " [truncated]" : ""}`)
+    return
+  }
+  console.log("  Output:")
+  for (const line of lines) console.log(`    ${line}`)
+  if (bounded.truncated) console.log("    [truncated]")
+}
+
 function printOutput(event: Extract<AgentEvent, { type: "tool.finished" }>): void {
+  const text = event.output.content
+    .filter((part): part is Extract<(typeof event.output.content)[number], { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
+    .join("\n")
+  if (text || event.output.content.some((part) => part.type === "text")) printTextOutput(text)
   for (const part of event.output.content) {
-    if (part.type === "text") {
-      const bounded = truncateUtf8(part.text)
-      console.log(`  Output: ${singleLine(bounded.value)}${bounded.truncated ? " [truncated]" : ""}`)
-    } else {
-      console.log(`  Output: [${part.mimeType} omitted, ${part.byteLength} bytes]`)
-    }
+    if (part.type === "image") console.log(`  Output: [${singleLine(part.mimeType)} omitted, ${part.byteLength} bytes]`)
   }
   if (event.output.content.length === 0) console.log("  Output: [none]")
   if (event.output.details !== undefined) printValue("Details", event.output.details)
-  if (event.output.truncated) console.log("  Output: [truncated]")
+  else if (event.output.detailsTruncated) console.log("  Details: [omitted]")
+  if (event.output.truncated) console.log("  Note: output was truncated or omitted.")
 }
 
 function printEvent(event: AgentEvent): void {
@@ -75,11 +95,12 @@ function printEvent(event: AgentEvent): void {
       console.log(`Message finished: ${singleLine(event.text)}`)
       return
     case "tool.started":
-      console.log(`Tool started: ${event.toolName}`)
-      printValue("Params", event.argsTruncated ? "[omitted]" : event.args)
+      console.log(`Tool started: ${singleLine(event.toolName)}`)
+      if (event.argsTruncated) console.log("  Params: [omitted]")
+      else printValue("Params", event.args)
       return
     case "tool.finished":
-      console.log(`Tool finished: ${event.toolName}${event.isError ? " with an error" : ""}`)
+      console.log(`Tool finished: ${singleLine(event.toolName)}${event.isError ? " with an error" : ""}`)
       printOutput(event)
   }
 }

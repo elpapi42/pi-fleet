@@ -201,7 +201,8 @@ test("receives live semantic activity through the public agent handle", { concur
       await agent.send("Public stream")
       await receiving
 
-      assert.deepEqual(events.slice(-6).map(({ type }) => type), [
+      const currentEvents = events.slice(-6)
+      assert.deepEqual(currentEvents.map(({ type }) => type), [
         "message.started",
         "thinking.started",
         "thinking.finished",
@@ -209,6 +210,14 @@ test("receives live semantic activity through the public agent handle", { concur
         "tool.started",
         "tool.finished",
       ])
+      assert.deepEqual(currentEvents[4].args, { command: "pwd" })
+      assert.equal(currentEvents[4].argsTruncated, false)
+      assert.deepEqual(currentEvents[5].output, {
+        content: [{ type: "text", text: "\u001b[31m/workspace\u001b[0m\nsecond line" }],
+        details: { exitCode: 0 },
+        detailsTruncated: false,
+        truncated: false,
+      })
       await terminateWorker(stateDir, agent.id)
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_MODE

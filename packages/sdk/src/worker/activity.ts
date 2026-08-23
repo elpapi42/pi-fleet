@@ -201,22 +201,6 @@ function boundedJson(value: unknown, maxBytes: number): { value?: JsonValue; tru
   }
 }
 
-function truncateUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
-  let bytes = 0
-  let truncated = false
-  const characters: string[] = []
-  for (const character of value) {
-    const characterBytes = Buffer.byteLength(character)
-    if (bytes + characterBytes > maxBytes) {
-      truncated = true
-      break
-    }
-    characters.push(character)
-    bytes += characterBytes
-  }
-  return { value: characters.join(""), truncated }
-}
-
 function truncateJsonString(value: string, maxBytes: number): { value: string; truncated: boolean } {
   if (jsonStringByteLength(value) <= maxBytes) return { value, truncated: false }
   let bytes = 2
