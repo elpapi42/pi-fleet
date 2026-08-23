@@ -20,17 +20,23 @@ Install the CLI globally:
 ```bash
 npm install --global @elpapi42/pi-fleet-cli
 pif create researcher --cwd "$PWD"
-pif send researcher "Investigate the database schema"
-pif receive researcher
 pif list
 pif status researcher
 pif --help
+
+# Start this before sending work. Slice 3 does not replay missed activity.
+pif receive researcher
+
+# In another terminal:
+pif send researcher "Investigate the database schema"
 
 # Pass session selection directly to Pi
 pif create existing --cwd "$PWD" -- --session /path/to/session.jsonl
 ```
 
 By default, pi-fleet stores its LMDB state and IPC sockets in `~/.pi-fleet`. Pre-stable releases do not migrate state from earlier locations automatically.
+
+Running agents keep the worker version used at creation. After updating pi-fleet, create a new agent before testing new worker behavior such as live receive. Until `destroy` exists, use a new agent name.
 
 ## Develop locally
 
