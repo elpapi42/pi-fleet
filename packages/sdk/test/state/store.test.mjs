@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
 import { resolveStateDir } from "../../dist/fleet/client.js"
-import { openStore } from "../../dist/state/store.js"
+import { decodeEventCursor, openStore } from "../../dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -254,6 +254,36 @@ test("does not rewrite an agent state that already matches", async () => {
   })
 })
 
+test("atomically appends ordered events for the claimed runtime generation", async () => {
+  await withStore(async (store) => {
+    await store.create(record("researcher", "agent-1"))
+
+    const first = await store.appendEvent("agent-1", "runtime-1", (cursor) => ({ type: "message.started", cursor }))
+    const second = await store.appendEvent("agent-1", "runtime-1", (cursor) => ({ type: "message.finished", cursor }))
+
+    assert.deepEqual(first, {
+      sequence: 1,
+      cursor: first.cursor,
+      event: { type: "message.started", cursor: first.cursor },
+    })
+    assert.deepEqual(decodeEventCursor(first.cursor), { agentId: "agent-1", sequence: 1 })
+    assert.equal(second.sequence, 2)
+    assert.equal((await store.getById("agent-1"))?.lastEventSeq, 2)
+    assert.deepEqual(store.readEvents("agent-1", 0, 2), [first, second])
+    assert.deepEqual(store.readEvents("agent-1", 1, 2), [second])
+  })
+})
+
+test("does not append an event for another runtime generation", async () => {
+  await withStore(async (store) => {
+    await store.create(record("researcher", "agent-1"))
+
+    assert.equal(await store.appendEvent("agent-1", "wrong-runtime", () => ({ type: "message.started" })), undefined)
+    assert.equal((await store.getById("agent-1"))?.lastEventSeq, 0)
+    assert.deepEqual(store.readEvents("agent-1", 0, 1), [])
+  })
+})
+
 test("handles concurrent state writes from separate processes", async () => {
   await withStore(async (store, stateDir) => {
     await store.create(record("researcher", "agent-1"))
@@ -292,5 +322,30 @@ test("handles concurrent state writes from separate processes", async () => {
     assert.equal(firstResult.stdout, "true")
     assert.equal(secondResult.stdout, "true")
     assert.match((await store.getById("agent-1"))?.state ?? "", /^(working|idle)$/)
+  })
+})
+
+test("allocates each durable event sequence once across processes", async () => {
+  await withStore(async (store, stateDir) => {
+    await store.create(record("researcher", "agent-1"))
+    const storeUrl = new URL("../../dist/state/store.js", import.meta.url).href
+    const appendScript = `
+      import { openStore } from ${JSON.stringify(storeUrl)};
+      const [stateDir, value] = process.argv.slice(1);
+      const store = await openStore(stateDir);
+      try {
+        const entry = await store.appendEvent("agent-1", "runtime-1", (cursor) => ({ type: "message.started", cursor, value }));
+        process.stdout.write(String(entry.sequence));
+      } finally {
+        await store.close();
+      }
+    `
+    const results = await Promise.all([
+      execFileAsync(process.execPath, ["--input-type=module", "--eval", appendScript, stateDir, "one"]),
+      execFileAsync(process.execPath, ["--input-type=module", "--eval", appendScript, stateDir, "two"]),
+    ])
+    assert.deepEqual(results.map(({ stdout }) => Number(stdout)).sort(), [1, 2])
+    assert.equal(store.getById("agent-1")?.lastEventSeq, 2)
+    assert.deepEqual(store.readEvents("agent-1", 0, 2, 10).map(({ sequence }) => sequence), [1, 2])
   })
 })

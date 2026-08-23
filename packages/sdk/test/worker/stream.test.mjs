@@ -59,8 +59,10 @@ test("subscribes, yields events, and unsubscribes when iteration ends", async ()
         agentId: agent.id,
         runtimeGeneration: agent.runtime.generation,
         subscriptionId: "subscription-1",
+        sequence: 1,
         event: {
           type: "tool.finished",
+          cursor: "pf1.test-1",
           eventId: "event-1",
           activityId: "tool-1",
           timestamp: 1,
@@ -79,6 +81,7 @@ test("subscribes, yields events, and unsubscribes when iteration ends", async ()
     assert.deepEqual(await iterator.next(), {
       value: {
         type: "tool.finished",
+        cursor: "pf1.test-1",
         eventId: "event-1",
         activityId: "tool-1",
         timestamp: 1,
@@ -219,6 +222,68 @@ test("rejects an idle subscription when the worker cannot answer a health probe"
     })()
 
     await assert.rejects(receiveEvents(agent)[Symbol.asyncIterator]().next(), AgentUnavailableError)
+    await responder
+  })
+})
+
+test("repairs one sequence gap from the last delivered cursor", async () => {
+  await withRouter(async (router, agent) => {
+    const event = (sequence) => ({
+      version: 1,
+      command: "event",
+      agentId: agent.id,
+      runtimeGeneration: agent.runtime.generation,
+      subscriptionId: "subscription-1",
+      sequence,
+      event: {
+        type: "message.started",
+        cursor: `pf1.test-${sequence}`,
+        eventId: `event-${sequence}`,
+        activityId: `activity-${sequence}`,
+        timestamp: sequence,
+      },
+    })
+    const responder = (async () => {
+      const [firstRoute, firstSubscribeFrame] = await router.receive()
+      const firstSubscribe = decode(firstSubscribeFrame)
+      await router.send([firstRoute, encode({
+        version: 1,
+        requestId: firstSubscribe.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+      })])
+      await router.send([firstRoute, encode(event(1))])
+      await router.send([firstRoute, encode(event(3))])
+      const [, firstUnsubscribeFrame] = await router.receive()
+      assert.equal(decode(firstUnsubscribeFrame).command, "unsubscribe")
+
+      const [secondRoute, secondSubscribeFrame] = await router.receive()
+      const secondSubscribe = decode(secondSubscribeFrame)
+      assert.equal(secondSubscribe.command, "subscribe")
+      assert.equal(secondSubscribe.after, "pf1.test-1")
+      await router.send([secondRoute, encode({
+        version: 1,
+        requestId: secondSubscribe.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+      })])
+      await router.send([secondRoute, encode(event(2))])
+      await router.send([secondRoute, encode(event(3))])
+      const [, secondUnsubscribeFrame] = await router.receive()
+      assert.equal(decode(secondUnsubscribeFrame).command, "unsubscribe")
+    })()
+
+    const iterator = receiveEvents(agent)[Symbol.asyncIterator]()
+    assert.equal((await iterator.next()).value.cursor, "pf1.test-1")
+    assert.equal((await iterator.next()).value.cursor, "pf1.test-2")
+    assert.equal((await iterator.next()).value.cursor, "pf1.test-3")
+    await iterator.return()
     await responder
   })
 })

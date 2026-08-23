@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { Dealer } from "zeromq"
-import { AgentUnavailableError, type AgentEvent, type JsonValue, type ToolOutput } from "../fleet/agent.js"
+import { AgentUnavailableError, InvalidCursorError, type AgentEvent, type JsonValue, type ReceiveOptions, type ToolOutput } from "../fleet/agent.js"
 import {
   decode,
   encode,
@@ -15,13 +15,20 @@ import type { WorkerTarget } from "./control.js"
 
 const STREAM_IDLE_PROBE_MS = 1_000
 
+type StreamPosition = {
+  sequence?: number
+  cursor?: string
+}
+
+class StreamGapError extends Error {}
+
 export type WorkerEventStream = AsyncIterable<AgentEvent> & AsyncIterator<AgentEvent> & {
   close(): Promise<void>
 }
 
-export function receiveEvents(record: WorkerTarget): WorkerEventStream {
+export function receiveEvents(record: WorkerTarget, options: ReceiveOptions = {}): WorkerEventStream {
   const controller = new AbortController()
-  const iterator = readEvents(record, controller.signal)
+  const iterator = readEvents(record, options, controller.signal)
   let closePromise: Promise<void> | undefined
 
   const close = (): Promise<void> => {
@@ -53,8 +60,30 @@ export function receiveEvents(record: WorkerTarget): WorkerEventStream {
   }
 }
 
-async function* readEvents(record: WorkerTarget, signal: AbortSignal): AsyncGenerator<AgentEvent> {
-  if (signal.aborted) return
+async function* readEvents(record: WorkerTarget, options: ReceiveOptions, signal: AbortSignal): AsyncGenerator<AgentEvent> {
+  const position: StreamPosition = {}
+  let currentOptions = options
+  let repaired = false
+  while (!signal.aborted) {
+    try {
+      yield* readSubscription(record, currentOptions, position, signal)
+      return
+    } catch (error) {
+      if (signal.aborted) return
+      if (error instanceof InvalidCursorError) throw error
+      if (!(error instanceof StreamGapError) || repaired || !position.cursor) throw new AgentUnavailableError(record.name)
+      repaired = true
+      currentOptions = { after: position.cursor }
+    }
+  }
+}
+
+async function* readSubscription(
+  record: WorkerTarget,
+  options: ReceiveOptions,
+  position: StreamPosition,
+  signal: AbortSignal,
+): AsyncGenerator<AgentEvent> {
   const runtime = record.runtime
   if (!runtime?.endpoint) throw new AgentUnavailableError(record.name)
 
@@ -68,16 +97,18 @@ async function* readEvents(record: WorkerTarget, signal: AbortSignal): AsyncGene
       command: "subscribe",
       agentId: record.id,
       runtimeGeneration: runtime.generation,
+      ...options,
     }
     await socket.send(encode(request))
     const acknowledgement = await receiveWithDeadline(socket, signal)
     if (acknowledgement === "aborted") return
-    if (acknowledgement === "idle") throw new AgentUnavailableError(record.name)
+    if (acknowledgement === "idle") throw new StreamGapError()
     const response = decode(acknowledgement[0])
+    if (isSubscribeResponse(response) && !response.ok && response.errorCode === "invalid-cursor") throw new InvalidCursorError()
     if (!isSubscribeResponse(response) || !response.ok || response.requestId !== request.requestId ||
       response.agentId !== record.id || response.runtimeGeneration !== runtime.generation ||
       typeof response.subscriptionId !== "string" || !response.subscriptionId) {
-      throw new AgentUnavailableError(record.name)
+      throw new StreamGapError()
     }
     subscriptionId = response.subscriptionId
 
@@ -88,7 +119,7 @@ async function* readEvents(record: WorkerTarget, signal: AbortSignal): AsyncGene
       const result = await awaitStreamFrame(nextFrame, signal)
       if (result === "aborted") return
       if (result === "idle") {
-        if (probeRequestId) throw new AgentUnavailableError(record.name)
+        if (probeRequestId) throw new StreamGapError()
         probeRequestId = randomUUID()
         const probe: SubscriptionStatusRequest = {
           version: 1,
@@ -107,22 +138,28 @@ async function* readEvents(record: WorkerTarget, signal: AbortSignal): AsyncGene
       const frame = decode(result[0])
       if (isEventFrame(frame) && frame.agentId === record.id && frame.runtimeGeneration === runtime.generation &&
         frame.subscriptionId === subscriptionId) {
+        if (position.sequence !== undefined) {
+          if (frame.sequence <= position.sequence) continue
+          if (frame.sequence !== position.sequence + 1) throw new StreamGapError()
+        }
+        position.sequence = frame.sequence
+        position.cursor = frame.event.cursor
         yield frame.event
         continue
       }
       if (isSubscriptionStatusResponse(frame) && frame.requestId === probeRequestId &&
         frame.agentId === record.id && frame.runtimeGeneration === runtime.generation &&
         frame.subscriptionId === subscriptionId) {
-        if (!frame.ok) throw new AgentUnavailableError(record.name)
+        if (!frame.ok) throw new StreamGapError()
         probeRequestId = undefined
         continue
       }
-      throw new AgentUnavailableError(record.name)
+      throw new StreamGapError()
     }
   } catch (error) {
     if (signal.aborted) return
-    if (error instanceof AgentUnavailableError) throw error
-    throw new AgentUnavailableError(record.name)
+    if (error instanceof InvalidCursorError || error instanceof StreamGapError) throw error
+    throw new StreamGapError()
   } finally {
     const unsubscribe: UnsubscribeRequest = {
       version: 1,
@@ -184,12 +221,13 @@ function isEventFrame(response: unknown): response is EventFrame {
   if (!isRecord(response) || response.version !== 1 || response.command !== "event" ||
     typeof response.agentId !== "string" || typeof response.runtimeGeneration !== "string" ||
     typeof response.subscriptionId !== "string") return false
-  return isAgentEvent(response.event)
+  const sequence = response.sequence
+  return typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence > 0 && isAgentEvent(response.event)
 }
 
 function isAgentEvent(value: unknown): value is AgentEvent {
-  if (!isRecord(value) || typeof value.type !== "string" || typeof value.eventId !== "string" ||
-    typeof value.activityId !== "string" || typeof value.timestamp !== "number") return false
+  if (!isRecord(value) || typeof value.type !== "string" || typeof value.cursor !== "string" ||
+    typeof value.eventId !== "string" || typeof value.activityId !== "string" || typeof value.timestamp !== "number") return false
   switch (value.type) {
     case "thinking.started":
     case "message.started":

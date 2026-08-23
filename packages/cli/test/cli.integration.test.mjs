@@ -155,6 +155,7 @@ test("receives and renders live activity through the CLI", async () => {
     assert.match(stdout, /^    second line$/m)
     assert.doesNotMatch(stdout, /\u001b/)
     assert.match(stdout, /^  Details: {"exitCode":0}$/m)
+    assert.match(stdout, /^Cursor: pf1\.[A-Za-z0-9_-]+$/m)
     assert.equal(stderr, "")
   } finally {
     if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
@@ -257,6 +258,14 @@ test("uses Commander help and errors", async () => {
   assert.match(help.stdout, /Arguments after -- pass through to Pi/)
 
   await assert.rejects(
+    run(["receive", "researcher", "--from-start", "--after", "pf1.invalid"], {}),
+    (error) => {
+      assert.match(error.stderr, /option '--from-start' cannot be used with option '--after <cursor>'/)
+      return true
+    },
+  )
+
+  await assert.rejects(
     run(["status", "researcher", "extra"], {}),
     (error) => {
       assert.match(error.stderr, /error: too many arguments for 'status'/)
@@ -273,4 +282,51 @@ test("uses Commander help and errors", async () => {
       return true
     },
   )
+})
+
+test("replays and resumes durable activity through CLI receive options", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-replay-"))
+  const home = join(root, "home")
+  const stateDir = join(home, ".pi-fleet")
+  const env = {
+    ...process.env,
+    HOME: home,
+    PI_FLEET_PI_COMMAND: fakePi,
+    PI_FLEET_FAKE_PI_MODE: "semantic-events",
+  }
+  let createdId
+  let replay
+  let resumed
+  try {
+    await chmod(fakePi, 0o755)
+    const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
+    createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.ok(createdId)
+    await run(["send", "researcher", "Replay before"], env)
+
+    replay = spawn(process.execPath, [pif, "receive", "researcher", "--from-start"], { env, stdio: ["ignore", "pipe", "pipe"] })
+    let replayOutput = ""
+    replay.stdout.setEncoding("utf8").on("data", (chunk) => { replayOutput += chunk })
+    const replayExited = new Promise((resolve) => replay.once("exit", (code, signal) => resolve({ code, signal })))
+    await waitForText(replay, () => replayOutput, "Message finished: Handled: Replay before")
+    const cursor = [...replayOutput.matchAll(/^Cursor: (pf1\.[A-Za-z0-9_-]+)$/gm)].at(-1)?.[1]
+    assert.ok(cursor)
+    replay.kill("SIGINT")
+    assert.deepEqual(await replayExited, { code: 130, signal: null })
+
+    resumed = spawn(process.execPath, [pif, "receive", "researcher", "--after", cursor], { env, stdio: ["ignore", "pipe", "pipe"] })
+    let resumedOutput = ""
+    resumed.stdout.setEncoding("utf8").on("data", (chunk) => { resumedOutput += chunk })
+    const resumedExited = new Promise((resolve) => resumed.once("exit", (code, signal) => resolve({ code, signal })))
+    await run(["send", "researcher", "Replay after"], env)
+    await waitForText(resumed, () => resumedOutput, "Message finished: Handled: Replay after")
+    resumed.kill("SIGINT")
+    assert.deepEqual(await resumedExited, { code: 130, signal: null })
+    assert.match(resumedOutput, /^Cursor: pf1\.[A-Za-z0-9_-]+$/m)
+  } finally {
+    if (replay && replay.exitCode === null && replay.signalCode === null) replay.kill("SIGTERM")
+    if (resumed && resumed.exitCode === null && resumed.signalCode === null) resumed.kill("SIGTERM")
+    if (createdId) await terminateWorker(stateDir, createdId)
+    await rm(root, { recursive: true, force: true })
+  }
 })

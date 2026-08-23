@@ -1,6 +1,6 @@
 {
   "name": "@elpapi42/pi-fleet-sdk",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "SDK for durable, host-local Pi agents",
   "license": "MIT",
   "repository": {

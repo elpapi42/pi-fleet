@@ -50,14 +50,27 @@ await agent.send("Summarize the findings", { delivery: "followUp" })
 
 `send()` resolves after Pi accepts or queues the instruction. It does not wait for completion.
 
-`agent.receive()` provides best-effort live activity after the subscription starts. Each client receives an independent stream. Slice 3 does not replay missed events. The stream reports `thinking.started`, `thinking.finished`, `message.started`, `message.finished`, `tool.started`, and `tool.finished`. It ends normally when the consumer stops or the client closes. It throws if the worker or Pi becomes unavailable.
+`agent.receive()` provides a durable semantic activity stream. Each client receives an independent single-consumer stream. The stream reports `thinking.started`, `thinking.finished`, `message.started`, `message.finished`, `tool.started`, and `tool.finished`. It ends normally when the consumer stops or the client closes. It throws `AgentUnavailableError` if the worker or Pi becomes unavailable.
 
-Each event has a live `eventId`, an `activityId` that connects matching start and finish events, and a worker-assigned Unix-millisecond `timestamp`. A late subscriber can receive only one side of an activity pair. Stream order is authoritative; timestamps do not define ordering. `eventId` is not a replay cursor. `message.finished.text` contains concatenated assistant text blocks only. Each value returned by `agent.receive()` is a single-consumer stream; call `receive()` again for another independent subscription. Slice 4 will add durable sequence cursors and replay.
+Every event has an opaque `cursor`, a semantic `eventId`, an `activityId` that connects matching start and finish events, and a worker-assigned Unix-millisecond `timestamp`. Stream order is authoritative. Timestamps do not define ordering, and `eventId` is not a replay cursor. `message.finished.text` contains concatenated assistant text blocks only.
+
+```ts
+let cursor: string | undefined
+for await (const event of agent.receive({ fromStart: true })) {
+  cursor = event.cursor
+}
+
+for await (const event of agent.receive({ after: cursor })) {
+  // Events after cursor, then live events.
+}
+```
+
+Plain `receive()` starts after the tail captured at subscription time. `receive({ fromStart: true })` starts from the first event. `receive({ after: cursor })` starts after that cursor. The options are mutually exclusive. Cursors are versioned opaque values that bind to one immutable agent ID. Invalid, wrong-agent, or future cursors throw `InvalidCursorError`.
 
 `tool.started.args` contains Pi's model-requested parameters. Pi can validate or transform them before execution. When `argsTruncated` is `true`, `args` is `null` because the requested parameters exceeded 16 KiB.
 
 `tool.finished.output` contains bounded final text, image omission metadata, and optional structured details. `detailsTruncated` reports omitted structured details. `truncated` reports any omitted or shortened output, including image data. Semantic events never contain base64 image data. The worker limits text output to 64 KiB and structured details to 16 KiB. The CLI shows at most 8 KiB per parameter or output preview. `tool.updated` is not available yet.
 
-Tool parameters and output can contain sensitive local data. Pi-fleet does not silently redact this data because redaction can change its meaning. SDK consumers must treat event streams as having the same local trust level as the agent and its Pi session.
+Tool parameters and output can contain sensitive local data. Pi-fleet does not silently redact this data because redaction can change its meaning. The same bounded event data persists in `~/.pi-fleet` until `destroy()` exists. There is no expiry or retention setting yet, so disk use can grow. SDK consumers must treat event history as having the same local trust level as the agent and its Pi session.
 
-Slice 3 supports Unix-like hosts with ZeroMQ `ipc://` support. It provides create, get, list, status, send, and live receive. Recovery, durable replay, retirement, compact, and destroy come in later slices.
+Slice 4 supports Unix-like hosts with ZeroMQ `ipc://` support. It provides create, get, list, status, send, and durable receive. Pi and worker recovery, retirement, compact, and destroy come in later slices. A missing worker still makes receive unavailable until worker recovery arrives.

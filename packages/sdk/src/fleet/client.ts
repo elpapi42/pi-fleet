@@ -12,6 +12,7 @@ import {
   type AgentEvent,
   type AgentStatus,
   type AgentSummary,
+  type ReceiveOptions,
   type SendDelivery,
   type SendOptions,
   type SendResult,
@@ -118,11 +119,12 @@ class PiFleetClientImpl implements PiFleetClient {
     return requestSend(workerTarget(record), message, delivery)
   }
 
-  receive(id: string, name: string): AsyncIterable<AgentEvent> {
+  receive(id: string, name: string, options: ReceiveOptions = {}): AsyncIterable<AgentEvent> {
     this.assertOpen()
     const record = this.#store.getById(id)
     if (!record || record.name !== name) throw new AgentNotFoundError(name)
-    const stream = receiveEvents(workerTarget(record))
+    validateReceiveOptions(options)
+    const stream = receiveEvents(workerTarget(record), options)
     this.#streams.add(stream)
     return trackStream(stream, this.#streams)
   }
@@ -148,6 +150,12 @@ export async function connectPiFleet(options: ConnectOptions = {}): Promise<PiFl
 
 export function resolveStateDir(options: ConnectOptions = {}): string {
   return options.stateDir ? resolve(options.stateDir) : resolve(homedir(), ".pi-fleet")
+}
+
+function validateReceiveOptions(options: ReceiveOptions): void {
+  if (options.fromStart !== undefined && typeof options.fromStart !== "boolean") throw new TypeError("fromStart must be a boolean")
+  if (options.fromStart === true && options.after !== undefined) throw new TypeError("fromStart and after cannot be combined")
+  if (options.after !== undefined && (typeof options.after !== "string" || !options.after.trim())) throw new TypeError("after must be a non-empty cursor")
 }
 
 function isSendDelivery(value: unknown): value is SendDelivery {

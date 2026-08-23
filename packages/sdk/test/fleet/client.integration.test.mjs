@@ -7,7 +7,7 @@ import { dirname, join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
 import { connectPiFleet, AgentNameTakenError, AgentNotFoundError, AgentUnavailableError } from "../../dist/index.js"
-import { openStore } from "../../dist/state/store.js"
+import { encodeEventCursor, openStore } from "../../dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
 const fakePi = join(dirname(fileURLToPath(import.meta.url)), "../pi/fake-pi.mjs")
@@ -218,6 +218,43 @@ test("receives live semantic activity through the public agent handle", { concur
         detailsTruncated: false,
         truncated: false,
       })
+      await terminateWorker(stateDir, agent.id)
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_MODE
+      await client.close()
+    }
+  })
+})
+
+test("replays public activity after a delivered cursor", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    process.env.PI_FLEET_FAKE_PI_MODE = "semantic-events"
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      await agent.send("Before replay")
+
+      const replay = agent.receive({ fromStart: true })[Symbol.asyncIterator]()
+      let cursor
+      for (let index = 0; index < 6; index += 1) cursor = (await replay.next()).value.cursor
+      await replay.return()
+
+      await agent.send("After replay")
+      const resumed = agent.receive({ after: cursor })[Symbol.asyncIterator]()
+      const first = await resumed.next()
+      assert.equal(first.value.type, "message.started")
+      assert.notEqual(first.value.cursor, cursor)
+      await resumed.return()
+      for (const invalidCursor of [
+        "not-a-cursor",
+        encodeEventCursor("other-agent", 1),
+        encodeEventCursor(agent.id, 10_000),
+      ]) {
+        await assert.rejects(
+          async () => agent.receive({ after: invalidCursor })[Symbol.asyncIterator]().next(),
+          { name: "InvalidCursorError" },
+        )
+      }
       await terminateWorker(stateDir, agent.id)
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_MODE

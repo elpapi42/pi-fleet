@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { stripVTControlCharacters } from "node:util"
-import { Command } from "commander"
+import { Command, Option } from "commander"
 import { connectPiFleet, type AgentEvent } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.7.1"
+const version = "0.8.0"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -84,25 +84,27 @@ function printEvent(event: AgentEvent): void {
   switch (event.type) {
     case "thinking.started":
       console.log("Thinking started.")
-      return
+      break
     case "thinking.finished":
       console.log(`Thinking finished: ${singleLine(event.content)}`)
-      return
+      break
     case "message.started":
       console.log("Message started.")
-      return
+      break
     case "message.finished":
       console.log(`Message finished: ${singleLine(event.text)}`)
-      return
+      break
     case "tool.started":
       console.log(`Tool started: ${singleLine(event.toolName)}`)
       if (event.argsTruncated) console.log("  Params: [omitted]")
       else printValue("Params", event.args)
-      return
+      break
     case "tool.finished":
       console.log(`Tool finished: ${singleLine(event.toolName)}${event.isError ? " with an error" : ""}`)
       printOutput(event)
+      break
   }
+  console.log(`Cursor: ${event.cursor}`)
 }
 
 function printAgentList(agents: Array<{ id: string; name: string; state: string }>): void {
@@ -163,8 +165,10 @@ function createProgram(piArgs: string[]): Command {
 
   program
     .command("receive <name>")
-    .description("Show live agent activity")
-    .action(async (name: string) => {
+    .description("Show durable agent activity")
+    .addOption(new Option("--from-start", "replay activity from the first event").conflicts("after"))
+    .option("--after <cursor>", "replay activity after a cursor")
+    .action(async (name: string, options: { fromStart?: boolean; after?: string }) => {
       let interrupted = false
       await withClient(async (client) => {
         const onInterrupt = () => {
@@ -173,7 +177,8 @@ function createProgram(piArgs: string[]): Command {
         }
         process.once("SIGINT", onInterrupt)
         try {
-          for await (const event of (await client.get(name)).receive()) printEvent(event)
+          const receiveOptions = options.fromStart ? { fromStart: true } : options.after ? { after: options.after } : undefined
+          for await (const event of (await client.get(name)).receive(receiveOptions)) printEvent(event)
         } finally {
           process.off("SIGINT", onInterrupt)
         }

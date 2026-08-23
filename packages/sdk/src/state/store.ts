@@ -24,10 +24,22 @@ export type AgentRecord = {
   updatedAt: number
 }
 
+export type EventJournalEntry<Event = unknown> = {
+  sequence: number
+  cursor: string
+  event: Event
+}
+
+type EventCursorPayload = {
+  agentId: string
+  sequence: number
+}
+
 type SharedStore = {
   root: RootDatabase
   agents: Database<AgentRecord, string>
   names: Database<string, string>
+  events: Database<EventJournalEntry>
   references: number
   closing?: Promise<void>
 }
@@ -39,6 +51,7 @@ export class FleetStore {
   readonly #shared: SharedStore
   readonly #agents: Database<AgentRecord, string>
   readonly #names: Database<string, string>
+  readonly #events: Database<EventJournalEntry>
   #closed = false
 
   constructor(stateDir: string, shared: SharedStore) {
@@ -46,6 +59,7 @@ export class FleetStore {
     this.#shared = shared
     this.#agents = shared.agents
     this.#names = shared.names
+    this.#events = shared.events
   }
 
   async create(record: AgentRecord): Promise<boolean> {
@@ -108,6 +122,37 @@ export class FleetStore {
     }
   }
 
+  async appendEvent<Event>(id: string, runtimeGeneration: string, createEvent: (cursor: string) => Event): Promise<EventJournalEntry<Event> | undefined> {
+    this.assertOpen()
+    while (true) {
+      const entry = this.#agents.getEntry(id)
+      if (!entry || entry.value.runtime?.generation !== runtimeGeneration) return undefined
+
+      const version = entry.version ?? 0
+      const sequence = entry.value.lastEventSeq + 1
+      const cursor = encodeEventCursor(id, sequence)
+      const event: EventJournalEntry<Event> = { sequence, cursor, event: createEvent(cursor) }
+      const updated: AgentRecord = { ...entry.value, lastEventSeq: sequence, updatedAt: Date.now() }
+      const appended = await this.#agents.ifVersion(id, version, () => {
+        this.#events.put([id, sequence], event)
+        this.#agents.put(id, updated, version + 1)
+      })
+      if (appended) return event
+    }
+  }
+
+  readEvents<Event>(id: string, afterSequence: number, tailSequence: number, limit: number): EventJournalEntry<Event>[] {
+    this.assertOpen()
+    if (afterSequence >= tailSequence || limit < 1) return []
+    return [...this.#events.getRange({
+      start: [id, afterSequence],
+      exclusiveStart: true,
+      end: [id, tailSequence],
+      inclusiveEnd: true,
+      limit,
+    })].map(({ value }) => value as EventJournalEntry<Event>)
+  }
+
   async rollbackCreation(id: string, name: string, runtimeGeneration: string): Promise<void> {
     this.assertOpen()
     await this.#names.transaction(() => {
@@ -151,12 +196,38 @@ export async function openStore(stateDir: string): Promise<FleetStore> {
       root,
       agents: root.openDB<AgentRecord, string>("agents", { encoding: "json", useVersions: true }),
       names: root.openDB<string, string>("names", { encoding: "string" }),
+      events: root.openDB<EventJournalEntry>("events", { encoding: "json" }),
       references: 0,
     }
     stores.set(canonicalStateDir, shared)
   }
   shared.references += 1
   return new FleetStore(canonicalStateDir, shared)
+}
+
+export function encodeEventCursor(agentId: string, sequence: number): string {
+  return `pf1.${Buffer.from(JSON.stringify({ agentId, sequence })).toString("base64url")}`
+}
+
+export function decodeEventCursor(cursor: string): EventCursorPayload {
+  if (typeof cursor !== "string" || !cursor.startsWith("pf1.")) throw new TypeError("Invalid event cursor")
+  try {
+    const value: unknown = JSON.parse(Buffer.from(cursor.slice(4), "base64url").toString("utf8"))
+    if (!isEventCursorPayload(value)) throw new TypeError("Invalid event cursor")
+    return value
+  } catch (error) {
+    if (error instanceof TypeError && error.message === "Invalid event cursor") throw error
+    throw new TypeError("Invalid event cursor")
+  }
+}
+
+function isEventCursorPayload(value: unknown): value is EventCursorPayload {
+  return typeof value === "object"
+    && value !== null
+    && typeof (value as { agentId?: unknown }).agentId === "string"
+    && (value as { agentId: string }).agentId.length > 0
+    && Number.isSafeInteger((value as { sequence?: unknown }).sequence)
+    && (value as { sequence: number }).sequence > 0
 }
 
 async function prepareStateDirectory(stateDir: string): Promise<string> {

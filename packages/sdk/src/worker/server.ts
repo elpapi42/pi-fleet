@@ -1,6 +1,6 @@
 import { Router, capability } from "zeromq"
 import { startPi, type PiProcess } from "../pi/runtime.js"
-import { openStore, type AgentRecord } from "../state/store.js"
+import { decodeEventCursor, openStore, type AgentRecord } from "../state/store.js"
 import {
   decode,
   encode,
@@ -37,6 +37,7 @@ async function main(): Promise<void> {
   let pi: PiProcess | undefined
   let stateUpdates = Promise.resolve()
   let outbound = Promise.resolve()
+  let eventOperations = Promise.resolve()
   const handlers = new Set<Promise<void>>()
   const controlFrames: Outbound[] = []
   const activity = new LiveActivity(record.id, generation)
@@ -78,11 +79,25 @@ async function main(): Promise<void> {
     controlFrames.push({ route: Buffer.from(route), message: response })
     scheduleOutbound()
   }
+  const queueEventOperation = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = eventOperations.then(operation)
+    eventOperations = result.then(() => undefined, () => undefined)
+    return result
+  }
   const onPiEvent = (event: unknown) => {
     if (!isRecord(event)) return
     if (event.type === "agent_start") queueStateUpdate("working")
     if (event.type === "agent_settled") queueStateUpdate("idle")
-    if (activity.publishPiEvent(event)) scheduleOutbound()
+    const normalized = activity.normalizePiEvent(event)
+    if (!normalized) return
+    void queueEventOperation(async () => {
+      const appended = await store.appendEvent(agentId, generation, (cursor) => ({ ...normalized, cursor }))
+      if (!appended) {
+        closeRouter()
+        return
+      }
+      if (activity.publishEvent(appended.sequence, appended.event)) scheduleOutbound()
+    }).catch(() => closeRouter())
   }
 
   process.once("SIGTERM", stop)
@@ -101,7 +116,7 @@ async function main(): Promise<void> {
     state = "idle"
 
     for await (const [route, frame] of router) {
-      const handler = handleRequest(route, frame, record, generation, pi, () => state, reply, activity)
+      const handler = handleRequest(route, frame, record, generation, pi, () => state, reply, activity, store, queueEventOperation, scheduleOutbound, () => outbound)
       handlers.add(handler)
       void handler.then(
         () => handlers.delete(handler),
@@ -119,6 +134,7 @@ async function main(): Promise<void> {
     await pi?.stop()
     await Promise.allSettled(handlers)
     await stateUpdates
+    await eventOperations
     await outbound
     await store.close()
   }
@@ -133,6 +149,10 @@ async function handleRequest(
   getState: () => AgentRecord["state"],
   reply: (route: Buffer, response: WorkerResponse) => void,
   activity: LiveActivity,
+  store: Awaited<ReturnType<typeof openStore>>,
+  queueEventOperation: <T>(operation: () => Promise<T>) => Promise<T>,
+  scheduleOutbound: () => void,
+  currentOutbound: () => Promise<void>,
 ): Promise<void> {
   const request = decodeRequest(frame)
   if (!request || request.agentId !== record.id || request.runtimeGeneration !== generation) {
@@ -151,8 +171,28 @@ async function handleRequest(
   }
 
   if (request.command === "subscribe") {
-    const subscriptionId = activity.subscribe(route)
-    reply(route, { version: 1, requestId: request.requestId, command: "subscribe", ok: true, agentId: record.id, runtimeGeneration: generation, subscriptionId })
+    const subscription = await queueEventOperation(async () => {
+      const current = store.getById(record.id)
+      if (!current || current.runtime?.generation !== generation) return undefined
+      const tail = current.lastEventSeq
+      const afterSequence = receiveAfterSequence(request, record.id, tail)
+      const subscriptionId = activity.subscribe(route, afterSequence < tail)
+      return { subscriptionId, afterSequence, tail }
+    }).catch((error) => error)
+
+    if (subscription instanceof Error) {
+      reply(route, { version: 1, requestId: request.requestId, command: "subscribe", ok: false, agentId: record.id, runtimeGeneration: generation, error: subscription.message, errorCode: "invalid-cursor" })
+      return
+    }
+    if (!subscription) {
+      reply(route, { version: 1, requestId: request.requestId, command: "subscribe", ok: false, agentId: record.id, runtimeGeneration: generation, error: "Worker claim is no longer current" })
+      return
+    }
+
+    reply(route, { version: 1, requestId: request.requestId, command: "subscribe", ok: true, agentId: record.id, runtimeGeneration: generation, subscriptionId: subscription.subscriptionId })
+    if (subscription.afterSequence < subscription.tail) {
+      await replaySubscription(store, activity, subscription.subscriptionId, record.id, subscription.afterSequence, subscription.tail, scheduleOutbound, currentOutbound)
+    }
     return
   }
 
@@ -194,13 +234,49 @@ async function handleRequest(
   }
 }
 
+function receiveAfterSequence(request: SubscribeRequest, agentId: string, tail: number): number {
+  if (request.fromStart === true && request.after !== undefined) throw new Error("fromStart and after cannot be combined")
+  if (request.fromStart === true) return 0
+  if (request.after === undefined) return tail
+  const cursor = decodeEventCursor(request.after)
+  if (cursor.agentId !== agentId || cursor.sequence > tail) throw new Error("Invalid event cursor")
+  return cursor.sequence
+}
+
+async function replaySubscription(
+  store: Awaited<ReturnType<typeof openStore>>,
+  activity: LiveActivity,
+  subscriptionId: string,
+  agentId: string,
+  afterSequence: number,
+  tail: number,
+  scheduleOutbound: () => void,
+  currentOutbound: () => Promise<void>,
+): Promise<void> {
+  const batchSize = 32
+  let sequence = afterSequence
+  while (sequence < tail) {
+    const entries = store.readEvents<import("../fleet/agent.js").AgentEvent>(agentId, sequence, tail, batchSize)
+    if (entries.length === 0) throw new Error("Event journal is incomplete")
+    for (const entry of entries) {
+      if (entry.sequence !== sequence + 1) throw new Error("Event journal is incomplete")
+      if (!activity.queueReplay(subscriptionId, entry)) return
+      sequence = entry.sequence
+    }
+    scheduleOutbound()
+    await currentOutbound()
+  }
+  if (activity.finishReplay(subscriptionId)) scheduleOutbound()
+}
+
 function decodeRequest(frame: Buffer): WorkerRequest | undefined {
   try {
     const request = decode(frame)
     if (!isRecord(request) || request.version !== 1 || typeof request.requestId !== "string" || typeof request.agentId !== "string" || typeof request.runtimeGeneration !== "string") return undefined
     if (request.command === "status") return request as StatusRequest
     if (request.command === "send" && typeof request.message === "string" && typeof request.delivery === "string") return request as SendRequest
-    if (request.command === "subscribe") return request as SubscribeRequest
+    if (request.command === "subscribe" && (request.fromStart === undefined || typeof request.fromStart === "boolean") &&
+      (request.after === undefined || typeof request.after === "string")) return request as SubscribeRequest
     if (request.command === "unsubscribe" && (request.subscriptionId === undefined || typeof request.subscriptionId === "string")) return request as UnsubscribeRequest
     if (request.command === "subscription.status" && typeof request.subscriptionId === "string") return request as SubscriptionStatusRequest
   } catch {}

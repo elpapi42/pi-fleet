@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto"
-import type { AgentEvent, JsonValue, ToolOutput } from "../fleet/agent.js"
+import type { AgentEvent, JsonValue, ToolOutput, UnsequencedAgentEvent } from "../fleet/agent.js"
 import type { EventFrame } from "./protocol.js"
 
 type Subscriber = {
   route: Buffer
   subscriptionId: string
   events: EventFrame[]
+  pendingLive: EventFrame[]
+  replaying: boolean
 }
 
 export type ActivityOutbound = {
@@ -34,10 +36,43 @@ export class LiveActivity {
     this.#runtimeGeneration = runtimeGeneration
   }
 
-  subscribe(route: Buffer): string {
+  normalizePiEvent(rawEvent: Record<string, unknown>): UnsequencedAgentEvent | undefined {
+    return this.#normalize(rawEvent)
+  }
+
+  subscribe(route: Buffer, replaying: boolean): string {
     const subscriptionId = randomUUID()
-    this.#subscribers.set(subscriptionId, { route: Buffer.from(route), subscriptionId, events: [] })
+    this.#subscribers.set(subscriptionId, {
+      route: Buffer.from(route),
+      subscriptionId,
+      events: [],
+      pendingLive: [],
+      replaying,
+    })
     return subscriptionId
+  }
+
+  queueReplay(subscriptionId: string, entry: { sequence: number; event: AgentEvent }): boolean {
+    const subscriber = this.#subscribers.get(subscriptionId)
+    if (!subscriber || !subscriber.replaying) return false
+    return this.enqueue(subscriber, this.frame(subscriptionId, entry.sequence, entry.event), false)
+  }
+
+  finishReplay(subscriptionId: string): boolean {
+    const subscriber = this.#subscribers.get(subscriptionId)
+    if (!subscriber || !subscriber.replaying) return false
+    subscriber.replaying = false
+    subscriber.events.push(...subscriber.pendingLive)
+    subscriber.pendingLive = []
+    return true
+  }
+
+  publishEvent(sequence: number, event: AgentEvent): boolean {
+    let queued = false
+    for (const subscriber of [...this.#subscribers.values()]) {
+      queued = this.enqueue(subscriber, this.frame(subscriber.subscriptionId, sequence, event), subscriber.replaying) || queued
+    }
+    return queued
   }
 
   unsubscribe(route: Buffer, subscriptionId?: string): void {
@@ -53,29 +88,6 @@ export class LiveActivity {
 
   hasSubscription(route: Buffer, subscriptionId: string): boolean {
     return this.#subscribers.get(subscriptionId)?.route.equals(route) ?? false
-  }
-
-  publishPiEvent(rawEvent: Record<string, unknown>): boolean {
-    const event = this.#normalize(rawEvent)
-    if (!event) return false
-
-    let queued = false
-    for (const subscriber of this.#subscribers.values()) {
-      if (subscriber.events.length >= SUBSCRIBER_QUEUE_LIMIT) {
-        this.#subscribers.delete(subscriber.subscriptionId)
-        continue
-      }
-      subscriber.events.push({
-        version: 1,
-        command: "event",
-        agentId: this.#agentId,
-        runtimeGeneration: this.#runtimeGeneration,
-        subscriptionId: subscriber.subscriptionId,
-        event,
-      })
-      queued = true
-    }
-    return queued
   }
 
   nextOutbound(): ActivityOutbound | undefined {
@@ -102,9 +114,31 @@ export class LiveActivity {
   close(): void {
     this.#subscribers.clear()
   }
+
+  private enqueue(subscriber: Subscriber, frame: EventFrame, pending: boolean): boolean {
+    if (subscriber.events.length + subscriber.pendingLive.length >= SUBSCRIBER_QUEUE_LIMIT) {
+      this.#subscribers.delete(subscriber.subscriptionId)
+      return false
+    }
+    if (pending) subscriber.pendingLive.push(frame)
+    else subscriber.events.push(frame)
+    return true
+  }
+
+  private frame(subscriptionId: string, sequence: number, event: AgentEvent): EventFrame {
+    return {
+      version: 1,
+      command: "event",
+      agentId: this.#agentId,
+      runtimeGeneration: this.#runtimeGeneration,
+      subscriptionId,
+      sequence,
+      event,
+    }
+  }
 }
 
-function createEventNormalizer(): (event: Record<string, unknown>) => AgentEvent | undefined {
+function createEventNormalizer(): (event: Record<string, unknown>) => UnsequencedAgentEvent | undefined {
   let assistantActivityId: string | undefined
 
   return (event) => {

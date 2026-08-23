@@ -35,20 +35,38 @@ export type ToolOutput = {
   truncated: boolean
 }
 
+export type EventCursor = string
+
+export type ReceiveOptions =
+  | { fromStart: true; after?: never }
+  | { after: EventCursor; fromStart?: never }
+  | { fromStart?: false; after?: never }
+
+export type UnsequencedAgentEvent = DistributiveOmit<AgentEvent, "cursor">
+
+type DistributiveOmit<T, Key extends PropertyKey> = T extends unknown ? Omit<T, Key> : never
+
+type AgentEventBase = {
+  cursor: EventCursor
+  eventId: string
+  activityId: string
+  timestamp: number
+}
+
 export type AgentEvent =
-  | { type: "thinking.started"; eventId: string; activityId: string; timestamp: number }
-  | { type: "thinking.finished"; eventId: string; activityId: string; timestamp: number; content: string }
-  | { type: "message.started"; eventId: string; activityId: string; timestamp: number }
-  | { type: "message.finished"; eventId: string; activityId: string; timestamp: number; text: string }
-  | { type: "tool.started"; eventId: string; activityId: string; timestamp: number; toolName: string; args: JsonValue; argsTruncated: boolean }
-  | { type: "tool.finished"; eventId: string; activityId: string; timestamp: number; toolName: string; isError: boolean; output: ToolOutput }
+  | (AgentEventBase & { type: "thinking.started" })
+  | (AgentEventBase & { type: "thinking.finished"; content: string })
+  | (AgentEventBase & { type: "message.started" })
+  | (AgentEventBase & { type: "message.finished"; text: string })
+  | (AgentEventBase & { type: "tool.started"; toolName: string; args: JsonValue; argsTruncated: boolean })
+  | (AgentEventBase & { type: "tool.finished"; toolName: string; isError: boolean; output: ToolOutput })
 
 export interface Agent {
   readonly id: string
   readonly name: string
   status(): Promise<AgentStatus>
   send(message: string, options?: SendOptions): Promise<SendResult>
-  receive(): AsyncIterable<AgentEvent>
+  receive(options?: ReceiveOptions): AsyncIterable<AgentEvent>
 }
 
 export class AgentNameTakenError extends Error {
@@ -72,10 +90,17 @@ export class AgentUnavailableError extends Error {
   }
 }
 
+export class InvalidCursorError extends Error {
+  constructor() {
+    super("Invalid event cursor")
+    this.name = "InvalidCursorError"
+  }
+}
+
 type AgentClient = {
   status(id: string, name: string): Promise<AgentStatus>
   send(id: string, name: string, message: string, options?: SendOptions): Promise<SendResult>
-  receive(id: string, name: string): AsyncIterable<AgentEvent>
+  receive(id: string, name: string, options?: ReceiveOptions): AsyncIterable<AgentEvent>
 }
 
 export class AgentHandle implements Agent {
@@ -105,7 +130,7 @@ export class AgentHandle implements Agent {
     return this.#client.send(this.#id, this.#name, message, options)
   }
 
-  receive(): AsyncIterable<AgentEvent> {
-    return this.#client.receive(this.#id, this.#name)
+  receive(options?: ReceiveOptions): AsyncIterable<AgentEvent> {
+    return this.#client.receive(this.#id, this.#name, options)
   }
 }

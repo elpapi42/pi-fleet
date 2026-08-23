@@ -24,6 +24,8 @@ export type SubscribeRequest = {
   command: "subscribe"
   agentId: string
   runtimeGeneration: string
+  fromStart?: boolean
+  after?: string
 }
 
 export type UnsubscribeRequest = {
@@ -72,6 +74,7 @@ export type SubscribeResponse = {
   runtimeGeneration: string
   subscriptionId?: string
   error?: string
+  errorCode?: "invalid-cursor"
 }
 
 export type UnsubscribeResponse = {
@@ -102,6 +105,7 @@ export type EventFrame = {
   agentId: string
   runtimeGeneration: string
   subscriptionId: string
+  sequence: number
   event: AgentEvent
 }
 

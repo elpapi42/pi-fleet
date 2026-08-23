@@ -38,7 +38,7 @@ async function terminateWorker(stateDir, id) {
   }
 }
 
-async function subscribe(record) {
+async function subscribe(record, options = {}) {
   const socket = new Dealer({ routingId: randomUUID(), immediate: true, linger: 0 })
   socket.connect(record.runtime.endpoint)
   const request = {
@@ -47,6 +47,7 @@ async function subscribe(record) {
     command: "subscribe",
     agentId: record.id,
     runtimeGeneration: record.runtime.generation,
+    ...options,
   }
   await socket.send(encode(request))
   const response = decode((await socket.receive())[0])
@@ -140,18 +141,25 @@ test("publishes the same ordered semantic events to independent subscribers", { 
   })
 })
 
-test("does not replay activity produced before subscription", { concurrency: false }, async () => {
-  await withWorker({ PI_FLEET_FAKE_PI_MODE: "semantic-events" }, async ({ record }) => {
+test("replays durable activity from the start then continues at the live tail", { concurrency: false }, async () => {
+  await withWorker({ PI_FLEET_FAKE_PI_MODE: "semantic-events" }, async ({ stateDir, record }) => {
     assert.ok(record)
     await requestSend(record, "Before subscription", "steer")
+    await waitFor(async () => {
+      const store = await openStore(stateDir)
+      try { return store.getById(record.id)?.lastEventSeq === 6 } finally { await store.close() }
+    }, "Worker did not persist the first activity")
 
-    const subscription = await subscribe(record)
+    const replay = await subscribe(record, { fromStart: true })
     try {
+      const replayed = []
+      for (let index = 0; index < 6; index += 1) replayed.push(await receiveEvent(replay))
+      assert.deepEqual(replayed.map((frame) => frame.sequence), [1, 2, 3, 4, 5, 6])
+      assert.equal(replayed[5].event.cursor.startsWith("pf1."), true)
       await requestSend(record, "After subscription", "steer")
-      const first = await receiveEvent(subscription)
-      assert.equal(first.event.type, "message.started")
+      assert.equal((await receiveEvent(replay)).sequence, 7)
     } finally {
-      subscription.socket.close()
+      replay.socket.close()
     }
   })
 })
