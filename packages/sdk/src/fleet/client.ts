@@ -93,7 +93,7 @@ class PiFleetClientImpl implements PiFleetClient {
 
   async list(): Promise<AgentSummary[]> {
     this.assertOpen()
-    return this.#store.list()
+    return this.#store.list().map(({ id, name, cwd, state }) => ({ id, name, cwd, state }))
   }
 
   async status(id: string, name: string): Promise<AgentStatus> {

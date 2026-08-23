@@ -56,12 +56,7 @@ test("creates an agent and resolves it from the durable name index", async () =>
 
     assert.deepEqual(await store.getByName("researcher"), created)
     assert.deepEqual(await store.getById("agent-1"), created)
-    assert.deepEqual(await store.list(), [{
-      id: "agent-1",
-      name: "researcher",
-      cwd: "/work",
-      state: "starting",
-    }])
+    assert.deepEqual(await store.list(), [created])
   })
 })
 

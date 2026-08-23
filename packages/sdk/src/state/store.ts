@@ -1,7 +1,7 @@
 import { chmod, mkdir, realpath } from "node:fs/promises"
 import { join } from "node:path"
 import { open, type Database, type RootDatabase } from "lmdb"
-import { AgentNameTakenError, type AgentState, type AgentSummary } from "../fleet/agent.js"
+import { AgentNameTakenError, type AgentState } from "../fleet/agent.js"
 
 export type AgentRecord = {
   id: string
@@ -68,14 +68,9 @@ export class FleetStore {
     return id === undefined ? undefined : this.#agents.get(id)
   }
 
-  list(): AgentSummary[] {
+  list(): AgentRecord[] {
     this.assertOpen()
-    return [...this.#agents.getRange({})].map(({ value }) => ({
-      id: value.id,
-      name: value.name,
-      cwd: value.cwd,
-      state: value.state,
-    }))
+    return [...this.#agents.getRange({})].map(({ value }) => value)
   }
 
   async markReady(id: string, runtimeGeneration: string, ready: Pick<NonNullable<AgentRecord["runtime"]>, "workerPid" | "endpoint"> & Pick<AgentRecord, "sessionPath" | "sessionId">): Promise<boolean> {
