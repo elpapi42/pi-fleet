@@ -14,8 +14,7 @@
     "build": "npm run build --workspace @elpapi42/pi-fleet-sdk && npm run build --workspace @elpapi42/pi-fleet-cli",
     "test": "npm run build && npm run test --workspaces --if-present",
     "pack:check": "npm run build && npm pack --dry-run --workspace @elpapi42/pi-fleet-sdk && npm pack --dry-run --workspace @elpapi42/pi-fleet-cli",
-    "pif": "npm run build && node packages/cli/dist/main.js",
-    "sdk:example": "npm run build --workspace @elpapi42/pi-fleet-sdk && node sdk-example.mjs"
+    "pif": "npm run build && node packages/cli/dist/main.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

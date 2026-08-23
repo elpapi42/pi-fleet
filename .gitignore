@@ -8,3 +8,4 @@ dist/
 # Local planning artifacts
 plan.md
 proposal.md
+/sdk-example.mjs
