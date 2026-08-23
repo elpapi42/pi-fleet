@@ -125,7 +125,14 @@ test("publishes the same ordered semantic events to independent subscribers", { 
       assert.equal(firstEvents[2].event.content, "I will check.")
       assert.equal(firstEvents[3].event.text, "Handled: Inspect the project")
       assert.deepEqual(firstEvents[4].event.args, { command: "pwd" })
+      assert.equal(firstEvents[4].event.argsTruncated, false)
       assert.equal(firstEvents[5].event.isError, false)
+      assert.deepEqual(firstEvents[5].event.output, {
+        content: [{ type: "text", text: "/workspace" }],
+        details: { exitCode: 0 },
+        detailsTruncated: false,
+        truncated: false,
+      })
     } finally {
       first.socket.close()
       second.socket.close()

@@ -149,6 +149,9 @@ test("receives and renders live activity through the CLI", async () => {
     assert.match(stdout, /^Thinking finished: I will check\.$/m)
     assert.match(stdout, /^Message started\.$/m)
     assert.match(stdout, /^Tool started: bash$/m)
+    assert.match(stdout, /^  Params: {"command":"pwd"}$/m)
+    assert.match(stdout, /^  Output: \/workspace$/m)
+    assert.match(stdout, /^  Details: {"exitCode":0}$/m)
     assert.equal(stderr, "")
   } finally {
     if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { Dealer } from "zeromq"
-import { AgentUnavailableError, type AgentEvent } from "../fleet/agent.js"
+import { AgentUnavailableError, type AgentEvent, type JsonValue, type ToolOutput } from "../fleet/agent.js"
 import {
   decode,
   encode,
@@ -199,12 +199,27 @@ function isAgentEvent(value: unknown): value is AgentEvent {
     case "message.finished":
       return typeof value.text === "string"
     case "tool.started":
-      return typeof value.toolName === "string" && "args" in value
+      return typeof value.toolName === "string" && typeof value.argsTruncated === "boolean" && isJsonValue(value.args)
     case "tool.finished":
-      return typeof value.toolName === "string" && typeof value.isError === "boolean"
+      return typeof value.toolName === "string" && typeof value.isError === "boolean" && isToolOutput(value.output)
     default:
       return false
   }
+}
+
+function isToolOutput(value: unknown): value is ToolOutput {
+  if (!isRecord(value) || !Array.isArray(value.content) || typeof value.truncated !== "boolean" || typeof value.detailsTruncated !== "boolean") return false
+  if ("details" in value && !isJsonValue(value.details)) return false
+  return value.content.every((part) => isRecord(part) && (
+    part.type === "text" && typeof part.text === "string" ||
+    part.type === "image" && typeof part.mimeType === "string" && typeof part.byteLength === "number" && part.omitted === true
+  ))
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return true
+  if (Array.isArray(value)) return value.every(isJsonValue)
+  return isRecord(value) && Object.values(value).every(isJsonValue)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

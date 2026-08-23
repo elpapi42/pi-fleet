@@ -2,7 +2,7 @@
 import { Command } from "commander"
 import { connectPiFleet, type AgentEvent } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.6.1"
+const version = "0.7.0"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -23,6 +23,43 @@ function singleLine(text: string): string {
   return text.replace(/\s+/g, " ").trim()
 }
 
+function truncateUtf8(value: string, maxBytes = 8 * 1024): { value: string; truncated: boolean } {
+  let bytes = 0
+  const characters: string[] = []
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character)
+    if (bytes + characterBytes > maxBytes) return { value: characters.join(""), truncated: true }
+    characters.push(character)
+    bytes += characterBytes
+  }
+  return { value, truncated: false }
+}
+
+function printValue(label: string, value: unknown): void {
+  let text: string
+  try {
+    text = JSON.stringify(value)
+  } catch {
+    text = "[unavailable]"
+  }
+  const bounded = truncateUtf8(text)
+  console.log(`  ${label}: ${bounded.value}${bounded.truncated ? " [truncated]" : ""}`)
+}
+
+function printOutput(event: Extract<AgentEvent, { type: "tool.finished" }>): void {
+  for (const part of event.output.content) {
+    if (part.type === "text") {
+      const bounded = truncateUtf8(part.text)
+      console.log(`  Output: ${singleLine(bounded.value)}${bounded.truncated ? " [truncated]" : ""}`)
+    } else {
+      console.log(`  Output: [${part.mimeType} omitted, ${part.byteLength} bytes]`)
+    }
+  }
+  if (event.output.content.length === 0) console.log("  Output: [none]")
+  if (event.output.details !== undefined) printValue("Details", event.output.details)
+  if (event.output.truncated) console.log("  Output: [truncated]")
+}
+
 function printEvent(event: AgentEvent): void {
   switch (event.type) {
     case "thinking.started":
@@ -39,9 +76,11 @@ function printEvent(event: AgentEvent): void {
       return
     case "tool.started":
       console.log(`Tool started: ${event.toolName}`)
+      printValue("Params", event.argsTruncated ? "[omitted]" : event.args)
       return
     case "tool.finished":
       console.log(`Tool finished: ${event.toolName}${event.isError ? " with an error" : ""}`)
+      printOutput(event)
   }
 }
 

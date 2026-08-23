@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import type { AgentEvent } from "../fleet/agent.js"
+import type { AgentEvent, JsonValue, ToolOutput } from "../fleet/agent.js"
 import type { EventFrame } from "./protocol.js"
 
 type Subscriber = {
@@ -15,6 +15,12 @@ export type ActivityOutbound = {
 }
 
 const SUBSCRIBER_QUEUE_LIMIT = 128
+const MAX_ARGS_BYTES = 16 * 1024
+const MAX_TEXT_BYTES = 64 * 1024
+const MAX_DETAILS_BYTES = 16 * 1024
+const MAX_CONTENT_PARTS = 64
+const MAX_IMAGE_MIME_TYPE_BYTES = 256
+const MAX_TOOL_IDENTITY_BYTES = 256
 
 export class LiveActivity {
   readonly #agentId: string
@@ -122,13 +128,110 @@ function createEventNormalizer(): (event: Record<string, unknown>) => AgentEvent
       }
     }
     if (event.type === "tool_execution_start" && typeof event.toolCallId === "string" && typeof event.toolName === "string" && "args" in event) {
-      return { type: "tool.started", eventId: randomUUID(), activityId: event.toolCallId, timestamp, toolName: event.toolName, args: event.args }
+      const { value: args, truncated: argsTruncated } = boundedJson(event.args, MAX_ARGS_BYTES)
+      return {
+        type: "tool.started",
+        eventId: randomUUID(),
+        activityId: truncateJsonString(event.toolCallId, MAX_TOOL_IDENTITY_BYTES).value,
+        timestamp,
+        toolName: truncateJsonString(event.toolName, MAX_TOOL_IDENTITY_BYTES).value,
+        args: args ?? null,
+        argsTruncated,
+      }
     }
     if (event.type === "tool_execution_end" && typeof event.toolCallId === "string" && typeof event.toolName === "string" && typeof event.isError === "boolean") {
-      return { type: "tool.finished", eventId: randomUUID(), activityId: event.toolCallId, timestamp, toolName: event.toolName, isError: event.isError }
+      return {
+        type: "tool.finished",
+        eventId: randomUUID(),
+        activityId: truncateJsonString(event.toolCallId, MAX_TOOL_IDENTITY_BYTES).value,
+        timestamp,
+        toolName: truncateJsonString(event.toolName, MAX_TOOL_IDENTITY_BYTES).value,
+        isError: event.isError,
+        output: normalizeToolOutput(event.result),
+      }
     }
     return undefined
   }
+}
+
+function normalizeToolOutput(result: unknown): ToolOutput {
+  const rawContent = isRecord(result) && Array.isArray(result.content) ? result.content : []
+  const content: ToolOutput["content"] = []
+  let remainingTextBytes = MAX_TEXT_BYTES
+  let truncated = !isRecord(result) || !Array.isArray(result.content)
+
+  for (const item of rawContent) {
+    if (content.length >= MAX_CONTENT_PARTS) {
+      truncated = true
+      break
+    }
+    if (!isRecord(item)) {
+      truncated = true
+      continue
+    }
+    if (item.type === "text" && typeof item.text === "string") {
+      const text = truncateJsonString(item.text, remainingTextBytes)
+      content.push({ type: "text", text: text.value })
+      remainingTextBytes -= jsonStringByteLength(text.value)
+      if (text.truncated) truncated = true
+      continue
+    }
+    if (item.type === "image" && typeof item.mimeType === "string" && typeof item.data === "string") {
+      const mimeType = truncateJsonString(item.mimeType, MAX_IMAGE_MIME_TYPE_BYTES)
+      content.push({ type: "image", mimeType: mimeType.value, byteLength: Buffer.byteLength(item.data, "base64"), omitted: true })
+      truncated = true
+      continue
+    }
+    truncated = true
+  }
+
+  const { value: details, truncated: detailsTruncated } = isRecord(result) && "details" in result
+    ? boundedJson(result.details, MAX_DETAILS_BYTES)
+    : { value: undefined, truncated: false }
+  return { content, ...(details === undefined ? {} : { details }), detailsTruncated, truncated: truncated || detailsTruncated }
+}
+
+function boundedJson(value: unknown, maxBytes: number): { value?: JsonValue; truncated: boolean } {
+  try {
+    const serialized = JSON.stringify(value)
+    if (serialized === undefined || Buffer.byteLength(serialized) > maxBytes) return { truncated: true }
+    return { value: JSON.parse(serialized) as JsonValue, truncated: false }
+  } catch {
+    return { truncated: true }
+  }
+}
+
+function truncateUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
+  let bytes = 0
+  let truncated = false
+  const characters: string[] = []
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character)
+    if (bytes + characterBytes > maxBytes) {
+      truncated = true
+      break
+    }
+    characters.push(character)
+    bytes += characterBytes
+  }
+  return { value: characters.join(""), truncated }
+}
+
+function truncateJsonString(value: string, maxBytes: number): { value: string; truncated: boolean } {
+  if (jsonStringByteLength(value) <= maxBytes) return { value, truncated: false }
+  let bytes = 2
+  const characters: string[] = []
+  for (const character of value) {
+    const characterBytes = jsonStringByteLength(character) - 2
+    if (bytes + characterBytes > maxBytes) return { value: characters.join(""), truncated: true }
+    characters.push(character)
+    bytes += characterBytes
+  }
+  return { value: characters.join(""), truncated: true }
+}
+
+function jsonStringByteLength(value: string): number {
+  return Buffer.byteLength(JSON.stringify(value))
 }
 
 function isAssistantMessage(value: unknown): value is { role: "assistant"; content?: unknown } {

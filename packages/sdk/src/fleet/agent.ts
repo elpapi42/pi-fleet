@@ -23,13 +23,25 @@ export type SendResult = {
   acceptedAt: number
 }
 
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+
+export type ToolOutput = {
+  content: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; mimeType: string; byteLength: number; omitted: true }
+  >
+  details?: JsonValue
+  detailsTruncated: boolean
+  truncated: boolean
+}
+
 export type AgentEvent =
   | { type: "thinking.started"; eventId: string; activityId: string; timestamp: number }
   | { type: "thinking.finished"; eventId: string; activityId: string; timestamp: number; content: string }
   | { type: "message.started"; eventId: string; activityId: string; timestamp: number }
   | { type: "message.finished"; eventId: string; activityId: string; timestamp: number; text: string }
-  | { type: "tool.started"; eventId: string; activityId: string; timestamp: number; toolName: string; args: unknown }
-  | { type: "tool.finished"; eventId: string; activityId: string; timestamp: number; toolName: string; isError: boolean }
+  | { type: "tool.started"; eventId: string; activityId: string; timestamp: number; toolName: string; args: JsonValue; argsTruncated: boolean }
+  | { type: "tool.finished"; eventId: string; activityId: string; timestamp: number; toolName: string; isError: boolean; output: ToolOutput }
 
 export interface Agent {
   readonly id: string

@@ -59,7 +59,15 @@ test("subscribes, yields events, and unsubscribes when iteration ends", async ()
         agentId: agent.id,
         runtimeGeneration: agent.runtime.generation,
         subscriptionId: "subscription-1",
-        event: { type: "tool.finished", eventId: "event-1", activityId: "tool-1", timestamp: 1, toolName: "bash", isError: false },
+        event: {
+          type: "tool.finished",
+          eventId: "event-1",
+          activityId: "tool-1",
+          timestamp: 1,
+          toolName: "bash",
+          isError: false,
+          output: { content: [{ type: "text", text: "/workspace" }], detailsTruncated: false, truncated: false },
+        },
       })])
       const [, unsubscribeFrame] = await router.receive()
       const unsubscribe = decode(unsubscribeFrame)
@@ -69,7 +77,15 @@ test("subscribes, yields events, and unsubscribes when iteration ends", async ()
 
     const iterator = receiveEvents(agent)[Symbol.asyncIterator]()
     assert.deepEqual(await iterator.next(), {
-      value: { type: "tool.finished", eventId: "event-1", activityId: "tool-1", timestamp: 1, toolName: "bash", isError: false },
+      value: {
+        type: "tool.finished",
+        eventId: "event-1",
+        activityId: "tool-1",
+        timestamp: 1,
+        toolName: "bash",
+        isError: false,
+        output: { content: [{ type: "text", text: "/workspace" }], detailsTruncated: false, truncated: false },
+      },
       done: false,
     })
     await iterator.return()
