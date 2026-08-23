@@ -23,6 +23,8 @@ type WorkerRequest = StatusRequest | SendRequest | SubscribeRequest | Unsubscrib
 type WorkerResponse = StatusResponse | SendResponse | SubscribeResponse | UnsubscribeResponse | SubscriptionStatusResponse
 type Outbound = { route: Buffer; message: WorkerMessage; subscriptionId?: string }
 
+class InvalidEventCursorRequestError extends Error {}
+
 async function main(): Promise<void> {
   const { stateDir, agentId, generation } = parseArguments(process.argv.slice(2))
   if (!capability.ipc) throw new Error("pi-fleet requires ZeroMQ ipc:// support on this host")
@@ -35,7 +37,6 @@ async function main(): Promise<void> {
   let routerClosed = false
   let state = record.state
   let pi: PiProcess | undefined
-  let stateUpdates = Promise.resolve()
   let outbound = Promise.resolve()
   let eventOperations = Promise.resolve()
   const handlers = new Set<Promise<void>>()
@@ -50,7 +51,7 @@ async function main(): Promise<void> {
   }
   const stop = () => closeRouter()
   const queueStateUpdate = (nextState: "working" | "idle") => {
-    stateUpdates = stateUpdates.then(async () => {
+    void queueEventOperation(async () => {
       const updated = await store.updateState(agentId, generation, nextState)
       if (!updated) {
         closeRouter()
@@ -133,7 +134,6 @@ async function main(): Promise<void> {
     closeRouter()
     await pi?.stop()
     await Promise.allSettled(handlers)
-    await stateUpdates
     await eventOperations
     await outbound
     await store.close()
@@ -171,19 +171,22 @@ async function handleRequest(
   }
 
   if (request.command === "subscribe") {
-    const subscription = await queueEventOperation(async () => {
-      const current = store.getById(record.id)
-      if (!current || current.runtime?.generation !== generation) return undefined
-      const tail = current.lastEventSeq
-      const afterSequence = receiveAfterSequence(request, record.id, tail)
-      const subscriptionId = activity.subscribe(route, afterSequence < tail)
-      return { subscriptionId, afterSequence, tail }
-    }).catch((error) => error)
-
-    if (subscription instanceof Error) {
-      reply(route, { version: 1, requestId: request.requestId, command: "subscribe", ok: false, agentId: record.id, runtimeGeneration: generation, error: subscription.message, errorCode: "invalid-cursor" })
+    let subscription: { subscriptionId: string; afterSequence: number; tail: number } | undefined
+    try {
+      subscription = await queueEventOperation(async () => {
+        const current = store.getById(record.id)
+        if (!current || current.runtime?.generation !== generation) return undefined
+        const tail = current.lastEventSeq
+        const afterSequence = receiveAfterSequence(request, record.id, tail)
+        const subscriptionId = activity.subscribe(route, afterSequence < tail)
+        return { subscriptionId, afterSequence, tail }
+      })
+    } catch (error) {
+      if (!(error instanceof InvalidEventCursorRequestError)) throw error
+      reply(route, { version: 1, requestId: request.requestId, command: "subscribe", ok: false, agentId: record.id, runtimeGeneration: generation, error: error.message, errorCode: "invalid-cursor" })
       return
     }
+
     if (!subscription) {
       reply(route, { version: 1, requestId: request.requestId, command: "subscribe", ok: false, agentId: record.id, runtimeGeneration: generation, error: "Worker claim is no longer current" })
       return
@@ -245,12 +248,17 @@ async function handleRequest(
 }
 
 function receiveAfterSequence(request: SubscribeRequest, agentId: string, tail: number): number {
-  if (request.fromStart === true && request.after !== undefined) throw new Error("fromStart and after cannot be combined")
+  if (request.fromStart !== undefined && request.after !== undefined) throw new InvalidEventCursorRequestError("fromStart and after cannot be combined")
   if (request.fromStart === true) return 0
   if (request.after === undefined) return tail
-  const cursor = decodeEventCursor(request.after)
-  if (cursor.agentId !== agentId || cursor.sequence > tail) throw new Error("Invalid event cursor")
-  return cursor.sequence
+  try {
+    const cursor = decodeEventCursor(request.after)
+    if (cursor.agentId !== agentId || cursor.sequence > tail) throw new InvalidEventCursorRequestError("Invalid event cursor")
+    return cursor.sequence
+  } catch (error) {
+    if (error instanceof InvalidEventCursorRequestError) throw error
+    throw new InvalidEventCursorRequestError("Invalid event cursor")
+  }
 }
 
 async function replaySubscription(
@@ -285,7 +293,7 @@ function decodeRequest(frame: Buffer): WorkerRequest | undefined {
     if (!isRecord(request) || request.version !== 1 || typeof request.requestId !== "string" || typeof request.agentId !== "string" || typeof request.runtimeGeneration !== "string") return undefined
     if (request.command === "status") return request as StatusRequest
     if (request.command === "send" && typeof request.message === "string" && typeof request.delivery === "string") return request as SendRequest
-    if (request.command === "subscribe" && (request.fromStart === undefined || typeof request.fromStart === "boolean") &&
+    if (request.command === "subscribe" && (request.fromStart === undefined || request.fromStart === true) &&
       (request.after === undefined || typeof request.after === "string")) return request as SubscribeRequest
     if (request.command === "unsubscribe" && (request.subscriptionId === undefined || typeof request.subscriptionId === "string")) return request as UnsubscribeRequest
     if (request.command === "subscription.status" && typeof request.subscriptionId === "string") return request as SubscriptionStatusRequest

@@ -24,7 +24,7 @@ export type SubscribeRequest = {
   command: "subscribe"
   agentId: string
   runtimeGeneration: string
-  fromStart?: boolean
+  fromStart?: true
   after?: string
 }
 

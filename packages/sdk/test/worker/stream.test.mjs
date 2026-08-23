@@ -5,6 +5,7 @@ import { join } from "node:path"
 import test from "node:test"
 import { Router } from "zeromq"
 import { AgentUnavailableError } from "../../dist/index.js"
+import { encodeEventCursor } from "../../dist/state/store.js"
 import { decode, encode } from "../../dist/worker/protocol.js"
 import { receiveEvents } from "../../dist/worker/stream.js"
 
@@ -52,6 +53,7 @@ test("subscribes, yields events, and unsubscribes when iteration ends", async ()
         agentId: agent.id,
         runtimeGeneration: agent.runtime.generation,
         subscriptionId: "subscription-1",
+        afterSequence: 0,
       })])
       await router.send([route, encode({
         version: 1,
@@ -62,7 +64,7 @@ test("subscribes, yields events, and unsubscribes when iteration ends", async ()
         sequence: 1,
         event: {
           type: "tool.finished",
-          cursor: "pf1.test-1",
+          cursor: encodeEventCursor(agent.id, 1),
           eventId: "event-1",
           activityId: "tool-1",
           timestamp: 1,
@@ -81,7 +83,7 @@ test("subscribes, yields events, and unsubscribes when iteration ends", async ()
     assert.deepEqual(await iterator.next(), {
       value: {
         type: "tool.finished",
-        cursor: "pf1.test-1",
+        cursor: encodeEventCursor(agent.id, 1),
         eventId: "event-1",
         activityId: "tool-1",
         timestamp: 1,
@@ -109,6 +111,7 @@ test("rejects a subscription with mismatched worker identity", async () => {
         agentId: "other-agent",
         runtimeGeneration: agent.runtime.generation,
         subscriptionId: "subscription-1",
+        afterSequence: 0,
       })])
     })()
 
@@ -132,6 +135,7 @@ test("ends a subscription normally when aborted", async () => {
         agentId: agent.id,
         runtimeGeneration: agent.runtime.generation,
         subscriptionId: "subscription-1",
+        afterSequence: 0,
       })])
       subscribed()
       const [, unsubscribeFrame] = await router.receive()
@@ -182,6 +186,7 @@ test("rejects a subscription the worker reports as removed", async () => {
         agentId: agent.id,
         runtimeGeneration: agent.runtime.generation,
         subscriptionId: "subscription-1",
+        afterSequence: 0,
       })])
       const [, probeFrame] = await router.receive()
       const probe = decode(probeFrame)
@@ -216,6 +221,7 @@ test("rejects an idle subscription when the worker cannot answer a health probe"
         agentId: agent.id,
         runtimeGeneration: agent.runtime.generation,
         subscriptionId: "subscription-1",
+        afterSequence: 0,
       })])
       const [, probeFrame] = await router.receive()
       assert.equal(decode(probeFrame).command, "subscription.status")
@@ -237,7 +243,7 @@ test("repairs an inactive subscription before its first event from the acknowled
       sequence: 2,
       event: {
         type: "message.started",
-        cursor: "pf1.test-2",
+        cursor: encodeEventCursor(agent.id, 2),
         eventId: "event-2",
         activityId: "activity-2",
         timestamp: 2,
@@ -257,7 +263,7 @@ test("repairs an inactive subscription before its first event from the acknowled
         runtimeGeneration: agent.runtime.generation,
         subscriptionId: "subscription-1",
         afterSequence: 1,
-        resumeCursor: "pf1.test-1",
+        resumeCursor: encodeEventCursor(agent.id, 1),
       })])
       const [, probeFrame] = await router.receive()
       const probe = decode(probeFrame)
@@ -278,7 +284,7 @@ test("repairs an inactive subscription before its first event from the acknowled
       const [secondRoute, secondSubscribeFrame] = await router.receive()
       const secondSubscribe = decode(secondSubscribeFrame)
       assert.equal(secondSubscribe.command, "subscribe")
-      assert.equal(secondSubscribe.after, "pf1.test-1")
+      assert.equal(secondSubscribe.after, encodeEventCursor(agent.id, 1))
       await router.send([secondRoute, encode({
         version: 1,
         requestId: secondSubscribe.requestId,
@@ -288,7 +294,7 @@ test("repairs an inactive subscription before its first event from the acknowled
         runtimeGeneration: agent.runtime.generation,
         subscriptionId: "subscription-2",
         afterSequence: 1,
-        resumeCursor: "pf1.test-1",
+        resumeCursor: encodeEventCursor(agent.id, 1),
       })])
       await router.send([secondRoute, encode(event)])
       const [, secondUnsubscribeFrame] = await router.receive()
@@ -296,7 +302,7 @@ test("repairs an inactive subscription before its first event from the acknowled
     })()
 
     const iterator = receiveEvents(agent)[Symbol.asyncIterator]()
-    assert.equal((await iterator.next()).value.cursor, "pf1.test-2")
+    assert.equal((await iterator.next()).value.cursor, encodeEventCursor(agent.id, 2))
     await iterator.return()
     await responder
   })
@@ -313,7 +319,7 @@ test("repairs one sequence gap from the last delivered cursor", async () => {
       sequence,
       event: {
         type: "message.started",
-        cursor: `pf1.test-${sequence}`,
+        cursor: encodeEventCursor(agent.id, sequence),
         eventId: `event-${sequence}`,
         activityId: `activity-${sequence}`,
         timestamp: sequence,
@@ -330,6 +336,7 @@ test("repairs one sequence gap from the last delivered cursor", async () => {
         agentId: agent.id,
         runtimeGeneration: agent.runtime.generation,
         subscriptionId: "subscription-1",
+        afterSequence: 0,
       })])
       await router.send([firstRoute, encode(event(1))])
       await router.send([firstRoute, encode(event(3))])
@@ -339,7 +346,7 @@ test("repairs one sequence gap from the last delivered cursor", async () => {
       const [secondRoute, secondSubscribeFrame] = await router.receive()
       const secondSubscribe = decode(secondSubscribeFrame)
       assert.equal(secondSubscribe.command, "subscribe")
-      assert.equal(secondSubscribe.after, "pf1.test-1")
+      assert.equal(secondSubscribe.after, encodeEventCursor(agent.id, 1))
       await router.send([secondRoute, encode({
         version: 1,
         requestId: secondSubscribe.requestId,
@@ -348,6 +355,8 @@ test("repairs one sequence gap from the last delivered cursor", async () => {
         agentId: agent.id,
         runtimeGeneration: agent.runtime.generation,
         subscriptionId: "subscription-1",
+        afterSequence: 1,
+        resumeCursor: encodeEventCursor(agent.id, 1),
       })])
       await router.send([secondRoute, encode(event(2))])
       await router.send([secondRoute, encode(event(3))])
@@ -356,10 +365,110 @@ test("repairs one sequence gap from the last delivered cursor", async () => {
     })()
 
     const iterator = receiveEvents(agent)[Symbol.asyncIterator]()
-    assert.equal((await iterator.next()).value.cursor, "pf1.test-1")
-    assert.equal((await iterator.next()).value.cursor, "pf1.test-2")
-    assert.equal((await iterator.next()).value.cursor, "pf1.test-3")
+    assert.equal((await iterator.next()).value.cursor, encodeEventCursor(agent.id, 1))
+    assert.equal((await iterator.next()).value.cursor, encodeEventCursor(agent.id, 2))
+    assert.equal((await iterator.next()).value.cursor, encodeEventCursor(agent.id, 3))
     await iterator.return()
+    await responder
+  })
+})
+
+test("repairs separate sequence gaps after healthy delivery", async () => {
+  await withRouter(async (router, agent) => {
+    const event = (subscriptionId, sequence, cursorSequence = sequence) => ({
+      version: 1,
+      command: "event",
+      agentId: agent.id,
+      runtimeGeneration: agent.runtime.generation,
+      subscriptionId,
+      sequence,
+      event: {
+        type: "message.started",
+        cursor: encodeEventCursor(agent.id, cursorSequence),
+        eventId: `event-${sequence}`,
+        activityId: `activity-${sequence}`,
+        timestamp: sequence,
+      },
+    })
+    const acknowledge = async (route, request, subscriptionId, afterSequence) => {
+      await router.send([route, encode({
+        version: 1,
+        requestId: request.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId,
+        afterSequence,
+        ...(afterSequence > 0 ? { resumeCursor: encodeEventCursor(agent.id, afterSequence) } : {}),
+      })])
+    }
+    const responder = (async () => {
+      const [firstRoute, firstFrame] = await router.receive()
+      await acknowledge(firstRoute, decode(firstFrame), "subscription-1", 0)
+      await router.send([firstRoute, encode(event("subscription-1", 1))])
+      await router.send([firstRoute, encode(event("subscription-1", 3))])
+      assert.equal(decode((await router.receive())[1]).command, "unsubscribe")
+
+      const [secondRoute, secondFrame] = await router.receive()
+      await acknowledge(secondRoute, decode(secondFrame), "subscription-2", 1)
+      await router.send([secondRoute, encode(event("subscription-2", 2))])
+      await router.send([secondRoute, encode(event("subscription-2", 3))])
+      await router.send([secondRoute, encode(event("subscription-2", 5))])
+      assert.equal(decode((await router.receive())[1]).command, "unsubscribe")
+
+      const [thirdRoute, thirdFrame] = await router.receive()
+      await acknowledge(thirdRoute, decode(thirdFrame), "subscription-3", 3)
+      await router.send([thirdRoute, encode(event("subscription-3", 4))])
+      await router.send([thirdRoute, encode(event("subscription-3", 5))])
+      assert.equal(decode((await router.receive())[1]).command, "unsubscribe")
+    })()
+
+    const iterator = receiveEvents(agent)[Symbol.asyncIterator]()
+    for (let sequence = 1; sequence <= 5; sequence += 1) {
+      assert.equal((await iterator.next()).value.cursor, encodeEventCursor(agent.id, sequence))
+    }
+    await iterator.return()
+    await responder
+  })
+})
+
+test("rejects a frame whose cursor does not match its sequence", async () => {
+  await withRouter(async (router, agent) => {
+    const responder = (async () => {
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const [route, subscribeFrame] = await router.receive()
+        const subscribe = decode(subscribeFrame)
+        await router.send([route, encode({
+          version: 1,
+          requestId: subscribe.requestId,
+          command: "subscribe",
+          ok: true,
+          agentId: agent.id,
+          runtimeGeneration: agent.runtime.generation,
+          subscriptionId: `subscription-${attempt}`,
+          afterSequence: 0,
+        })])
+        await router.send([route, encode({
+          version: 1,
+          command: "event",
+          agentId: agent.id,
+          runtimeGeneration: agent.runtime.generation,
+          subscriptionId: `subscription-${attempt}`,
+          sequence: 1,
+          event: {
+            type: "message.started",
+            cursor: encodeEventCursor(agent.id, 2),
+            eventId: `event-${attempt}`,
+            activityId: `activity-${attempt}`,
+            timestamp: attempt,
+          },
+        })])
+        assert.equal(decode((await router.receive())[1]).command, "unsubscribe")
+      }
+    })()
+
+    await assert.rejects(receiveEvents(agent).next(), AgentUnavailableError)
     await responder
   })
 })

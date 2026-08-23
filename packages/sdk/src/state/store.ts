@@ -44,6 +44,8 @@ type SharedStore = {
   closing?: Promise<void>
 }
 
+const MAX_EVENT_CURSOR_LENGTH = 4_096
+const EVENT_CURSOR_PAYLOAD = /^[A-Za-z0-9_-]+$/
 const stores = new Map<string, SharedStore>()
 
 export class FleetStore {
@@ -210,10 +212,16 @@ export function encodeEventCursor(agentId: string, sequence: number): string {
 }
 
 export function decodeEventCursor(cursor: string): EventCursorPayload {
-  if (typeof cursor !== "string" || !cursor.startsWith("pf1.")) throw new TypeError("Invalid event cursor")
+  if (typeof cursor !== "string" || cursor.length > MAX_EVENT_CURSOR_LENGTH || !cursor.startsWith("pf1.")) {
+    throw new TypeError("Invalid event cursor")
+  }
+  const payload = cursor.slice(4)
+  if (!EVENT_CURSOR_PAYLOAD.test(payload)) throw new TypeError("Invalid event cursor")
   try {
-    const value: unknown = JSON.parse(Buffer.from(cursor.slice(4), "base64url").toString("utf8"))
-    if (!isEventCursorPayload(value)) throw new TypeError("Invalid event cursor")
+    const value: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))
+    if (!isEventCursorPayload(value) || encodeEventCursor(value.agentId, value.sequence) !== cursor) {
+      throw new TypeError("Invalid event cursor")
+    }
     return value
   } catch (error) {
     if (error instanceof TypeError && error.message === "Invalid event cursor") throw error

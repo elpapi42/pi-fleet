@@ -123,8 +123,8 @@ class PiFleetClientImpl implements PiFleetClient {
     this.assertOpen()
     const record = this.#store.getById(id)
     if (!record || record.name !== name) throw new AgentNotFoundError(name)
-    validateReceiveOptions(options)
-    const stream = receiveEvents(workerTarget(record), options)
+    const receiveOptions = normalizeReceiveOptions(options)
+    const stream = receiveEvents(workerTarget(record), receiveOptions)
     this.#streams.add(stream)
     return trackStream(stream, this.#streams)
   }
@@ -152,10 +152,15 @@ export function resolveStateDir(options: ConnectOptions = {}): string {
   return options.stateDir ? resolve(options.stateDir) : resolve(homedir(), ".pi-fleet")
 }
 
-function validateReceiveOptions(options: ReceiveOptions): void {
+function normalizeReceiveOptions(options: ReceiveOptions): ReceiveOptions {
+  if (typeof options !== "object" || options === null || Array.isArray(options)) throw new TypeError("Receive options must be an object")
   if (options.fromStart !== undefined && typeof options.fromStart !== "boolean") throw new TypeError("fromStart must be a boolean")
-  if (options.fromStart === true && options.after !== undefined) throw new TypeError("fromStart and after cannot be combined")
-  if (options.after !== undefined && (typeof options.after !== "string" || !options.after.trim())) throw new TypeError("after must be a non-empty cursor")
+  if (options.fromStart !== undefined && options.after !== undefined) throw new TypeError("fromStart and after cannot be combined")
+  if (options.after !== undefined) {
+    if (typeof options.after !== "string" || !options.after.trim()) throw new TypeError("after must be a non-empty cursor")
+    return { after: options.after }
+  }
+  return options.fromStart === true ? { fromStart: true } : {}
 }
 
 function isSendDelivery(value: unknown): value is SendDelivery {

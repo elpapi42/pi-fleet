@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
 import { resolveStateDir } from "../../dist/fleet/client.js"
-import { decodeEventCursor, openStore } from "../../dist/state/store.js"
+import { decodeEventCursor, encodeEventCursor, openStore } from "../../dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -272,6 +272,30 @@ test("atomically appends ordered events for the claimed runtime generation", asy
     assert.deepEqual(store.readEvents("agent-1", 0, 2), [first, second])
     assert.deepEqual(store.readEvents("agent-1", 1, 2), [second])
   })
+})
+
+test("reads durable events in finite agent-scoped batches", async () => {
+  await withStore(async (store) => {
+    await store.create(record("researcher", "agent-1"))
+    await store.create(record("writer", "agent-2"))
+    for (let index = 1; index <= 3; index += 1) {
+      await store.appendEvent("agent-1", "runtime-1", (cursor) => ({ type: "message.started", cursor, index }))
+    }
+    await store.appendEvent("agent-2", "runtime-1", (cursor) => ({ type: "message.started", cursor, index: 99 }))
+
+    assert.deepEqual(store.readEvents("agent-1", 0, 3, 1).map(({ sequence }) => sequence), [1])
+    assert.deepEqual(store.readEvents("agent-1", 1, 3, 1).map(({ sequence }) => sequence), [2])
+    assert.deepEqual(store.readEvents("agent-1", 2, 3, 1).map(({ sequence }) => sequence), [3])
+    assert.deepEqual(store.readEvents("agent-1", 3, 3, 1), [])
+  })
+})
+
+test("rejects noncanonical and oversized event cursors", () => {
+  const cursor = encodeEventCursor("agent-1", 1)
+  assert.deepEqual(decodeEventCursor(cursor), { agentId: "agent-1", sequence: 1 })
+  for (const invalid of [`${cursor}!!!`, `${cursor}=`, `pf1.${"a".repeat(4097)}`]) {
+    assert.throws(() => decodeEventCursor(invalid), { message: "Invalid event cursor" })
+  }
 })
 
 test("does not append an event for another runtime generation", async () => {

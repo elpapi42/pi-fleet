@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { Dealer } from "zeromq"
 import { AgentUnavailableError, InvalidCursorError, type AgentEvent, type JsonValue, type ReceiveOptions, type ToolOutput } from "../fleet/agent.js"
+import { decodeEventCursor } from "../state/store.js"
 import {
   decode,
   encode,
@@ -63,16 +64,20 @@ export function receiveEvents(record: WorkerTarget, options: ReceiveOptions = {}
 async function* readEvents(record: WorkerTarget, options: ReceiveOptions, signal: AbortSignal): AsyncGenerator<AgentEvent> {
   const position: StreamPosition = {}
   let currentOptions = options
-  let repaired = false
+  let repairPending = false
   while (!signal.aborted) {
     try {
-      yield* readSubscription(record, currentOptions, position, signal)
+      yield* readSubscription(record, currentOptions, position, signal, () => {
+        repairPending = false
+      })
       return
     } catch (error) {
       if (signal.aborted) return
       if (error instanceof InvalidCursorError) throw error
-      if (!(error instanceof StreamGapError) || repaired) throw new AgentUnavailableError(record.name)
-      repaired = true
+      if (!(error instanceof StreamGapError) || repairPending || position.sequence === undefined) {
+        throw new AgentUnavailableError(record.name)
+      }
+      repairPending = true
       currentOptions = position.cursor ? { after: position.cursor } : { fromStart: true }
     }
   }
@@ -83,6 +88,7 @@ async function* readSubscription(
   options: ReceiveOptions,
   position: StreamPosition,
   signal: AbortSignal,
+  markHealthy: () => void,
 ): AsyncGenerator<AgentEvent> {
   const runtime = record.runtime
   if (!runtime?.endpoint) throw new AgentUnavailableError(record.name)
@@ -97,7 +103,7 @@ async function* readSubscription(
       command: "subscribe",
       agentId: record.id,
       runtimeGeneration: runtime.generation,
-      ...options,
+      ...(options.fromStart === true ? { fromStart: true } : options.after !== undefined ? { after: options.after } : {}),
     }
     await socket.send(encode(request))
     const acknowledgement = await receiveWithDeadline(socket, signal)
@@ -111,9 +117,14 @@ async function* readSubscription(
       throw new StreamGapError()
     }
     subscriptionId = response.subscriptionId
-    if (position.sequence === undefined && response.afterSequence !== undefined) {
+    if (response.afterSequence === undefined || !isResumePosition(record.id, response.afterSequence, response.resumeCursor)) {
+      throw new StreamGapError()
+    }
+    if (position.sequence === undefined) {
       position.sequence = response.afterSequence
       position.cursor = response.resumeCursor
+    } else if (response.afterSequence !== position.sequence || response.resumeCursor !== position.cursor) {
+      throw new StreamGapError()
     }
 
     let nextFrame = socket.receive()
@@ -142,12 +153,14 @@ async function* readSubscription(
       const frame = decode(result[0])
       if (isEventFrame(frame) && frame.agentId === record.id && frame.runtimeGeneration === runtime.generation &&
         frame.subscriptionId === subscriptionId) {
+        if (!cursorMatches(frame.event.cursor, record.id, frame.sequence)) throw new StreamGapError()
         if (position.sequence !== undefined) {
           if (frame.sequence <= position.sequence) continue
           if (frame.sequence !== position.sequence + 1) throw new StreamGapError()
         }
         position.sequence = frame.sequence
         position.cursor = frame.event.cursor
+        markHealthy()
         yield frame.event
         continue
       }
@@ -156,6 +169,7 @@ async function* readSubscription(
         frame.subscriptionId === subscriptionId) {
         if (!frame.ok) throw new StreamGapError()
         probeRequestId = undefined
+        markHealthy()
         continue
       }
       throw new StreamGapError()
@@ -214,6 +228,20 @@ function isSubscribeResponse(response: unknown): response is SubscribeResponse {
     typeof response.runtimeGeneration === "string" && typeof response.ok === "boolean" &&
     (response.afterSequence === undefined || typeof response.afterSequence === "number" && Number.isSafeInteger(response.afterSequence) && response.afterSequence >= 0) &&
     (response.resumeCursor === undefined || typeof response.resumeCursor === "string")
+}
+
+function isResumePosition(agentId: string, sequence: number, cursor: string | undefined): boolean {
+  if (sequence === 0) return cursor === undefined
+  return cursor !== undefined && cursorMatches(cursor, agentId, sequence)
+}
+
+function cursorMatches(cursor: string, agentId: string, sequence: number): boolean {
+  try {
+    const decoded = decodeEventCursor(cursor)
+    return decoded.agentId === agentId && decoded.sequence === sequence
+  } catch {
+    return false
+  }
 }
 
 function isSubscriptionStatusResponse(response: unknown): response is SubscriptionStatusResponse {

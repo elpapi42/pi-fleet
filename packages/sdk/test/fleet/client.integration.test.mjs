@@ -7,7 +7,7 @@ import { dirname, join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
 import { connectPiFleet, AgentNameTakenError, AgentNotFoundError, AgentUnavailableError } from "../../dist/index.js"
-import { encodeEventCursor, openStore } from "../../dist/state/store.js"
+import { decodeEventCursor, encodeEventCursor, openStore } from "../../dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
 const fakePi = join(dirname(fileURLToPath(import.meta.url)), "../pi/fake-pi.mjs")
@@ -243,6 +243,12 @@ test("replays public activity after a delivered cursor", { concurrency: false },
       const agent = await client.create({ name: "researcher", cwd: process.cwd() })
       await agent.send("Before replay")
 
+      const mutableOptions = { fromStart: true }
+      const snapshotted = agent.receive(mutableOptions)[Symbol.asyncIterator]()
+      mutableOptions.fromStart = false
+      assert.equal(decodeEventCursor((await snapshotted.next()).value.cursor).sequence, 1)
+      await snapshotted.return()
+
       const replay = agent.receive({ fromStart: true })[Symbol.asyncIterator]()
       let cursor
       for (let index = 0; index < 6; index += 1) cursor = (await replay.next()).value.cursor
@@ -254,6 +260,7 @@ test("replays public activity after a delivered cursor", { concurrency: false },
       assert.equal(first.value.type, "message.started")
       assert.notEqual(first.value.cursor, cursor)
       await resumed.return()
+      assert.throws(() => agent.receive({ fromStart: false, after: cursor }), /cannot be combined/)
       for (const invalidCursor of [
         "not-a-cursor",
         encodeEventCursor("other-agent", 1),
