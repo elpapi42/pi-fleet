@@ -20,7 +20,7 @@ import {
 import { LiveActivity } from "./activity.js"
 import { PiSupervisor, SupervisorSendFailure, type SupervisorSendError } from "./supervisor.js"
 
-type Arguments = { stateDir: string; agentId: string; generation: string }
+type Arguments = { stateDir: string; agentId: string; generation: string; claimId?: string }
 type WorkerRequest = StatusRequest | SendRequest | SubscribeRequest | UnsubscribeRequest | SubscriptionStatusRequest
 type WorkerResponse = StatusResponse | SendResponse | SubscribeResponse | UnsubscribeResponse | SubscriptionStatusResponse
 type Outbound = { route: Buffer; message: WorkerMessage; subscriptionId?: string }
@@ -28,18 +28,19 @@ type Outbound = { route: Buffer; message: WorkerMessage; subscriptionId?: string
 class InvalidEventCursorRequestError extends Error {}
 
 async function main(): Promise<void> {
-  const { stateDir, agentId, generation } = parseArguments(process.argv.slice(2))
+  const { stateDir, agentId, generation, claimId } = parseArguments(process.argv.slice(2))
   if (!capability.ipc) throw new Error("pi-fleet requires ZeroMQ ipc:// support on this host")
 
   const store = await openStore(stateDir)
   const record = store.getById(agentId)
-  if (!record || record.runtime?.generation !== generation || !record.runtime.endpoint) throw new Error("Worker claim is no longer current")
+  if (!record || record.runtime?.generation !== generation || !record.runtime.endpoint || (claimId && record.runtime.claimId !== claimId)) throw new Error("Worker claim is no longer current")
 
   const router = new Router({ mandatory: true, immediate: true, linger: 0, sendTimeout: 50 })
   let routerClosed = false
   let state = record.state
   let workActive = record.state === "working"
   let supervisor: PiSupervisor | undefined
+  let fenceTimer: NodeJS.Timeout | undefined
   let outbound = Promise.resolve()
   let eventOperations = Promise.resolve()
   const handlers = new Set<Promise<void>>()
@@ -53,6 +54,16 @@ async function main(): Promise<void> {
     router.close()
   }
   const stop = () => closeRouter()
+  const ownsClaim = () => {
+    const current = store.getById(agentId)?.runtime
+    return current?.generation === generation && (!claimId || current.claimId === claimId)
+  }
+  const fence = () => {
+    if (ownsClaim()) return true
+    closeRouter()
+    void supervisor?.stop()
+    return false
+  }
   const queueStateUpdate = (nextState: "working" | "idle") => {
     void queueEventOperation(async () => {
       const updated = await store.updateState(agentId, generation, nextState)
@@ -136,28 +147,41 @@ async function main(): Promise<void> {
           activity.resetPiActivity()
         })
       },
-      loadRecord: () => store.getById(agentId),
-      onRecovered: (piState) => markRecovered(store, agentId, generation, piState, (next) => {
-        state = next
-        workActive = false
-      }),
+      loadRecord: () => {
+        const current = store.getById(agentId)
+        return current && ownsClaim() ? current : undefined
+      },
+      onRecovered: async (piState) => {
+        if (!ownsClaim()) return false
+        return markRecovered(store, agentId, generation, piState, (next) => {
+          state = next
+          workActive = false
+        })
+      },
       onRecoveryFailed: async () => {
         await Promise.resolve()
         await outbound
         closeRouter()
       },
     })
+    if (!fence()) throw new Error("Worker claim is no longer current")
     const initialState = await supervisor.start()
-    const markedReady = await store.markReady(agentId, generation, {
+    if (!fence()) throw new Error("Worker claim is no longer current")
+    const ready = {
       workerPid: process.pid,
       endpoint: record.runtime.endpoint,
       sessionPath: initialState.sessionFile,
       sessionId: initialState.sessionId,
-    })
+    }
+    const markedReady = claimId
+      ? await store.markClaimReady(agentId, generation, claimId, ready)
+      : await store.markReady(agentId, generation, ready)
     if (!markedReady) throw new Error("Worker claim is no longer current")
     state = "idle"
+    fenceTimer = setInterval(fence, 1_000)
 
     for await (const [route, frame] of router) {
+      if (!fence()) break
       const handler = handleRequest(route, frame, record, generation, supervisor, () => state, reply, activity, store, queueEventOperation, scheduleOutbound, () => outbound)
       handlers.add(handler)
       void handler.then(
@@ -169,6 +193,7 @@ async function main(): Promise<void> {
       )
     }
   } finally {
+    if (fenceTimer) clearInterval(fenceTimer)
     process.off("SIGTERM", stop)
     process.off("SIGINT", stop)
     closeRouter()
@@ -392,8 +417,9 @@ function parseArguments(args: string[]): Arguments {
   const stateDir = values.get("--state-dir")
   const agentId = values.get("--agent")
   const generation = values.get("--generation")
+  const claimId = values.get("--claim")
   if (!stateDir || !agentId || !generation) throw new Error("Worker requires --state-dir, --agent, and --generation")
-  return { stateDir, agentId, generation }
+  return { stateDir, agentId, generation, ...(claimId ? { claimId } : {}) }
 }
 
 void main().catch((error) => {

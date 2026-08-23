@@ -8,7 +8,7 @@ import test from "node:test"
 import { Dealer } from "zeromq"
 import { connectPiFleet } from "../../dist/index.js"
 import { decodeEventCursor, openStore } from "../../dist/state/store.js"
-import { requestSend, requestStatus } from "../../dist/worker/control.js"
+import { launchWorker, requestSend, requestStatus } from "../../dist/worker/control.js"
 import { decode, encode } from "../../dist/worker/protocol.js"
 
 const fakePi = join(dirname(fileURLToPath(import.meta.url)), "../pi/fake-pi.mjs")
@@ -117,6 +117,39 @@ async function withWorker(options, run) {
     await rm(stateDir, { recursive: true, force: true })
   }
 }
+
+test("starts a replacement worker only for its matching runtime claim", { concurrency: false }, async () => {
+  await withWorker({}, async ({ stateDir, agent, record }) => {
+    assert.ok(record)
+    await terminateWorker(stateDir, agent.id)
+    const store = await openStore(stateDir)
+    let replacement
+    try {
+      const claim = await store.claimRuntime(agent.id, record.runtime.generation, {
+        generation: "replacement-generation",
+        claimId: "replacement-claim",
+        claimedAt: Date.now(),
+        endpoint: `ipc://${join(stateDir, "ipc", "replacement.sock")}`,
+        workerPid: record.runtime.workerPid,
+      }, (cursor) => ({ type: "work.interrupted", cursor }))
+      assert.ok(claim)
+      replacement = launchWorker(stateDir, agent.id, "replacement-generation", "replacement-claim")
+      const replacementRecord = claim.record
+      await waitFor(async () => {
+        try {
+          return (await requestStatus(replacementRecord)).runtimeGeneration === "replacement-generation"
+        } catch {
+          return false
+        }
+      }, "Replacement worker did not become ready")
+      assert.equal(store.getById(agent.id)?.runtime?.claimId, "replacement-claim")
+      assert.equal(store.getById(agent.id)?.runtime?.state, "ready")
+    } finally {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      replacement?.kill("SIGTERM")
+    }
+  })
+})
 
 test("publishes the same ordered semantic events to independent subscribers", { concurrency: false }, async () => {
   await withWorker({ PI_FLEET_FAKE_PI_MODE: "semantic-events" }, async ({ record }) => {

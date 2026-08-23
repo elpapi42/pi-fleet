@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { spawn } from "node:child_process"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -6,7 +7,7 @@ import test from "node:test"
 import { Router } from "zeromq"
 import { AgentRecoveryQueueFullError, AgentSendUncertainError, AgentUnavailableError } from "../../dist/index.js"
 import { decode, encode } from "../../dist/worker/protocol.js"
-import { requestSend, requestStatus } from "../../dist/worker/control.js"
+import { requestSend, requestStatus, waitForWorkerProcessGroupExit } from "../../dist/worker/control.js"
 
 const record = (endpoint) => ({
   id: "agent-1",
@@ -37,6 +38,19 @@ async function withRouter(run) {
     await rm(root, { recursive: true, force: true })
   }
 }
+
+test("checks an old worker process group without signaling it", async () => {
+  if (process.platform === "win32") return
+  const child = spawn(process.execPath, ["--eval", "setInterval(() => {}, 1_000)"], { detached: true, stdio: "ignore" })
+  child.unref()
+  assert.ok(child.pid)
+  try {
+    assert.equal(await waitForWorkerProcessGroupExit(child.pid, 25), false)
+  } finally {
+    process.kill(child.pid, "SIGTERM")
+  }
+  assert.equal(await waitForWorkerProcessGroupExit(child.pid, 1_000), true)
+})
 
 test("rejects a status response from the wrong agent identity", async () => {
   await withRouter(async (router, agent) => {

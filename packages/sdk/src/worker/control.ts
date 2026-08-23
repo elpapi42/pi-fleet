@@ -22,15 +22,30 @@ export function workerEndpoint(stateDir: string, agentId: string, generation: st
   return `ipc://${join(stateDir, "ipc", `${identity}.sock`)}`
 }
 
-export function launchWorker(stateDir: string, agentId: string, generation: string): ChildProcess {
+export function launchWorker(stateDir: string, agentId: string, generation: string, claimId?: string): ChildProcess {
   const serverPath = fileURLToPath(new URL("./server.js", import.meta.url))
-  const child = spawn(process.execPath, [serverPath, "--state-dir", stateDir, "--agent", agentId, "--generation", generation], {
+  const child = spawn(process.execPath, [serverPath, "--state-dir", stateDir, "--agent", agentId, "--generation", generation, ...(claimId ? ["--claim", claimId] : [])], {
     detached: true,
     stdio: "ignore",
     env: process.env,
   })
   child.unref()
   return child
+}
+
+export async function waitForWorkerProcessGroupExit(workerPid: number | undefined, timeoutMs = 5_000): Promise<boolean> {
+  if (!workerPid || process.platform === "win32") return true
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      process.kill(-workerPid, 0)
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    } catch (error) {
+      if (isMissingProcess(error)) return true
+      return false
+    }
+  }
+  return false
 }
 
 export async function stopWorker(worker: ChildProcess | undefined): Promise<void> {
@@ -129,6 +144,10 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, name: stri
   } finally {
     if (timeout) clearTimeout(timeout)
   }
+}
+
+function isMissingProcess(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "ESRCH"
 }
 
 async function waitForExit(worker: ChildProcess, timeoutMs: number): Promise<boolean> {
