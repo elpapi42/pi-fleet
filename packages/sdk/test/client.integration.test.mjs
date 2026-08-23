@@ -93,7 +93,7 @@ test("creates a durable agent that another SDK client can discover and query", {
   })
 })
 
-test("keeps a ready worker alive after an early status request times out", { concurrency: false }, async () => {
+test("waits for delayed Pi readiness and reaps Pi when the worker stops", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const piPidFile = join(stateDir, "fake-pi.pid")
     process.env.PI_FLEET_FAKE_PI_DELAY_MS = "600"

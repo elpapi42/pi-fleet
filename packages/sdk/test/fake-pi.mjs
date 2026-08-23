@@ -13,7 +13,7 @@ if (process.env.PI_FLEET_FAKE_PI_MODE === "exit") {
   process.exit(1)
 }
 
-const sessionFile = process.env.PI_FLEET_FAKE_SESSION_FILE ?? "/tmp/fake-pi-session.jsonl"
+const sessionFile = "/tmp/fake-pi-session.jsonl"
 const sessionId = process.env.PI_FLEET_FAKE_SESSION_ID ?? "fake-session"
 const mode = process.env.PI_FLEET_FAKE_PI_MODE
 const commands = []
@@ -40,8 +40,6 @@ function respondToState(request) {
     } else {
       process.stdout.write(response)
     }
-    const exitAfterReadyMs = Number(process.env.PI_FLEET_FAKE_PI_EXIT_AFTER_READY_MS ?? 0)
-    if (exitAfterReadyMs > 0) setTimeout(() => process.exit(0), exitAfterReadyMs)
   }
   if (delay > 0) setTimeout(() => void send(), delay)
   else void send()
@@ -76,8 +74,6 @@ async function handlePrompt(request) {
     write({ type: "agent_settled" })
     return
   }
-  const settleAfterPromptMs = Number(process.env.PI_FLEET_FAKE_PI_SETTLE_AFTER_PROMPT_MS ?? 0)
-  if (settleAfterPromptMs > 0) setTimeout(() => write({ type: "agent_settled" }), settleAfterPromptMs)
 }
 
 async function waitForFile(path) {
