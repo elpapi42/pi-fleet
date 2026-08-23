@@ -5,6 +5,7 @@
 - `proposal.md` is the target architecture and product contract. `plan.md` defines the delivery sequence. Both are local planning artifacts outside Git.
 - Before pi-fleet becomes stable, backward compatibility is not required unless a current product reason requires it.
 - Updating the SDK or CLI does not update workers that already run. Existing agents keep their worker code version. Testing new runtime behavior requires a newly created agent.
+- When committed work changes an SDK or CLI package version, publish that version before reporting completion unless the user explicitly says not to publish.
 - Fake-Pi tests prove pi-fleet protocol behavior, not real-Pi compatibility. Real-Pi checks use the slice-runtime-acceptance skill. Intermediate-state tests use deterministic files or signals instead of fixed delays.
 <!-- opm:managed:end -->
 
