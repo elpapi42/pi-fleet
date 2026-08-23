@@ -62,6 +62,7 @@ class PiFleetClientImpl implements PiFleetClient {
     const input = await validateCreateOptions(options)
     const id = randomUUID()
     const generation = randomUUID()
+    const claimId = randomUUID()
     const now = Date.now()
     const record: AgentRecord = {
       id,
@@ -73,6 +74,8 @@ class PiFleetClientImpl implements PiFleetClient {
         generation,
         state: "starting",
         endpoint: workerEndpoint(this.#stateDir, id, generation),
+        claimId,
+        claimedAt: now,
       },
       lastEventSeq: 0,
       createdAt: now,
@@ -83,7 +86,7 @@ class PiFleetClientImpl implements PiFleetClient {
 
     let worker: ChildProcess | undefined
     try {
-      worker = launchWorker(this.#stateDir, id, generation)
+      worker = launchWorker(this.#stateDir, id, generation, claimId)
       await waitForWorkerReady(workerTarget(record), worker, STARTUP_TIMEOUT_MS)
       return new AgentHandle(this, id, input.name)
     } catch (error) {
@@ -109,8 +112,15 @@ class PiFleetClientImpl implements PiFleetClient {
     this.assertOpen()
     const record = this.#store.getById(id)
     if (!record || record.name !== name) throw new AgentNotFoundError(name)
-    const target = await this.resolveWorker(record, Date.now() + OPERATION_TIMEOUT_MS)
-    const status = await requestStatus(target)
+    const deadlineAt = Date.now() + OPERATION_TIMEOUT_MS
+    let status
+    try {
+      status = await requestStatus(workerTarget(record))
+    } catch (error) {
+      if (!(error instanceof AgentUnavailableError)) throw error
+      const recovered = await this.reconcileWorker(record.id, record.name, deadlineAt)
+      status = await requestStatus(recovered, Math.max(1, Math.min(1_000, deadlineAt - Date.now())))
+    }
     return { id: status.id, name: status.name, state: status.state }
   }
 

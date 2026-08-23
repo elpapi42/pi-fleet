@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { chmod, mkdtemp, readFile, rm } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
@@ -87,6 +87,13 @@ test("creates a durable agent that another SDK client can discover and query", {
   await withState(async (stateDir) => {
     const creator = await connectPiFleet({ stateDir })
     const agent = await creator.create({ name: "researcher", cwd: process.cwd() })
+    const createdStore = await openStore(stateDir)
+    try {
+      assert.equal(typeof createdStore.getById(agent.id)?.runtime?.claimId, "string")
+      assert.equal(typeof createdStore.getById(agent.id)?.runtime?.claimedAt, "number")
+    } finally {
+      await createdStore.close()
+    }
     await assert.rejects(creator.create({ name: "researcher", cwd: process.cwd() }), AgentNameTakenError)
     assert.throws(() => { agent.id = "another-id" }, TypeError)
     await creator.close()
@@ -156,6 +163,82 @@ test("converges concurrent SDK recovery calls on one replacement worker", { conc
     } finally {
       await first.close()
       await second.close()
+    }
+  })
+})
+
+test("converges separate SDK processes on one replacement worker", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const incarnationFile = join(stateDir, "fake-pi-incarnation")
+    process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE = incarnationFile
+    const creator = await connectPiFleet({ stateDir })
+    try {
+      const agent = await creator.create({ name: "researcher", cwd: process.cwd() })
+      await terminateWorker(stateDir, agent.id)
+      const readyDir = join(stateDir, "recovery-ready")
+      const goFile = join(stateDir, "recovery-go")
+      const sdkUrl = new URL("../../dist/index.js", import.meta.url).href
+      const script = `
+        import { access, mkdir, writeFile } from "node:fs/promises";
+        import { connectPiFleet } from ${JSON.stringify(sdkUrl)};
+        const [stateDir, readyDir, goFile] = process.argv.slice(1);
+        await mkdir(readyDir, { recursive: true });
+        await writeFile(readyDir + "/" + process.pid, "ready");
+        while (true) {
+          try { await access(goFile); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
+        }
+        const client = await connectPiFleet({ stateDir });
+        try {
+          const status = await (await client.get("researcher")).status();
+          process.stdout.write(JSON.stringify(status));
+        } finally {
+          await client.close();
+        }
+      `
+      const first = execFileAsync(process.execPath, ["--input-type=module", "--eval", script, stateDir, readyDir, goFile])
+      const second = execFileAsync(process.execPath, ["--input-type=module", "--eval", script, stateDir, readyDir, goFile])
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          if ((await readdir(readyDir)).length === 2) break
+        } catch {}
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+      assert.equal((await readdir(readyDir)).length, 2)
+      await writeFile(goFile, "go")
+      const results = await Promise.all([first, second])
+      for (const { stdout } of results) assert.equal(JSON.parse(stdout).state, "idle")
+      assert.equal(Number(await readFile(incarnationFile, "utf8")), 2)
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE
+      await creator.close()
+    }
+  })
+})
+
+test("releases only its claim when replacement startup fails", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const incarnationFile = join(stateDir, "fake-pi-incarnation")
+    process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE = incarnationFile
+    process.env.PI_FLEET_FAKE_PI_FAIL_RECOVERY = "1"
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      await terminateWorker(stateDir, agent.id)
+      await assert.rejects(agent.status(), AgentUnavailableError)
+      const store = await openStore(stateDir)
+      try {
+        const record = store.getById(agent.id)
+        assert.equal(record?.id, agent.id)
+        assert.equal(record?.runtime?.state, "starting")
+        assert.equal(record?.runtime?.claimId, undefined)
+        assert.equal(record?.lastEventSeq, 0)
+      } finally {
+        await store.close()
+      }
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE
+      delete process.env.PI_FLEET_FAKE_PI_FAIL_RECOVERY
+      await client.close()
     }
   })
 })

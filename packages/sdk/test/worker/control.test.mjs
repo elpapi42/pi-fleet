@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -164,7 +165,7 @@ test("maps recovery send error codes to public errors", async () => {
   }
 })
 
-test("rejects a send response with the wrong worker identity", async () => {
+test("treats a send response with the wrong worker identity as uncertain", async () => {
   await withRouter(async (router, agent) => {
     const responder = (async () => {
       const [route, frame] = await router.receive()
@@ -180,7 +181,23 @@ test("rejects a send response with the wrong worker identity", async () => {
       })])
     })()
 
-    await assert.rejects(requestSend(agent, "Investigate NATS", "steer", 500), AgentUnavailableError)
+    await assert.rejects(requestSend(agent, "Investigate NATS", "steer", 500), AgentSendUncertainError)
+    await responder
+  })
+})
+
+test("reports unavailable when transport rejects before local send acceptance", async () => {
+  const unavailable = record(`ipc://${join(tmpdir(), `pi-fleet-missing-${randomUUID()}.sock`)}`)
+  await assert.rejects(requestSend(unavailable, "Investigate NATS", "steer", 25), AgentUnavailableError)
+})
+
+test("treats a missing reply after local send acceptance as uncertain", async () => {
+  await withRouter(async (router, agent) => {
+    const responder = (async () => {
+      await router.receive()
+    })()
+
+    await assert.rejects(requestSend(agent, "Investigate NATS", "steer", 25), AgentSendUncertainError)
     await responder
   })
 })

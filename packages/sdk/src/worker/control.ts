@@ -89,12 +89,15 @@ export async function requestSend(record: WorkerTarget, message: string, deliver
   try {
     response = await requestWorker(record, request, timeoutMs)
   } catch (error) {
-    if (error instanceof WorkerRequestFailure && error.accepted) throw new AgentSendUncertainError(record.name)
+    if (error instanceof WorkerRequestFailure) {
+      if (error.accepted) throw new AgentSendUncertainError(record.name)
+      throw new AgentUnavailableError(record.name)
+    }
     throw error
   }
 
   if (!isSendResponse(response) || response.requestId !== request.requestId || response.agentId !== record.id || response.runtimeGeneration !== record.runtime?.generation) {
-    throw new AgentUnavailableError(record.name)
+    throw new AgentSendUncertainError(record.name)
   }
   if (!response.ok) {
     if (response.errorCode === "recovery-queue-full") throw new AgentRecoveryQueueFullError(record.name)
