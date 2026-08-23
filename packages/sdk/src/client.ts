@@ -4,11 +4,11 @@ import type { ChildProcess } from "node:child_process"
 import { stat } from "node:fs/promises"
 import { resolve } from "node:path"
 import { AgentHandle } from "./agent.js"
-import { AgentNotFoundError, type Agent, type AgentStatus, type AgentSummary, type ConnectOptions, type CreateAgentOptions, type PiFleetClient } from "./types.js"
+import { AgentNotFoundError, type Agent, type AgentStatus, type AgentSummary, type ConnectOptions, type CreateAgentOptions, type PiFleetClient, type SendDelivery, type SendOptions, type SendResult } from "./types.js"
 import { resolveStateDir, workerEndpoint } from "./internal/paths.js"
 import { openRegistry, type AgentRecord, type Registry } from "./internal/registry.js"
 import { launchWorker } from "./internal/worker-launcher.js"
-import { requestStatus } from "./internal/worker-client.js"
+import { requestSend, requestStatus } from "./internal/worker-client.js"
 
 const STARTUP_TIMEOUT_MS = 10_000
 const OWNED_PI_OPTIONS = new Set(["--mode", "--no-session"])
@@ -79,6 +79,16 @@ class PiFleetClientImpl implements PiFleetClient {
     return { id: status.id, name: status.name, state: status.state }
   }
 
+  async send(id: string, name: string, message: string, options: SendOptions = {}): Promise<SendResult> {
+    this.assertOpen()
+    const record = this.#registry.getById(id)
+    if (!record || record.name !== name) throw new AgentNotFoundError(name)
+    if (typeof message !== "string" || !message.trim()) throw new TypeError("Message must not be empty")
+    const delivery = options.delivery ?? "steer"
+    if (!isSendDelivery(delivery)) throw new TypeError(`Invalid delivery: ${String(delivery)}`)
+    return requestSend(record, message, delivery)
+  }
+
   close(): Promise<void> {
     if (this.#closed) return Promise.resolve()
     this.#closed = true
@@ -94,6 +104,10 @@ export async function connectPiFleet(options: ConnectOptions = {}): Promise<PiFl
   if (!capability.ipc) throw new Error("pi-fleet requires ZeroMQ ipc:// support on this host")
   const stateDir = resolveStateDir(options)
   return new PiFleetClientImpl(await openRegistry(stateDir), stateDir)
+}
+
+function isSendDelivery(value: unknown): value is SendDelivery {
+  return value === "steer" || value === "followUp"
 }
 
 async function validateCreateOptions(options: CreateAgentOptions): Promise<{ name: string; cwd: string; instructions?: string; piArgs: string[] }> {

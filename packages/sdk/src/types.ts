@@ -25,10 +25,21 @@ export type AgentStatus = {
   state: AgentState
 }
 
+export type SendDelivery = "steer" | "followUp"
+
+export type SendOptions = {
+  delivery?: SendDelivery
+}
+
+export type SendResult = {
+  acceptedAt: number
+}
+
 export interface Agent {
   readonly id: string
   readonly name: string
   status(): Promise<AgentStatus>
+  send(message: string, options?: SendOptions): Promise<SendResult>
 }
 
 export interface PiFleetClient {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { chmod, mkdtemp, rm, stat, symlink } from "node:fs/promises"
+import { chmod, mkdtemp, readdir, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -238,5 +238,69 @@ test("marks only the claimed runtime generation ready", async () => {
       sessionId: "session-1",
       updatedAt: (await registry.getById("agent-1")).updatedAt,
     })
+  })
+})
+
+test("updates state only for the claimed runtime generation", async () => {
+  await withRegistry(async (registry) => {
+    await registry.create(record("researcher", "agent-1"))
+
+    assert.equal(await registry.updateState("agent-1", "runtime-1", "working"), true)
+    assert.equal((await registry.getById("agent-1"))?.state, "working")
+
+    assert.equal(await registry.updateState("agent-1", "wrong-runtime", "idle"), false)
+    assert.equal((await registry.getById("agent-1"))?.state, "working")
+
+    assert.equal(await registry.updateState("missing", "runtime-1", "idle"), false)
+  })
+})
+
+test("does not rewrite an agent state that already matches", async () => {
+  await withRegistry(async (registry) => {
+    await registry.create({ ...record("researcher", "agent-1"), state: "working", updatedAt: 1 })
+
+    assert.equal(await registry.updateState("agent-1", "runtime-1", "working"), true)
+    assert.equal((await registry.getById("agent-1"))?.updatedAt, 1)
+  })
+})
+
+test("handles concurrent state writes from separate processes", async () => {
+  await withRegistry(async (registry, stateDir) => {
+    await registry.create(record("researcher", "agent-1"))
+    const registryUrl = new URL("../dist/internal/registry.js", import.meta.url).href
+    const readyDir = join(stateDir, "ready")
+    const goFile = join(stateDir, "go")
+    const updateScript = `
+      import { mkdir, writeFile, access } from "node:fs/promises";
+      import { openRegistry } from ${JSON.stringify(registryUrl)};
+      const [stateDir, readyFile, goFile, state] = process.argv.slice(1);
+      const registry = await openRegistry(stateDir);
+      try {
+        await mkdir(readyFile, { recursive: true });
+        await writeFile(readyFile + "/" + process.pid, "ready");
+        while (true) {
+          try { await access(goFile); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
+        }
+        process.stdout.write(String(await registry.updateState("agent-1", "runtime-1", state)));
+      } finally {
+        await registry.close();
+      }
+    `
+    const first = execFileAsync(process.execPath, ["--input-type=module", "--eval", updateScript, stateDir, readyDir, goFile, "working"])
+    const second = execFileAsync(process.execPath, ["--input-type=module", "--eval", updateScript, stateDir, readyDir, goFile, "idle"])
+
+    for (let attempts = 0; attempts < 100; attempts += 1) {
+      try {
+        if ((await readdir(readyDir)).length === 2) break
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    assert.equal((await readdir(readyDir)).length, 2)
+    await writeFile(goFile, "go")
+
+    const [firstResult, secondResult] = await Promise.all([first, second])
+    assert.equal(firstResult.stdout, "true")
+    assert.equal(secondResult.stdout, "true")
+    assert.match((await registry.getById("agent-1"))?.state ?? "", /^(working|idle)$/)
   })
 })

@@ -1,4 +1,4 @@
-export const version = "0.2.2"
+export const version = "0.3.0"
 
 export { connectPiFleet } from "./client.js"
 export {
@@ -15,4 +15,7 @@ export type {
   ConnectOptions,
   CreateAgentOptions,
   PiFleetClient,
+  SendDelivery,
+  SendOptions,
+  SendResult,
 } from "./types.js"

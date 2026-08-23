@@ -45,6 +45,7 @@ test("creates, lists, and checks a durable agent through the CLI", async () => {
   const home = join(root, "home")
   const stateDir = join(home, ".pi-fleet")
   const argsFile = join(root, "fake-pi-args.json")
+  const commandsFile = join(root, "fake-pi-commands.json")
   let createdId
   try {
     await chmod(fakePi, 0o755)
@@ -52,6 +53,7 @@ test("creates, lists, and checks a durable agent through the CLI", async () => {
       HOME: home,
       PI_FLEET_PI_COMMAND: fakePi,
       PI_FLEET_FAKE_PI_ARGS_FILE: argsFile,
+      PI_FLEET_FAKE_PI_COMMANDS_FILE: commandsFile,
     }
     const created = await run(
       ["create", "researcher", "Use concise answers.", "--cwd", process.cwd(), "--", "--session-id", "existing"],
@@ -68,6 +70,17 @@ test("creates, lists, and checks a durable agent through the CLI", async () => {
       "--append-system-prompt",
       "Use concise answers.",
     ])
+
+    const sent = await run(["send", "researcher", "Investigate NATS", "--follow-up"], env)
+    assert.match(sent.stdout, /^Instruction accepted by researcher$/m)
+    assert.match(sent.stdout, /^Delivery: followUp$/m)
+    const commands = JSON.parse(await readFile(commandsFile, "utf8"))
+    assert.deepEqual(commands.at(-1), {
+      id: commands.at(-1).id,
+      type: "prompt",
+      message: "Investigate NATS",
+      streamingBehavior: "followUp",
+    })
 
     const listed = await run(["list"], env)
     const status = await run(["status", "researcher"], env)

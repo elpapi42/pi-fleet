@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { StringDecoder } from "node:string_decoder"
 import type { AgentRecord } from "./registry.js"
@@ -7,7 +8,17 @@ export type PiState = {
   sessionId: string
 }
 
+export type PiDelivery = "steer" | "followUp"
+export type PiEventHandler = (event: unknown) => void
+
+export type PiProcess = {
+  process: ChildProcessWithoutNullStreams
+  state: PiState
+  send(message: string, delivery: PiDelivery, timeoutMs?: number): Promise<void>
+}
+
 export class PiStartupError extends Error {}
+export class PiRequestError extends Error {}
 
 const USER_SESSION_SELECTORS = new Set([
   "--session",
@@ -19,7 +30,142 @@ const USER_SESSION_SELECTORS = new Set([
   "--fork",
 ])
 
-export async function startPi(record: AgentRecord, timeoutMs = 10_000): Promise<{ process: ChildProcessWithoutNullStreams; state: PiState }> {
+class PiRpcClient {
+  readonly #process: ChildProcessWithoutNullStreams
+  readonly #onEvent?: PiEventHandler
+  readonly #pending = new Map<string, {
+    resolve: (response: Record<string, unknown>) => void
+    reject: (error: Error) => void
+    timeout: NodeJS.Timeout
+  }>()
+  readonly #decoder = new StringDecoder("utf8")
+  #buffer = ""
+  #closed = false
+
+  constructor(process: ChildProcessWithoutNullStreams, onEvent?: PiEventHandler) {
+    this.#process = process
+    this.#onEvent = onEvent
+    process.stdout.on("data", this.onStdout)
+    process.once("exit", this.onExit)
+    process.once("error", this.onError)
+    process.stdin.once("error", this.onStdinError)
+  }
+
+  async getState(timeoutMs: number): Promise<PiState> {
+    const response = await this.request({ type: "get_state" }, timeoutMs)
+    const data = response.data
+    if (!isRecord(data) || typeof data.sessionFile !== "string" || typeof data.sessionId !== "string") {
+      throw new PiStartupError("Pi returned an invalid get_state response")
+    }
+    return { sessionFile: data.sessionFile, sessionId: data.sessionId }
+  }
+
+  async send(message: string, delivery: PiDelivery, timeoutMs = 10_000): Promise<void> {
+    await this.request({ type: "prompt", message, streamingBehavior: delivery }, timeoutMs)
+  }
+
+  close(): void {
+    this.#closed = true
+    this.#process.stdout.off("data", this.onStdout)
+    this.#process.off("exit", this.onExit)
+    this.#process.off("error", this.onError)
+    this.#process.stdin.off("error", this.onStdinError)
+    this.rejectPending(new PiStartupError("Pi RPC client closed"))
+  }
+
+  private request(command: Record<string, unknown>, timeoutMs: number): Promise<Record<string, unknown>> {
+    if (this.#closed || this.#process.exitCode !== null || this.#process.signalCode !== null || this.#process.stdin.destroyed) {
+      return Promise.reject(new PiStartupError("Pi is not available"))
+    }
+
+    const id = randomUUID()
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.#pending.delete(id)
+        reject(new PiRequestError("Pi did not answer before the request deadline"))
+      }, timeoutMs)
+      this.#pending.set(id, { resolve, reject, timeout })
+      try {
+        this.#process.stdin.write(`${JSON.stringify({ id, ...command })}\n`)
+      } catch (error) {
+        this.rejectRequest(id, error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+  }
+
+  private onStdout = (chunk: Buffer): void => {
+    this.#buffer += this.#decoder.write(chunk)
+    while (true) {
+      const newline = this.#buffer.indexOf("\n")
+      if (newline < 0) return
+      const line = this.#buffer.slice(0, newline).replace(/\r$/, "")
+      this.#buffer = this.#buffer.slice(newline + 1)
+      if (!line) continue
+      this.handleLine(line)
+    }
+  }
+
+  private handleLine(line: string): void {
+    let message: unknown
+    try {
+      message = JSON.parse(line)
+    } catch {
+      return
+    }
+    if (!isRecord(message)) return
+
+    if (message.type === "response") {
+      if (typeof message.id === "string" && this.#pending.has(message.id)) {
+        if (message.success === true) this.resolveRequest(message.id, message)
+        else this.rejectRequest(message.id, new PiRequestError(typeof message.error === "string" ? message.error : "Pi rejected the request"))
+      }
+      return
+    }
+
+    this.#onEvent?.(message)
+  }
+
+  private onExit = (code: number | null): void => {
+    this.#closed = true
+    this.rejectPending(new PiStartupError(`Pi exited before completing the request (code ${code ?? "signal"})`))
+  }
+
+  private onError = (error: Error): void => {
+    this.#closed = true
+    this.rejectPending(new PiStartupError(`Pi failed: ${error.message}`))
+  }
+
+  private onStdinError = (error: Error): void => {
+    this.#closed = true
+    this.rejectPending(new PiStartupError(`Pi stdin failed: ${error.message}`))
+  }
+
+  private resolveRequest(id: string, response: Record<string, unknown>): void {
+    const pending = this.#pending.get(id)
+    if (!pending) return
+    this.#pending.delete(id)
+    clearTimeout(pending.timeout)
+    pending.resolve(response)
+  }
+
+  private rejectRequest(id: string, error: Error): void {
+    const pending = this.#pending.get(id)
+    if (!pending) return
+    this.#pending.delete(id)
+    clearTimeout(pending.timeout)
+    pending.reject(error)
+  }
+
+  private rejectPending(error: Error): void {
+    for (const [id, pending] of this.#pending) {
+      this.#pending.delete(id)
+      clearTimeout(pending.timeout)
+      pending.reject(error)
+    }
+  }
+}
+
+export async function startPi(record: AgentRecord, timeoutMs = 10_000, onEvent?: PiEventHandler): Promise<PiProcess> {
   const command = process.env.PI_FLEET_PI_COMMAND ?? "pi"
   const args = ["--mode", "rpc", ...record.piArgs]
   if (record.instructions) args.push("--append-system-prompt", record.instructions)
@@ -32,15 +178,20 @@ export async function startPi(record: AgentRecord, timeoutMs = 10_000): Promise<
   child.stderr.on("data", (chunk: Buffer) => {
     stderr = `${stderr}${chunk.toString("utf8")}`.slice(-4_096)
   })
+  const rpc = new PiRpcClient(child, onEvent)
   try {
-    const state = await getState(child, timeoutMs)
-    child.stdout.resume()
-    return { process: child, state }
+    const state = await rpc.getState(timeoutMs)
+    return {
+      process: child,
+      state,
+      send: (message, delivery, requestTimeoutMs) => rpc.send(message, delivery, requestTimeoutMs),
+    }
   } catch (error) {
+    rpc.close()
     await terminate(child)
     const detail = stderr.trim()
-    if (error instanceof PiStartupError && detail) throw new PiStartupError(`${error.message}: ${detail}`)
-    throw error
+    const message = error instanceof Error ? error.message : String(error)
+    throw new PiStartupError(detail ? `${message}: ${detail}` : message)
   }
 }
 
@@ -67,51 +218,6 @@ async function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: num
   })
 }
 
-async function getState(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<PiState> {
-  const id = "ready"
-  const decoder = new StringDecoder("utf8")
-  let pending = ""
-
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => fail(new PiStartupError("Pi did not answer get_state before the startup deadline")), timeoutMs)
-    const onError = (error: Error) => fail(new PiStartupError(`Pi failed to start: ${error.message}`))
-    const onExit = (code: number | null) => fail(new PiStartupError(`Pi exited before readiness (code ${code ?? "signal"})`))
-    const onData = (chunk: Buffer) => {
-      pending += decoder.write(chunk)
-      while (true) {
-        const newline = pending.indexOf("\n")
-        if (newline < 0) return
-        const line = pending.slice(0, newline).replace(/\r$/, "")
-        pending = pending.slice(newline + 1)
-        if (!line) continue
-        try {
-          const message = JSON.parse(line)
-          if (message.type === "response" && message.id === id) {
-            if (!message.success) return fail(new PiStartupError("Pi rejected get_state"))
-            const { sessionFile, sessionId } = message.data ?? {}
-            if (typeof sessionFile !== "string" || typeof sessionId !== "string") return fail(new PiStartupError("Pi returned an invalid get_state response"))
-            cleanup()
-            resolve({ sessionFile, sessionId })
-          }
-        } catch {
-          // Pi events and diagnostics may share stdout. Only a matching response matters here.
-        }
-      }
-    }
-    const cleanup = () => {
-      clearTimeout(timeout)
-      child.stdout.off("data", onData)
-      child.off("error", onError)
-      child.off("exit", onExit)
-    }
-    const fail = (error: Error) => {
-      cleanup()
-      reject(error)
-    }
-
-    child.stdout.on("data", onData)
-    child.once("error", onError)
-    child.once("exit", onExit)
-    child.stdin.write(`${JSON.stringify({ id, type: "get_state" })}\n`)
-  })
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
 }

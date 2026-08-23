@@ -141,6 +141,32 @@ test("passes user session selection arguments to Pi", { concurrency: false }, as
   })
 })
 
+test("sends work through an immutable agent handle", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const commandsFile = join(stateDir, "fake-pi-commands.json")
+    process.env.PI_FLEET_FAKE_PI_COMMANDS_FILE = commandsFile
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      const accepted = await agent.send("Investigate NATS")
+      assert.equal(typeof accepted.acceptedAt, "number")
+      const commands = JSON.parse(await readFile(commandsFile, "utf8"))
+      assert.deepEqual(commands.at(-1), {
+        id: commands.at(-1).id,
+        type: "prompt",
+        message: "Investigate NATS",
+        streamingBehavior: "steer",
+      })
+      await assert.rejects(agent.send("   "), /Message must not be empty/)
+      await assert.rejects(agent.send("message", { delivery: "invalid" }), /Invalid delivery/)
+      await terminateWorker(stateDir, agent.id)
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_COMMANDS_FILE
+      await client.close()
+    }
+  })
+})
+
 test("rejects only Pi arguments required for fleet durability and RPC", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const client = await connectPiFleet({ stateDir })

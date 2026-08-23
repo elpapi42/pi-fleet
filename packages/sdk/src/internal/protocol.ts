@@ -8,6 +8,16 @@ export type StatusRequest = {
   runtimeGeneration: string
 }
 
+export type SendRequest = {
+  version: 1
+  requestId: string
+  command: "send"
+  agentId: string
+  runtimeGeneration: string
+  message: string
+  delivery: "steer" | "followUp"
+}
+
 export type StatusResponse = {
   version: 1
   requestId: string
@@ -16,7 +26,18 @@ export type StatusResponse = {
   error?: string
 }
 
-export function encode(message: StatusRequest | StatusResponse): string {
+export type SendResponse = {
+  version: 1
+  requestId: string
+  command: "send"
+  ok: boolean
+  agentId: string
+  runtimeGeneration: string
+  acceptedAt?: number
+  error?: string
+}
+
+export function encode(message: StatusRequest | SendRequest | StatusResponse | SendResponse): string {
   return JSON.stringify(message)
 }
 

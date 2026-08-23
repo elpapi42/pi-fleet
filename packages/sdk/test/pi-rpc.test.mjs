@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
-import { PiStartupError, startPi } from "../dist/internal/pi-rpc.js"
+import { PiRequestError, PiStartupError, startPi } from "../dist/internal/pi-rpc.js"
 
 const fakePi = join(dirname(fileURLToPath(import.meta.url)), "fake-pi.mjs")
 
@@ -155,5 +155,92 @@ test("reports Pi startup stderr and reaps the failed process", { concurrency: fa
       startPi(record(), 1_000),
       (error) => error instanceof PiStartupError && error.message.includes("fake Pi startup failed"),
     )
+  })
+})
+
+test("sends a prompt after readiness and receives interleaved Pi events", { concurrency: false }, async () => {
+  const events = []
+  await withFakePi({ PI_FLEET_FAKE_PI_MODE: "prompt-event" }, async () => {
+    const pi = await startPi(record(), 1_000, (event) => events.push(event))
+    try {
+      await pi.send("Analyze the repository", "steer")
+      assert.deepEqual(events, [{ type: "agent_start" }])
+    } finally {
+      await stop(pi.process)
+    }
+  })
+})
+
+test("uses prompt streamingBehavior for follow-up delivery", { concurrency: false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-pi-send-"))
+  const commandsFile = join(root, "commands.json")
+  try {
+    await withFakePi({ PI_FLEET_FAKE_PI_COMMANDS_FILE: commandsFile }, async () => {
+      const pi = await startPi(record())
+      try {
+        await pi.send("Continue after the current work", "followUp")
+      } finally {
+        await stop(pi.process)
+      }
+    })
+    const commands = JSON.parse(await readFile(commandsFile, "utf8"))
+    assert.equal(commands.length, 2)
+    assert.match(commands[1].id, /^[0-9a-f-]{36}$/)
+    assert.deepEqual(commands[1], {
+      id: commands[1].id,
+      type: "prompt",
+      message: "Continue after the current work",
+      streamingBehavior: "followUp",
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("correlates concurrent prompt responses by Pi request ID", { concurrency: false }, async () => {
+  await withFakePi({ PI_FLEET_FAKE_PI_MODE: "reverse-prompts" }, async () => {
+    const pi = await startPi(record())
+    try {
+      await Promise.all([
+        pi.send("First request", "steer"),
+        pi.send("Second request", "followUp"),
+      ])
+    } finally {
+      await stop(pi.process)
+    }
+  })
+})
+
+test("reports Pi prompt rejection messages", { concurrency: false }, async () => {
+  await withFakePi({ PI_FLEET_FAKE_PI_MODE: "reject-prompt" }, async () => {
+    const pi = await startPi(record())
+    try {
+      await assert.rejects(
+        pi.send("Rejected prompt", "steer"),
+        (error) => error instanceof PiRequestError && error.message === "fake prompt rejected",
+      )
+    } finally {
+      await stop(pi.process)
+    }
+  })
+})
+
+test("times out and rejects pending prompts when Pi exits", { concurrency: false }, async () => {
+  await withFakePi({ PI_FLEET_FAKE_PI_MODE: "exit-on-prompt" }, async () => {
+    const pi = await startPi(record())
+    try {
+      await assert.rejects(pi.send("Exit before acknowledgment", "steer", 1_000), PiStartupError)
+    } finally {
+      await stop(pi.process)
+    }
+  })
+
+  await withFakePi({ PI_FLEET_FAKE_PI_MODE: "ignore-prompt" }, async () => {
+    const pi = await startPi(record())
+    try {
+      await assert.rejects(pi.send("Timeout", "steer", 20), PiRequestError)
+    } finally {
+      await stop(pi.process)
+    }
   })
 })

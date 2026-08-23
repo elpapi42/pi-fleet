@@ -2,7 +2,7 @@
 import { Command } from "commander"
 import { connectPiFleet } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.3.1"
+const version = "0.4.0"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -62,6 +62,17 @@ function createProgram(piArgs: string[]): Command {
       const agent = await withClient((client) => client.create({ name, instructions, cwd: options.cwd, piArgs }))
       console.log(`Created agent ${agent.name}`)
       printAgent(agent.id, agent.name, "idle")
+    })
+
+  program
+    .command("send <name> <message>")
+    .description("Send work to a durable Pi agent")
+    .option("--follow-up", "deliver after the current work finishes")
+    .action(async (name: string, message: string, options: { followUp?: boolean }) => {
+      const delivery = options.followUp ? "followUp" : "steer"
+      await withClient(async (client) => (await client.get(name)).send(message, { delivery }))
+      console.log(`Instruction accepted by ${name}`)
+      console.log(`Delivery: ${delivery}`)
     })
 
   program

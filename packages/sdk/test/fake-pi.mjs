@@ -15,19 +15,24 @@ if (process.env.PI_FLEET_FAKE_PI_MODE === "exit") {
 
 const sessionFile = process.env.PI_FLEET_FAKE_SESSION_FILE ?? "/tmp/fake-pi-session.jsonl"
 const sessionId = process.env.PI_FLEET_FAKE_SESSION_ID ?? "fake-session"
-const input = createInterface({ input: process.stdin, crlfDelay: Infinity })
-for await (const line of input) {
-  const request = JSON.parse(line)
-  if (request.type === "get_state") {
-    const delay = Number(process.env.PI_FLEET_FAKE_PI_DELAY_MS ?? 0)
-    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
-    const response = Buffer.from(`${JSON.stringify({
-      type: "response",
-      id: request.id,
-      success: true,
-      data: { sessionFile, sessionId, isStreaming: false, isCompacting: false },
-    })}\n`)
-    if (process.env.PI_FLEET_FAKE_PI_MODE === "split") {
+const mode = process.env.PI_FLEET_FAKE_PI_MODE
+const commands = []
+const reversePrompts = []
+
+function write(message) {
+  process.stdout.write(`${JSON.stringify(message)}\n`)
+}
+
+function respondToState(request) {
+  const delay = Number(process.env.PI_FLEET_FAKE_PI_DELAY_MS ?? 0)
+  const response = Buffer.from(`${JSON.stringify({
+    type: "response",
+    id: request.id,
+    success: true,
+    data: { sessionFile, sessionId, isStreaming: false, isCompacting: false },
+  })}\n`)
+  const send = async () => {
+    if (mode === "split") {
       for (const byte of response) {
         process.stdout.write(Buffer.from([byte]))
         await new Promise((resolve) => setImmediate(resolve))
@@ -38,4 +43,43 @@ for await (const line of input) {
     const exitAfterReadyMs = Number(process.env.PI_FLEET_FAKE_PI_EXIT_AFTER_READY_MS ?? 0)
     if (exitAfterReadyMs > 0) setTimeout(() => process.exit(0), exitAfterReadyMs)
   }
+  if (delay > 0) setTimeout(() => void send(), delay)
+  else void send()
 }
+
+async function handlePrompt(request) {
+  if (mode === "exit-on-prompt") process.exit(0)
+  if (mode === "ignore-prompt") return
+  if (mode === "reject-prompt") {
+    write({ type: "response", id: request.id, success: false, error: "fake prompt rejected" })
+    return
+  }
+  const promptDelay = Number(process.env.PI_FLEET_FAKE_PI_PROMPT_DELAY_MS ?? 0)
+  if (promptDelay > 0) await new Promise((resolve) => setTimeout(resolve, promptDelay))
+  if (mode === "reverse-prompts") {
+    reversePrompts.push(request)
+    if (reversePrompts.length === 2) {
+      for (const pending of [...reversePrompts].reverse()) {
+        write({ type: "response", id: pending.id, success: true, command: "prompt" })
+      }
+    }
+    return
+  }
+  if (mode === "prompt-event") write({ type: "agent_start" })
+  write({ type: "response", id: request.id, success: true, command: "prompt" })
+  const settleAfterPromptMs = Number(process.env.PI_FLEET_FAKE_PI_SETTLE_AFTER_PROMPT_MS ?? 0)
+  if (settleAfterPromptMs > 0) setTimeout(() => write({ type: "agent_settled" }), settleAfterPromptMs)
+}
+
+const input = createInterface({ input: process.stdin, crlfDelay: Infinity })
+input.on("line", (line) => {
+  void (async () => {
+    const request = JSON.parse(line)
+    commands.push(request)
+    if (process.env.PI_FLEET_FAKE_PI_COMMANDS_FILE) {
+      await writeFile(process.env.PI_FLEET_FAKE_PI_COMMANDS_FILE, JSON.stringify(commands))
+    }
+    if (request.type === "get_state") respondToState(request)
+    if (request.type === "prompt") await handlePrompt(request)
+  })()
+})

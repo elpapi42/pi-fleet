@@ -16,6 +16,7 @@ const agent = await client.create({
   instructions: "Give concise answers.",
 })
 
+await agent.send("Investigate the database schema")
 console.log(await agent.status())
 await client.close()
 ```
@@ -42,4 +43,10 @@ const client = await connectPiFleet({ stateDir: "/path/to/pi-fleet-state" })
 
 `client.get(name)` and `client.list()` discover agents created by another local client. `client.close()` only closes this SDK client. It does not stop an agent worker.
 
-Slice 1 supports Unix-like hosts with ZeroMQ `ipc://` support. It provides create, get, list, and status. Sending work, event streaming, recovery, retirement, compact, and destroy come in later slices.
+`agent.send(message)` starts work when Pi is idle. During active work, it uses `steer` by default. Use `followUp` to deliver after the current work settles:
+
+```ts
+await agent.send("Summarize the findings", { delivery: "followUp" })
+```
+
+`send()` resolves after Pi accepts or queues the instruction. It does not wait for completion. Slice 2 supports Unix-like hosts with ZeroMQ `ipc://` support. It provides create, get, list, status, and send. Event streaming, recovery, retirement, compact, and destroy come in later slices.

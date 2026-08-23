@@ -104,6 +104,23 @@ export class Registry {
     return this.#agents.put(id, record, version + 1, version)
   }
 
+  async updateState(id: string, runtimeGeneration: string, state: "working" | "idle"): Promise<boolean> {
+    this.assertOpen()
+    while (true) {
+      const entry = this.#agents.getEntry(id)
+      if (!entry || entry.value.runtime?.generation !== runtimeGeneration) return false
+      if (entry.value.state === state) return true
+
+      const version = entry.version ?? 0
+      const updated: AgentRecord = {
+        ...entry.value,
+        state,
+        updatedAt: Date.now(),
+      }
+      if (await this.#agents.put(id, updated, version + 1, version)) return true
+    }
+  }
+
   async rollbackCreation(id: string, name: string, runtimeGeneration: string): Promise<void> {
     this.assertOpen()
     await this.#names.transaction(() => {

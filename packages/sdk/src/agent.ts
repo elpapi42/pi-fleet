@@ -1,7 +1,8 @@
-import type { Agent, AgentStatus } from "./types.js"
+import type { Agent, AgentStatus, SendOptions, SendResult } from "./types.js"
 
 type AgentClient = {
   status(id: string, name: string): Promise<AgentStatus>
+  send(id: string, name: string, message: string, options?: SendOptions): Promise<SendResult>
 }
 
 export class AgentHandle implements Agent {
@@ -25,5 +26,9 @@ export class AgentHandle implements Agent {
 
   status(): Promise<AgentStatus> {
     return this.#client.status(this.#id, this.#name)
+  }
+
+  send(message: string, options?: SendOptions): Promise<SendResult> {
+    return this.#client.send(this.#id, this.#name, message, options)
   }
 }
