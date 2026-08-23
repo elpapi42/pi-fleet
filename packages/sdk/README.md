@@ -46,4 +46,8 @@ const client = await connectPiFleet({ stateDir: "/path/to/pi-fleet-state" })
 await agent.send("Summarize the findings", { delivery: "followUp" })
 ```
 
-`send()` resolves after Pi accepts or queues the instruction. It does not wait for completion. Slice 2 supports Unix-like hosts with ZeroMQ `ipc://` support. It provides create, get, list, status, and send. Event streaming, recovery, retirement, compact, and destroy come in later slices.
+`send()` resolves after Pi accepts or queues the instruction. It does not wait for completion.
+
+`agent.receive()` provides best-effort live activity after the subscription starts. Each client receives an independent stream. Slice 3 does not replay missed events. The stream reports `thinking.started`, `thinking.finished`, `message.started`, `message.finished`, `tool.started`, and `tool.finished`. It ends normally when the consumer stops or the client closes. It throws if the worker or Pi becomes unavailable.
+
+Slice 3 supports Unix-like hosts with ZeroMQ `ipc://` support. It provides create, get, list, status, send, and live receive. Recovery, durable replay, retirement, compact, and destroy come in later slices.

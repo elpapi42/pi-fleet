@@ -9,6 +9,7 @@ import {
   AgentNameTakenError,
   AgentNotFoundError,
   type Agent,
+  type AgentEvent,
   type AgentStatus,
   type AgentSummary,
   type SendDelivery,
@@ -16,7 +17,7 @@ import {
   type SendResult,
 } from "./agent.js"
 import { openStore, type AgentRecord, type FleetStore } from "../state/store.js"
-import { launchWorker, requestSend, requestStatus, stopWorker, workerEndpoint, type WorkerTarget } from "../worker/control.js"
+import { launchWorker, receiveEvents, requestSend, requestStatus, stopWorker, workerEndpoint, type WorkerTarget } from "../worker/control.js"
 import { validatePiArguments } from "../pi/runtime.js"
 
 const STARTUP_TIMEOUT_MS = 10_000
@@ -42,6 +43,7 @@ export interface PiFleetClient {
 class PiFleetClientImpl implements PiFleetClient {
   readonly #store: FleetStore
   readonly #stateDir: string
+  readonly #streamControllers = new Set<AbortController>()
   #closed = false
 
   constructor(store: FleetStore, stateDir: string) {
@@ -115,9 +117,19 @@ class PiFleetClientImpl implements PiFleetClient {
     return requestSend(workerTarget(record), message, delivery)
   }
 
+  receive(id: string, name: string): AsyncIterable<AgentEvent> {
+    this.assertOpen()
+    const record = this.#store.getById(id)
+    if (!record || record.name !== name) throw new AgentNotFoundError(name)
+    const controller = new AbortController()
+    this.#streamControllers.add(controller)
+    return trackStream(receiveEvents(workerTarget(record), controller.signal), controller, this.#streamControllers)
+  }
+
   close(): Promise<void> {
     if (this.#closed) return Promise.resolve()
     this.#closed = true
+    for (const controller of this.#streamControllers) controller.abort()
     return this.#store.close()
   }
 
@@ -150,6 +162,44 @@ async function validateCreateOptions(options: CreateAgentOptions): Promise<{ nam
   const piArgs = options.piArgs ? [...options.piArgs] : []
   validatePiArguments(piArgs)
   return { name, cwd, piArgs }
+}
+
+function trackStream(stream: AsyncIterable<AgentEvent>, controller: AbortController, controllers: Set<AbortController>): AsyncIterable<AgentEvent> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+      const iterator = stream[Symbol.asyncIterator]()
+      const release = () => controllers.delete(controller)
+      return {
+        async next(): Promise<IteratorResult<AgentEvent>> {
+          try {
+            const result = await iterator.next()
+            if (result.done) release()
+            return result
+          } catch (error) {
+            release()
+            throw error
+          }
+        },
+        async return(): Promise<IteratorResult<AgentEvent>> {
+          controller.abort()
+          try {
+            return await iterator.return?.() ?? { done: true, value: undefined }
+          } finally {
+            release()
+          }
+        },
+        async throw(error?: unknown): Promise<IteratorResult<AgentEvent>> {
+          controller.abort()
+          try {
+            if (iterator.throw) return await iterator.throw(error)
+            throw error
+          } finally {
+            release()
+          }
+        },
+      }
+    },
+  }
 }
 
 function workerTarget(record: AgentRecord): WorkerTarget {

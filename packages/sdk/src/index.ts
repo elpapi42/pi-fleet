@@ -1,4 +1,4 @@
-export const version = "0.4.1"
+export const version = "0.5.0"
 
 export { connectPiFleet } from "./fleet/client.js"
 export {
@@ -9,6 +9,7 @@ export {
 
 export type {
   Agent,
+  AgentEvent,
   AgentState,
   AgentStatus,
   AgentSummary,

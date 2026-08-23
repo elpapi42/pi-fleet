@@ -1,4 +1,4 @@
-import type { AgentState } from "../fleet/agent.js"
+import type { AgentEvent, AgentState } from "../fleet/agent.js"
 
 export type StatusRequest = {
   version: 1
@@ -16,6 +16,23 @@ export type SendRequest = {
   runtimeGeneration: string
   message: string
   delivery: "steer" | "followUp"
+}
+
+export type SubscribeRequest = {
+  version: 1
+  requestId: string
+  command: "subscribe"
+  agentId: string
+  runtimeGeneration: string
+}
+
+export type UnsubscribeRequest = {
+  version: 1
+  requestId: string
+  command: "unsubscribe"
+  agentId: string
+  runtimeGeneration: string
+  subscriptionId: string
 }
 
 export type StatusResponse = {
@@ -37,7 +54,49 @@ export type SendResponse = {
   error?: string
 }
 
-export function encode(message: StatusRequest | SendRequest | StatusResponse | SendResponse): string {
+export type SubscribeResponse = {
+  version: 1
+  requestId: string
+  command: "subscribe"
+  ok: boolean
+  agentId: string
+  runtimeGeneration: string
+  subscriptionId?: string
+  error?: string
+}
+
+export type UnsubscribeResponse = {
+  version: 1
+  requestId: string
+  command: "unsubscribe"
+  ok: boolean
+  agentId: string
+  runtimeGeneration: string
+  subscriptionId: string
+  error?: string
+}
+
+export type EventFrame = {
+  version: 1
+  command: "event"
+  agentId: string
+  runtimeGeneration: string
+  subscriptionId: string
+  event: AgentEvent
+}
+
+export type WorkerMessage =
+  | StatusRequest
+  | SendRequest
+  | SubscribeRequest
+  | UnsubscribeRequest
+  | StatusResponse
+  | SendResponse
+  | SubscribeResponse
+  | UnsubscribeResponse
+  | EventFrame
+
+export function encode(message: WorkerMessage): string {
   return JSON.stringify(message)
 }
 

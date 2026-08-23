@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { Command } from "commander"
-import { connectPiFleet } from "@elpapi42/pi-fleet-sdk"
+import { connectPiFleet, type AgentEvent } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.5.1"
+const version = "0.6.0"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -17,6 +17,32 @@ function printAgent(id: string, name: string, state: string): void {
   console.log(`ID: ${id}`)
   console.log(`Name: ${name}`)
   console.log(`State: ${state}`)
+}
+
+function singleLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim()
+}
+
+function printEvent(event: AgentEvent): void {
+  switch (event.type) {
+    case "thinking.started":
+      console.log("Thinking started.")
+      return
+    case "thinking.finished":
+      console.log(`Thinking finished: ${singleLine(event.content)}`)
+      return
+    case "message.started":
+      console.log("Message started.")
+      return
+    case "message.finished":
+      console.log(`Message finished: ${singleLine(event.text)}`)
+      return
+    case "tool.started":
+      console.log(`Tool started: ${event.toolName}`)
+      return
+    case "tool.finished":
+      console.log(`Tool finished: ${event.toolName}${event.isError ? " with an error" : ""}`)
+  }
 }
 
 function printAgentList(agents: Array<{ id: string; name: string; state: string }>): void {
@@ -73,6 +99,26 @@ function createProgram(piArgs: string[]): Command {
       await withClient(async (client) => (await client.get(name)).send(message, { delivery }))
       console.log(`Instruction accepted by ${name}`)
       console.log(`Delivery: ${delivery}`)
+    })
+
+  program
+    .command("receive <name>")
+    .description("Show live agent activity")
+    .action(async (name: string) => {
+      let interrupted = false
+      await withClient(async (client) => {
+        const onInterrupt = () => {
+          interrupted = true
+          void client.close()
+        }
+        process.once("SIGINT", onInterrupt)
+        try {
+          for await (const event of (await client.get(name)).receive()) printEvent(event)
+        } finally {
+          process.off("SIGINT", onInterrupt)
+        }
+      })
+      if (interrupted) process.exitCode = 130
     })
 
   program

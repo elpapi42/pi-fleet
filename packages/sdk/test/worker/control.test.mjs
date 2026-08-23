@@ -6,7 +6,7 @@ import test from "node:test"
 import { Router } from "zeromq"
 import { AgentUnavailableError } from "../../dist/index.js"
 import { decode, encode } from "../../dist/worker/protocol.js"
-import { requestSend, requestStatus } from "../../dist/worker/control.js"
+import { receiveEvents, requestSend, requestStatus } from "../../dist/worker/control.js"
 
 const record = (endpoint) => ({
   id: "agent-1",
@@ -37,6 +37,119 @@ async function withRouter(run) {
     await rm(root, { recursive: true, force: true })
   }
 }
+
+test("subscribes, yields events, and unsubscribes when iteration ends", async () => {
+  await withRouter(async (router, agent) => {
+    const responder = (async () => {
+      const [route, subscribeFrame] = await router.receive()
+      const subscribe = decode(subscribeFrame)
+      assert.equal(subscribe.command, "subscribe")
+      await router.send([route, encode({
+        version: 1,
+        requestId: subscribe.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+      })])
+      await router.send([route, encode({
+        version: 1,
+        command: "event",
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+        event: { type: "tool.finished", eventId: "event-1", activityId: "tool-1", timestamp: 1, toolName: "bash", isError: false },
+      })])
+      const [, unsubscribeFrame] = await router.receive()
+      const unsubscribe = decode(unsubscribeFrame)
+      assert.equal(unsubscribe.command, "unsubscribe")
+      assert.equal(unsubscribe.subscriptionId, "subscription-1")
+    })()
+
+    const iterator = receiveEvents(agent)[Symbol.asyncIterator]()
+    assert.deepEqual(await iterator.next(), {
+      value: { type: "tool.finished", eventId: "event-1", activityId: "tool-1", timestamp: 1, toolName: "bash", isError: false },
+      done: false,
+    })
+    await iterator.return()
+    await responder
+  })
+})
+
+test("rejects a subscription with mismatched worker identity", async () => {
+  await withRouter(async (router, agent) => {
+    const responder = (async () => {
+      const [route, frame] = await router.receive()
+      const request = decode(frame)
+      await router.send([route, encode({
+        version: 1,
+        requestId: request.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: "other-agent",
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+      })])
+    })()
+
+    await assert.rejects(receiveEvents(agent)[Symbol.asyncIterator]().next(), AgentUnavailableError)
+    await responder
+  })
+})
+
+test("ends a subscription normally when aborted", async () => {
+  await withRouter(async (router, agent) => {
+    let subscribed
+    const receivedSubscribe = new Promise((resolve) => { subscribed = resolve })
+    const responder = (async () => {
+      const [route, frame] = await router.receive()
+      const request = decode(frame)
+      await router.send([route, encode({
+        version: 1,
+        requestId: request.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+      })])
+      subscribed()
+      const [, unsubscribeFrame] = await router.receive()
+      assert.equal(decode(unsubscribeFrame).command, "unsubscribe")
+    })()
+
+    const controller = new AbortController()
+    const iterator = receiveEvents(agent, controller.signal)[Symbol.asyncIterator]()
+    const next = iterator.next()
+    await receivedSubscribe
+    controller.abort()
+    assert.deepEqual(await next, { value: undefined, done: true })
+    await responder
+  })
+})
+
+test("rejects an idle subscription when the worker cannot answer a health probe", async () => {
+  await withRouter(async (router, agent) => {
+    const responder = (async () => {
+      const [route, frame] = await router.receive()
+      const request = decode(frame)
+      await router.send([route, encode({
+        version: 1,
+        requestId: request.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+      })])
+      await router.receive()
+    })()
+
+    await assert.rejects(receiveEvents(agent)[Symbol.asyncIterator]().next(), AgentUnavailableError)
+    await responder
+  })
+})
 
 test("rejects a status response from the wrong agent identity", async () => {
   await withRouter(async (router, agent) => {

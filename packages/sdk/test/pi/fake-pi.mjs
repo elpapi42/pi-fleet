@@ -67,6 +67,16 @@ async function handlePrompt(request) {
     return
   }
   if (mode === "prompt-event") write({ type: "agent_start" })
+  if (mode === "semantic-events") {
+    write({ type: "agent_start" })
+    write({ type: "message_start", message: { role: "assistant", content: [] } })
+    write({ type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } })
+    write({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "I will check." } })
+    write({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "I will check." }] } })
+    write({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: { command: "pwd" } })
+    write({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "bash", result: "ok", isError: false })
+    write({ type: "agent_settled" })
+  }
   write({ type: "response", id: request.id, success: true, command: "prompt" })
   const settleGate = process.env.PI_FLEET_FAKE_PI_SETTLE_FILE
   if (settleGate) {

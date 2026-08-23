@@ -1,12 +1,15 @@
 import assert from "node:assert/strict"
+import { randomUUID } from "node:crypto"
 import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
+import { Dealer } from "zeromq"
 import { connectPiFleet } from "../../dist/index.js"
 import { openStore } from "../../dist/state/store.js"
 import { requestSend, requestStatus } from "../../dist/worker/control.js"
+import { decode, encode } from "../../dist/worker/protocol.js"
 
 const fakePi = join(dirname(fileURLToPath(import.meta.url)), "../pi/fake-pi.mjs")
 
@@ -33,6 +36,30 @@ async function terminateWorker(stateDir, id) {
   } finally {
     await registry.close()
   }
+}
+
+async function subscribe(record) {
+  const socket = new Dealer({ routingId: randomUUID(), immediate: true, linger: 0 })
+  socket.connect(record.runtime.endpoint)
+  const request = {
+    version: 1,
+    requestId: randomUUID(),
+    command: "subscribe",
+    agentId: record.id,
+    runtimeGeneration: record.runtime.generation,
+  }
+  await socket.send(encode(request))
+  const response = decode((await socket.receive())[0])
+  assert.equal(response.command, "subscribe")
+  assert.equal(response.ok, true)
+  assert.equal(response.agentId, record.id)
+  assert.equal(response.runtimeGeneration, record.runtime.generation)
+  assert.equal(typeof response.subscriptionId, "string")
+  return { socket, subscriptionId: response.subscriptionId }
+}
+
+async function receiveEvent(subscription) {
+  return decode((await subscription.socket.receive())[0])
 }
 
 async function waitFor(check, message) {
@@ -76,6 +103,32 @@ async function withWorker(options, run) {
     await rm(stateDir, { recursive: true, force: true })
   }
 }
+
+test("publishes the same ordered semantic events to independent subscribers", { concurrency: false }, async () => {
+  await withWorker({ PI_FLEET_FAKE_PI_MODE: "semantic-events" }, async ({ record }) => {
+    assert.ok(record)
+    const first = await subscribe(record)
+    const second = await subscribe(record)
+    try {
+      await requestSend(record, "Inspect the project", "steer")
+      const firstEvents = await Promise.all(Array.from({ length: 6 }, () => receiveEvent(first)))
+      const secondEvents = await Promise.all(Array.from({ length: 6 }, () => receiveEvent(second)))
+      const types = ["message.started", "thinking.started", "thinking.finished", "message.finished", "tool.started", "tool.finished"]
+      assert.deepEqual(firstEvents.map((event) => event.event.type), types)
+      assert.deepEqual(secondEvents.map((event) => event.event.type), types)
+      assert.deepEqual(firstEvents.map((event) => event.event), secondEvents.map((event) => event.event))
+      assert.equal(firstEvents[0].event.activityId, firstEvents[3].event.activityId)
+      assert.equal(firstEvents[1].event.activityId, firstEvents[2].event.activityId)
+      assert.equal(firstEvents[2].event.content, "I will check.")
+      assert.equal(firstEvents[3].event.text, "I will check.")
+      assert.deepEqual(firstEvents[4].event.args, { command: "pwd" })
+      assert.equal(firstEvents[5].event.isError, false)
+    } finally {
+      first.socket.close()
+      second.socket.close()
+    }
+  })
+})
 
 test("worker returns Pi acceptance and persists working then idle", { concurrency: false }, async () => {
   await withWorker(

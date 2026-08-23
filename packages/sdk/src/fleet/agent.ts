@@ -23,11 +23,20 @@ export type SendResult = {
   acceptedAt: number
 }
 
+export type AgentEvent =
+  | { type: "thinking.started"; eventId: string; activityId: string; timestamp: number }
+  | { type: "thinking.finished"; eventId: string; activityId: string; timestamp: number; content: string }
+  | { type: "message.started"; eventId: string; activityId: string; timestamp: number }
+  | { type: "message.finished"; eventId: string; activityId: string; timestamp: number; text: string }
+  | { type: "tool.started"; eventId: string; activityId: string; timestamp: number; toolName: string; args: unknown }
+  | { type: "tool.finished"; eventId: string; activityId: string; timestamp: number; toolName: string; isError: boolean }
+
 export interface Agent {
   readonly id: string
   readonly name: string
   status(): Promise<AgentStatus>
   send(message: string, options?: SendOptions): Promise<SendResult>
+  receive(): AsyncIterable<AgentEvent>
 }
 
 export class AgentNameTakenError extends Error {
@@ -54,6 +63,7 @@ export class AgentUnavailableError extends Error {
 type AgentClient = {
   status(id: string, name: string): Promise<AgentStatus>
   send(id: string, name: string, message: string, options?: SendOptions): Promise<SendResult>
+  receive(id: string, name: string): AsyncIterable<AgentEvent>
 }
 
 export class AgentHandle implements Agent {
@@ -81,5 +91,9 @@ export class AgentHandle implements Agent {
 
   send(message: string, options?: SendOptions): Promise<SendResult> {
     return this.#client.send(this.#id, this.#name, message, options)
+  }
+
+  receive(): AsyncIterable<AgentEvent> {
+    return this.#client.receive(this.#id, this.#name)
   }
 }

@@ -1,6 +1,6 @@
 # pi-fleet
 
-pi-fleet provides durable, host-local Pi agents through an SDK and CLI. Slice 2 supports agent creation, discovery, status checks, and sending work on Unix-like hosts.
+pi-fleet provides durable, host-local Pi agents through an SDK and CLI. Slice 3 supports agent creation, discovery, status checks, sending work, and best-effort live activity on Unix-like hosts.
 
 ## Packages
 
@@ -21,6 +21,7 @@ Install the CLI globally:
 npm install --global @elpapi42/pi-fleet-cli
 pif create researcher --cwd "$PWD"
 pif send researcher "Investigate the database schema"
+pif receive researcher
 pif list
 pif status researcher
 pif --help
