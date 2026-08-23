@@ -44,6 +44,23 @@ npm run pack:check
 
 `npm run pack:check` checks the exact files that each publishable package will contain. It does not publish either package.
 
+## Run the SDK example
+
+The root `sdk-example.mjs` file uses only the public SDK. It shows `connectPiFleet`, `create`, `get`, `status`, `list`, and `close`.
+
+```bash
+# This does not create an agent.
+npm run sdk:example -- list
+
+# This starts a durable agent in the current directory.
+npm run sdk:example -- create researcher "Use concise answers."
+
+npm run sdk:example -- status researcher
+npm run sdk:example -- list
+```
+
+The script calls `client.close()` after each command. Closing the client does not stop an agent created by `create`.
+
 ## Package releases
 
 The SDK and CLI release independently. The CLI pins `@elpapi42/pi-fleet-sdk` to one exact version. Publish that SDK version before a CLI release that uses it.
