@@ -40,7 +40,7 @@ const client = await connectPiFleet({ stateDir: "/path/to/pi-fleet-state" })
 
 `client.get(name)` and `client.list()` discover agents created by another local client. `client.close()` only closes this SDK client. It does not stop an agent worker.
 
-Running agents keep the worker version used at creation. After updating the SDK, create a new agent before testing new worker behavior such as live receive. Until `destroy` exists, use a new agent name.
+Running agents keep the worker version used at creation. After updating the SDK, create a new agent before testing new worker behavior such as worker recovery. Until `destroy` exists, use a new agent name.
 
 `agent.send(message)` starts work when Pi is idle. During active work, it uses `steer` by default. Use `followUp` to deliver after the current work settles:
 
@@ -48,9 +48,9 @@ Running agents keep the worker version used at creation. After updating the SDK,
 await agent.send("Summarize the findings", { delivery: "followUp" })
 ```
 
-`send()` resolves only after Pi acknowledges the instruction. During Pi recovery, it waits for restoration and queued delivery. It does not wait for work completion.
+`send()` resolves only after Pi acknowledges the instruction. During Pi or pre-dispatch worker recovery, it waits for restoration and delivery. It does not wait for work completion. If the old worker might have accepted the request but its acknowledgement was lost, `AgentSendUncertainError` reports that pi-fleet did not retry it.
 
-`agent.receive()` provides a durable semantic activity stream. Each client receives an independent single-consumer stream. The stream reports `thinking.started`, `thinking.finished`, `message.started`, `message.finished`, `tool.started`, `tool.finished`, and `work.interrupted`. A `work.interrupted` event means Pi exited during active work. The work and any tool side effects may be incomplete. The client decides whether to continue or send new work. The worker tries to restore Pi without closing the stream. It ends normally when the consumer stops or the client closes. It throws `AgentUnavailableError` if the worker or Pi recovery becomes unavailable.
+`agent.receive()` provides a durable semantic activity stream. Each client receives an independent single-consumer stream. The stream reports `thinking.started`, `thinking.finished`, `message.started`, `message.finished`, `tool.started`, `tool.finished`, and `work.interrupted`. A `work.interrupted` event means an active Pi or worker runtime was lost. The work and any tool side effects may be incomplete. The client decides whether to continue or send new work. Pi recovery keeps the worker connection. Worker recovery reconnects after the last delivered cursor, replays missed events once, and continues live. The stream ends normally when the consumer stops or the client closes. It throws `AgentUnavailableError` if bounded recovery fails.
 
 Every event has an opaque `cursor`, a semantic `eventId`, an `activityId` that connects matching start and finish events, and a worker-assigned Unix-millisecond `timestamp`. Stream order is authoritative. Timestamps do not define ordering, and `eventId` is not a replay cursor. `message.finished.text` contains concatenated assistant text blocks only.
 
@@ -71,8 +71,8 @@ Plain `receive()` starts after the tail captured at subscription time. `receive(
 
 `tool.finished.output` contains bounded final text, image omission metadata, and optional structured details. `detailsTruncated` reports omitted structured details. `truncated` reports any omitted or shortened output, including image data. Semantic events never contain base64 image data. The worker limits text output to 64 KiB and structured details to 16 KiB. The CLI shows at most 8 KiB per parameter or output preview. `tool.updated` is not available yet.
 
-During Pi recovery, the worker holds at most 32 sends and 1 MiB of message text. `AgentRecoveryQueueFullError` means Pi did not receive the rejected instruction. `AgentSendUncertainError` means Pi may have accepted the instruction before it exited, so pi-fleet does not retry it.
+During Pi recovery, the worker holds at most 32 sends and 1 MiB of message text. `AgentRecoveryQueueFullError` means Pi did not receive the rejected instruction. `AgentSendUncertainError` means Pi or the old worker may have accepted the instruction before acknowledgement was lost, so pi-fleet does not retry it.
 
 Tool parameters and output can contain sensitive local data. Pi-fleet does not silently redact this data because redaction can change its meaning. The same bounded event data persists in `~/.pi-fleet` until `destroy()` exists. There is no expiry or retention setting yet, so disk use can grow. SDK consumers must treat event history as having the same local trust level as the agent and its Pi session.
 
-Slice 5 supports Unix-like hosts with ZeroMQ `ipc://` support. It provides create, get, list, status, send, durable receive, and transparent Pi process recovery. Worker recovery, retirement, compact, and destroy come in later slices. A missing worker still makes receive unavailable until worker recovery arrives.
+Slice 6 supports Unix-like hosts with ZeroMQ `ipc://` support. It provides create, get, list, status, send, durable receive, and transparent Pi and worker process recovery. `status`, `send`, and `receive` lazily reconcile an unavailable worker through one conditional LMDB claim. `get` and `list` remain registry-only operations. Recovery never signals a persisted PID or process group; it fails with `AgentUnavailableError` if the old runtime does not drain safely. Retirement, compact, and destroy come in later slices.
