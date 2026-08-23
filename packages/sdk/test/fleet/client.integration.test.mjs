@@ -31,7 +31,16 @@ async function terminateWorker(stateDir, id) {
         return
       }
     }
-    throw new Error(`Worker ${pid} did not exit`)
+    process.kill(pid, "SIGKILL")
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      try {
+        process.kill(pid, 0)
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      } catch {
+        return
+      }
+    }
+    throw new Error(`Worker ${pid} did not exit after SIGKILL`)
   } finally {
     await registry.close()
   }
