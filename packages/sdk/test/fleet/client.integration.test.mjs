@@ -403,7 +403,7 @@ test("replays public activity after a delivered cursor", { concurrency: false },
   })
 })
 
-test("worker failure rejects a public live stream", { concurrency: false }, async () => {
+test("reconnects a public live stream after worker replacement", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     process.env.PI_FLEET_FAKE_PI_MODE = "semantic-events"
     const client = await connectPiFleet({ stateDir })
@@ -412,19 +412,55 @@ test("worker failure rejects a public live stream", { concurrency: false }, asyn
       const iterator = agent.receive()[Symbol.asyncIterator]()
       const firstEvent = iterator.next()
       await agent.send("Warmup")
-      await agent.send("Failure stream")
+      await agent.send("Before replacement")
 
       let sawExpectedMessage = false
       let current = await firstEvent
       while (!current.done) {
-        if (current.value.type === "message.finished" && current.value.text === "Handled: Failure stream") sawExpectedMessage = true
+        if (current.value.type === "message.finished" && current.value.text === "Handled: Before replacement") sawExpectedMessage = true
         if (sawExpectedMessage && current.value.type === "tool.finished") break
         current = await iterator.next()
       }
+      const previousSequence = decodeEventCursor(current.value.cursor).sequence
       await terminateWorker(stateDir, agent.id)
-      await assert.rejects(iterator.next(), AgentUnavailableError)
+
+      const nextEvent = iterator.next()
+      await agent.send("After replacement")
+      const resumed = await nextEvent
+      assert.equal(resumed.value.type, "message.started")
+      assert.equal(decodeEventCursor(resumed.value.cursor).sequence, previousSequence + 1)
+      await iterator.return()
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_MODE
+      await client.close()
+    }
+  })
+})
+
+test("replays one interruption when a working worker is replaced", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    process.env.PI_FLEET_FAKE_PI_MODE = "prompt-event"
+    process.env.PI_FLEET_FAKE_PI_SETTLE_FILE = join(stateDir, "release-work")
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      const iterator = agent.receive({ fromStart: true })[Symbol.asyncIterator]()
+      await agent.send("Start work before worker loss")
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        if ((await agent.status()).state === "working") break
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      assert.equal((await agent.status()).state, "working")
+      await terminateWorker(stateDir, agent.id)
+
+      const interrupted = await iterator.next()
+      assert.equal(interrupted.value.type, "work.interrupted")
+      assert.equal(decodeEventCursor(interrupted.value.cursor).sequence, 1)
+      assert.equal((await agent.status()).state, "idle")
+      await iterator.return()
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_MODE
+      delete process.env.PI_FLEET_FAKE_PI_SETTLE_FILE
       await client.close()
     }
   })

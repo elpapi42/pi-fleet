@@ -147,7 +147,8 @@ class PiFleetClientImpl implements PiFleetClient {
     const record = this.#store.getById(id)
     if (!record || record.name !== name) throw new AgentNotFoundError(name)
     const receiveOptions = normalizeReceiveOptions(options)
-    const stream = receiveEvents(workerTarget(record), receiveOptions)
+    const stream = receiveEvents(workerTarget(record), receiveOptions, () =>
+      this.reconcileWorker(record.id, record.name, Date.now() + RECOVERY_TIMEOUT_MS))
     this.#streams.add(stream)
     return trackStream(stream, this.#streams)
   }

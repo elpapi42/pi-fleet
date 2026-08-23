@@ -27,9 +27,11 @@ export type WorkerEventStream = AsyncIterable<AgentEvent> & AsyncIterator<AgentE
   close(): Promise<void>
 }
 
-export function receiveEvents(record: WorkerTarget, options: ReceiveOptions = {}): WorkerEventStream {
+export type RecoverWorkerTarget = () => Promise<WorkerTarget>
+
+export function receiveEvents(record: WorkerTarget, options: ReceiveOptions = {}, recoverWorker?: RecoverWorkerTarget): WorkerEventStream {
   const controller = new AbortController()
-  const iterator = readEvents(record, options, controller.signal)
+  const iterator = readEvents(record, options, controller.signal, recoverWorker)
   let closePromise: Promise<void> | undefined
 
   const close = (): Promise<void> => {
@@ -61,8 +63,9 @@ export function receiveEvents(record: WorkerTarget, options: ReceiveOptions = {}
   }
 }
 
-async function* readEvents(record: WorkerTarget, options: ReceiveOptions, signal: AbortSignal): AsyncGenerator<AgentEvent> {
+async function* readEvents(initialRecord: WorkerTarget, options: ReceiveOptions, signal: AbortSignal, recoverWorker?: RecoverWorkerTarget): AsyncGenerator<AgentEvent> {
   const position: StreamPosition = {}
+  let record = initialRecord
   let currentOptions = options
   let repairPending = false
   while (!signal.aborted) {
@@ -74,11 +77,22 @@ async function* readEvents(record: WorkerTarget, options: ReceiveOptions, signal
     } catch (error) {
       if (signal.aborted) return
       if (error instanceof InvalidCursorError) throw error
-      if (!(error instanceof StreamGapError) || repairPending || position.sequence === undefined) {
+      if (!(error instanceof StreamGapError) || repairPending) throw new AgentUnavailableError(record.name)
+
+      repairPending = true
+      if (position.sequence !== undefined) {
+        currentOptions = position.cursor ? { after: position.cursor } : { fromStart: true }
+      }
+      if (recoverWorker) {
+        try {
+          record = await recoverWorker()
+        } catch (recoveryError) {
+          if (recoveryError instanceof InvalidCursorError) throw recoveryError
+          throw new AgentUnavailableError(record.name)
+        }
+      } else if (position.sequence === undefined) {
         throw new AgentUnavailableError(record.name)
       }
-      repairPending = true
-      currentOptions = position.cursor ? { after: position.cursor } : { fromStart: true }
     }
   }
 }

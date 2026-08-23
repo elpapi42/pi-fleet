@@ -39,6 +39,44 @@ async function withRouter(run) {
   }
 }
 
+function messageEvent(agent, subscriptionId, sequence) {
+  return {
+    version: 1,
+    command: "event",
+    agentId: agent.id,
+    runtimeGeneration: agent.runtime.generation,
+    subscriptionId,
+    sequence,
+    event: {
+      type: "message.started",
+      cursor: encodeEventCursor(agent.id, sequence),
+      eventId: `event-${sequence}`,
+      activityId: `activity-${sequence}`,
+      timestamp: sequence,
+    },
+  }
+}
+
+async function withReplacementRouters(run) {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-worker-replacement-"))
+  const first = new Router({ linger: 0 })
+  const second = new Router({ linger: 0 })
+  const firstRecord = record(`ipc://${join(root, "first.sock")}`)
+  const secondRecord = {
+    ...record(`ipc://${join(root, "second.sock")}`),
+    runtime: { ...record("").runtime, generation: "runtime-2", endpoint: `ipc://${join(root, "second.sock")}` },
+  }
+  await first.bind(firstRecord.runtime.endpoint)
+  await second.bind(secondRecord.runtime.endpoint)
+  try {
+    await run(first, second, firstRecord, secondRecord)
+  } finally {
+    first.close()
+    second.close()
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
 test("subscribes, yields events, and unsubscribes when iteration ends", async () => {
   await withRouter(async (router, agent) => {
     const responder = (async () => {
@@ -305,6 +343,126 @@ test("repairs an inactive subscription before its first event from the acknowled
     assert.equal((await iterator.next()).value.cursor, encodeEventCursor(agent.id, 2))
     await iterator.return()
     await responder
+  })
+})
+
+test("reconnects a replaced worker from the acknowledged boundary before the first event", async () => {
+  await withReplacementRouters(async (first, second, firstRecord, secondRecord) => {
+    let recoveries = 0
+    const firstResponder = (async () => {
+      const [route, subscribeFrame] = await first.receive()
+      const subscribe = decode(subscribeFrame)
+      await first.send([route, encode({
+        version: 1,
+        requestId: subscribe.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: firstRecord.id,
+        runtimeGeneration: firstRecord.runtime.generation,
+        subscriptionId: "subscription-1",
+        afterSequence: 1,
+        resumeCursor: encodeEventCursor(firstRecord.id, 1),
+      })])
+      const [, probeFrame] = await first.receive()
+      const probe = decode(probeFrame)
+      await first.send([route, encode({
+        version: 1,
+        requestId: probe.requestId,
+        command: "subscription.status",
+        ok: false,
+        agentId: firstRecord.id,
+        runtimeGeneration: firstRecord.runtime.generation,
+        subscriptionId: "subscription-1",
+        error: "Worker was replaced",
+      })])
+      const [, unsubscribeFrame] = await first.receive()
+      assert.equal(decode(unsubscribeFrame).command, "unsubscribe")
+    })()
+    const secondResponder = (async () => {
+      const [route, subscribeFrame] = await second.receive()
+      const subscribe = decode(subscribeFrame)
+      assert.equal(subscribe.after, encodeEventCursor(secondRecord.id, 1))
+      await second.send([route, encode({
+        version: 1,
+        requestId: subscribe.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: secondRecord.id,
+        runtimeGeneration: secondRecord.runtime.generation,
+        subscriptionId: "subscription-2",
+        afterSequence: 1,
+        resumeCursor: encodeEventCursor(secondRecord.id, 1),
+      })])
+      await second.send([route, encode(messageEvent(secondRecord, "subscription-2", 2))])
+      const [, unsubscribeFrame] = await second.receive()
+      assert.equal(decode(unsubscribeFrame).command, "unsubscribe")
+    })()
+
+    const iterator = receiveEvents(firstRecord, {}, async () => {
+      recoveries += 1
+      return secondRecord
+    })[Symbol.asyncIterator]()
+    assert.equal((await iterator.next()).value.cursor, encodeEventCursor(firstRecord.id, 2))
+    assert.equal(recoveries, 1)
+    await iterator.return()
+    await Promise.all([firstResponder, secondResponder])
+  })
+})
+
+test("reconnects a replaced worker after the last delivered cursor", async () => {
+  await withReplacementRouters(async (first, second, firstRecord, secondRecord) => {
+    const firstResponder = (async () => {
+      const [route, subscribeFrame] = await first.receive()
+      const subscribe = decode(subscribeFrame)
+      await first.send([route, encode({
+        version: 1,
+        requestId: subscribe.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: firstRecord.id,
+        runtimeGeneration: firstRecord.runtime.generation,
+        subscriptionId: "subscription-1",
+        afterSequence: 0,
+      })])
+      await first.send([route, encode(messageEvent(firstRecord, "subscription-1", 1))])
+      const [, probeFrame] = await first.receive()
+      const probe = decode(probeFrame)
+      await first.send([route, encode({
+        version: 1,
+        requestId: probe.requestId,
+        command: "subscription.status",
+        ok: false,
+        agentId: firstRecord.id,
+        runtimeGeneration: firstRecord.runtime.generation,
+        subscriptionId: "subscription-1",
+        error: "Worker was replaced",
+      })])
+      await first.receive()
+    })()
+    const secondResponder = (async () => {
+      const [route, subscribeFrame] = await second.receive()
+      const subscribe = decode(subscribeFrame)
+      assert.equal(subscribe.after, encodeEventCursor(secondRecord.id, 1))
+      await second.send([route, encode({
+        version: 1,
+        requestId: subscribe.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: secondRecord.id,
+        runtimeGeneration: secondRecord.runtime.generation,
+        subscriptionId: "subscription-2",
+        afterSequence: 1,
+        resumeCursor: encodeEventCursor(secondRecord.id, 1),
+      })])
+      await second.send([route, encode(messageEvent(secondRecord, "subscription-2", 2))])
+      await second.receive()
+    })()
+
+    const iterator = receiveEvents(firstRecord, {}, async () => secondRecord)[Symbol.asyncIterator]()
+    assert.equal((await iterator.next()).value.cursor, encodeEventCursor(firstRecord.id, 1))
+    assert.equal((await iterator.next()).value.cursor, encodeEventCursor(firstRecord.id, 2))
+    await iterator.return()
+    await Promise.all([firstResponder, secondResponder])
   })
 })
 
