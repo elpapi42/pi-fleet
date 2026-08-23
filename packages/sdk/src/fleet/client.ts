@@ -158,6 +158,7 @@ class PiFleetClientImpl implements PiFleetClient {
     this.#closed = true
     await Promise.all([...this.#streams].map((stream) => stream.close()))
     this.#streams.clear()
+    await Promise.allSettled([...this.#recoveries.values()])
     await this.#store.close()
   }
 
@@ -173,6 +174,7 @@ class PiFleetClientImpl implements PiFleetClient {
   }
 
   private reconcileWorker(id: string, name: string, deadlineAt: number): Promise<WorkerTarget> {
+    if (this.#closed) return Promise.reject(new Error("The pi-fleet client is closed"))
     const current = this.#recoveries.get(id)
     if (current) return current
     const recovery = this.recoverWorker(id, name, deadlineAt).finally(() => this.#recoveries.delete(id))

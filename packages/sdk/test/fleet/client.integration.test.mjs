@@ -466,6 +466,43 @@ test("replays one interruption when a working worker is replaced", { concurrency
   })
 })
 
+test("client close waits for an active worker recovery before closing the store", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const incarnationFile = join(stateDir, "fake-pi-incarnation")
+    const recoveryStartedFile = join(stateDir, "worker-recovery-started")
+    process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE = incarnationFile
+    process.env.PI_FLEET_FAKE_PI_RECOVERY_STARTED_FILE = recoveryStartedFile
+    process.env.PI_FLEET_FAKE_PI_RECOVERY_DELAY_MS = "500"
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      await terminateWorker(stateDir, agent.id)
+      const status = agent.status()
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        try {
+          await readFile(recoveryStartedFile)
+          break
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 25))
+        }
+      }
+      await client.close()
+      assert.equal((await status).state, "idle")
+      const store = await openStore(stateDir)
+      try {
+        assert.equal(store.getById(agent.id)?.runtime?.state, "ready")
+      } finally {
+        await store.close()
+      }
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE
+      delete process.env.PI_FLEET_FAKE_PI_RECOVERY_STARTED_FILE
+      delete process.env.PI_FLEET_FAKE_PI_RECOVERY_DELAY_MS
+      await client.close()
+    }
+  })
+})
+
 test("client close ends a pending live stream", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const client = await connectPiFleet({ stateDir })
