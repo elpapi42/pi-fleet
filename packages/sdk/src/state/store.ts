@@ -30,6 +30,19 @@ export type EventJournalEntry<Event = unknown> = {
   event: Event
 }
 
+export type RuntimeClaim = {
+  generation: string
+  claimId: string
+  claimedAt: number
+  endpoint: string
+  workerPid?: number
+}
+
+export type RuntimeClaimResult<Event> = {
+  record: AgentRecord
+  interruption?: EventJournalEntry<Event>
+}
+
 type EventCursorPayload = {
   agentId: string
   sequence: number
@@ -46,6 +59,7 @@ type SharedStore = {
 
 const MAX_EVENT_CURSOR_LENGTH = 4_096
 const EVENT_CURSOR_PAYLOAD = /^[A-Za-z0-9_-]+$/
+export const RUNTIME_CLAIM_WINDOW_MS = 30_000
 const stores = new Map<string, SharedStore>()
 
 export class FleetStore {
@@ -109,6 +123,88 @@ export class FleetStore {
     }
     const version = entry.version ?? 0
     return this.#agents.put(id, record, version + 1, version)
+  }
+
+  async claimRuntime<Event>(id: string, previousGeneration: string, claim: RuntimeClaim, createInterrupted: (cursor: string) => Event): Promise<RuntimeClaimResult<Event> | undefined> {
+    this.assertOpen()
+    while (true) {
+      const entry = this.#agents.getEntry(id)
+      const previousRuntime = entry?.value.runtime
+      if (!entry || !previousRuntime || previousRuntime.generation !== previousGeneration) return undefined
+      if (isFreshRuntimeClaim(previousRuntime, claim.claimedAt)) return undefined
+
+      const version = entry.version ?? 0
+      const interrupted = entry.value.state === "working" && previousRuntime.state === "ready"
+      const sequence = entry.value.lastEventSeq + 1
+      const cursor = encodeEventCursor(id, sequence)
+      const interruption = interrupted
+        ? { sequence, cursor, event: createInterrupted(cursor) }
+        : undefined
+      const record: AgentRecord = {
+        ...entry.value,
+        runtime: {
+          ...previousRuntime,
+          ...claim,
+          workerPid: claim.workerPid ?? previousRuntime.workerPid,
+          state: "starting",
+        },
+        lastEventSeq: interruption ? sequence : entry.value.lastEventSeq,
+        updatedAt: claim.claimedAt,
+      }
+      const claimed = await this.#agents.ifVersion(id, version, () => {
+        if (interruption) this.#events.put([id, sequence], interruption)
+        this.#agents.put(id, record, version + 1)
+      })
+      if (claimed) return { record, interruption }
+    }
+  }
+
+  async markClaimReady(id: string, runtimeGeneration: string, claimId: string, ready: Pick<NonNullable<AgentRecord["runtime"]>, "workerPid" | "endpoint"> & Pick<AgentRecord, "sessionPath" | "sessionId">): Promise<boolean> {
+    this.assertOpen()
+    while (true) {
+      const entry = this.#agents.getEntry(id)
+      const runtime = entry?.value.runtime
+      if (!entry || !runtime || runtime.generation !== runtimeGeneration || runtime.claimId !== claimId || runtime.state !== "starting") return false
+
+      const version = entry.version ?? 0
+      const record: AgentRecord = {
+        ...entry.value,
+        sessionId: ready.sessionId,
+        sessionPath: ready.sessionPath,
+        state: "idle",
+        runtime: {
+          ...runtime,
+          endpoint: ready.endpoint,
+          workerPid: ready.workerPid,
+          state: "ready",
+        },
+        updatedAt: Date.now(),
+      }
+      if (await this.#agents.put(id, record, version + 1, version)) return true
+    }
+  }
+
+  async releaseRuntimeClaim(id: string, runtimeGeneration: string, claimId: string): Promise<boolean> {
+    this.assertOpen()
+    while (true) {
+      const entry = this.#agents.getEntry(id)
+      const runtime = entry?.value.runtime
+      if (!entry || !runtime || runtime.generation !== runtimeGeneration || runtime.claimId !== claimId || runtime.state !== "starting") return false
+
+      const version = entry.version ?? 0
+      const record: AgentRecord = {
+        ...entry.value,
+        runtime: { ...runtime, claimId: undefined, claimedAt: undefined },
+        updatedAt: Date.now(),
+      }
+      if (await this.#agents.put(id, record, version + 1, version)) return true
+    }
+  }
+
+  isCurrentRuntimeClaim(id: string, runtimeGeneration: string, claimId: string): boolean {
+    this.assertOpen()
+    const runtime = this.#agents.get(id)?.runtime
+    return runtime?.generation === runtimeGeneration && runtime.claimId === claimId
   }
 
   async markRecovered(id: string, runtimeGeneration: string, ready: Pick<AgentRecord, "sessionPath" | "sessionId">): Promise<boolean> {
@@ -244,6 +340,13 @@ export function decodeEventCursor(cursor: string): EventCursorPayload {
     if (error instanceof TypeError && error.message === "Invalid event cursor") throw error
     throw new TypeError("Invalid event cursor")
   }
+}
+
+function isFreshRuntimeClaim(runtime: NonNullable<AgentRecord["runtime"]>, claimedAt: number): boolean {
+  return runtime.state === "starting"
+    && runtime.claimId !== undefined
+    && runtime.claimedAt !== undefined
+    && claimedAt - runtime.claimedAt <= RUNTIME_CLAIM_WINDOW_MS
 }
 
 function isEventCursorPayload(value: unknown): value is EventCursorPayload {

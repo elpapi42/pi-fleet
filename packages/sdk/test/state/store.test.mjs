@@ -231,6 +231,177 @@ test("marks only the claimed runtime generation ready", async () => {
   })
 })
 
+test("claims an unavailable ready runtime without changing durable agent data", async () => {
+  await withStore(async (store) => {
+    const initial = {
+      ...record("researcher", "agent-1"),
+      state: "idle",
+      sessionPath: "/tmp/session-1.jsonl",
+      sessionId: "session-1",
+      runtime: { ...record("researcher", "agent-1").runtime, state: "ready", workerPid: 123 },
+    }
+    await store.create(initial)
+
+    const claim = await store.claimRuntime("agent-1", "runtime-1", {
+      generation: "runtime-2",
+      claimId: "claim-2",
+      claimedAt: 100,
+      endpoint: "ipc:///tmp/runtime-2.sock",
+    }, (cursor) => ({ type: "work.interrupted", cursor }))
+
+    assert.equal(claim?.record.runtime?.generation, "runtime-2")
+    assert.equal(claim?.record.runtime?.state, "starting")
+    assert.equal(claim?.record.runtime?.claimId, "claim-2")
+    assert.equal(claim?.record.runtime?.claimedAt, 100)
+    assert.equal(claim?.record.runtime?.endpoint, "ipc:///tmp/runtime-2.sock")
+    assert.equal(claim?.record.runtime?.workerPid, 123)
+    assert.equal(claim?.record.state, "idle")
+    assert.equal(claim?.record.cwd, initial.cwd)
+    assert.deepEqual(claim?.record.piArgs, initial.piArgs)
+    assert.equal(claim?.record.sessionPath, initial.sessionPath)
+    assert.equal(claim?.record.sessionId, initial.sessionId)
+    assert.equal(claim?.record.lastEventSeq, 0)
+    assert.equal(claim?.interruption, undefined)
+  })
+})
+
+test("atomically appends an interruption when a working runtime is claimed", async () => {
+  await withStore(async (store) => {
+    await store.create({
+      ...record("researcher", "agent-1"),
+      state: "working",
+      runtime: { ...record("researcher", "agent-1").runtime, state: "ready" },
+    })
+    const oldEvent = await store.appendEvent("agent-1", "runtime-1", (cursor) => ({ type: "message.started", cursor }))
+    const claim = await store.claimRuntime("agent-1", "runtime-1", {
+      generation: "runtime-2",
+      claimId: "claim-2",
+      claimedAt: 100,
+      endpoint: "ipc:///tmp/runtime-2.sock",
+    }, (cursor) => ({ type: "work.interrupted", cursor }))
+
+    assert.equal(oldEvent?.sequence, 1)
+    assert.deepEqual(claim?.interruption, {
+      sequence: 2,
+      cursor: encodeEventCursor("agent-1", 2),
+      event: { type: "work.interrupted", cursor: encodeEventCursor("agent-1", 2) },
+    })
+    assert.equal(store.getById("agent-1")?.lastEventSeq, 2)
+    assert.equal(await store.appendEvent("agent-1", "runtime-1", (cursor) => ({ type: "message.finished", cursor })), undefined)
+    assert.deepEqual(store.readEvents("agent-1", 0, 2, 10).map(({ sequence }) => sequence), [1, 2])
+  })
+})
+
+test("protects fresh claims and replaces stale or released claims", async () => {
+  await withStore(async (store) => {
+    await store.create({
+      ...record("researcher", "agent-1"),
+      runtime: { ...record("researcher", "agent-1").runtime, claimId: "claim-1", claimedAt: 100 },
+    })
+    const claim = (generation, claimId, claimedAt) => store.claimRuntime("agent-1", "runtime-1", {
+      generation,
+      claimId,
+      claimedAt,
+      endpoint: `ipc:///tmp/${generation}.sock`,
+    }, (cursor) => ({ type: "work.interrupted", cursor }))
+
+    assert.equal(await claim("runtime-2", "claim-2", 30_100), undefined)
+    assert.equal((await claim("runtime-2", "claim-2", 30_101))?.record.runtime?.generation, "runtime-2")
+    assert.equal(await store.releaseRuntimeClaim("agent-1", "runtime-2", "wrong-claim"), false)
+    assert.equal(await store.releaseRuntimeClaim("agent-1", "runtime-2", "claim-2"), true)
+    assert.equal((await store.claimRuntime("agent-1", "runtime-2", {
+      generation: "runtime-3",
+      claimId: "claim-3",
+      claimedAt: 30_102,
+      endpoint: "ipc:///tmp/runtime-3.sock",
+    }, (cursor) => ({ type: "work.interrupted", cursor })))?.record.runtime?.generation, "runtime-3")
+    assert.equal(await store.releaseRuntimeClaim("agent-1", "runtime-2", "claim-2"), false)
+    assert.equal(await store.markClaimReady("agent-1", "runtime-2", "claim-2", {
+      workerPid: 456,
+      endpoint: "ipc:///tmp/worker-2.sock",
+      sessionPath: "/tmp/session-2.jsonl",
+      sessionId: "session-2",
+    }), false)
+  })
+})
+
+test("binds readiness and fences to the current generation and claim", async () => {
+  await withStore(async (store) => {
+    await store.create({ ...record("researcher", "agent-1"), state: "idle", runtime: { ...record("researcher", "agent-1").runtime, state: "ready" } })
+    await store.claimRuntime("agent-1", "runtime-1", {
+      generation: "runtime-2",
+      claimId: "claim-2",
+      claimedAt: 100,
+      endpoint: "ipc:///tmp/runtime-2.sock",
+    }, (cursor) => ({ type: "work.interrupted", cursor }))
+
+    assert.equal(await store.markClaimReady("agent-1", "runtime-2", "wrong-claim", {
+      workerPid: 456,
+      endpoint: "ipc:///tmp/worker-2.sock",
+      sessionPath: "/tmp/session-2.jsonl",
+      sessionId: "session-2",
+    }), false)
+    assert.equal(store.isCurrentRuntimeClaim("agent-1", "runtime-2", "claim-2"), true)
+    assert.equal(await store.markClaimReady("agent-1", "runtime-2", "claim-2", {
+      workerPid: 456,
+      endpoint: "ipc:///tmp/worker-2.sock",
+      sessionPath: "/tmp/session-2.jsonl",
+      sessionId: "session-2",
+    }), true)
+    assert.equal(store.isCurrentRuntimeClaim("agent-1", "runtime-2", "claim-2"), true)
+    assert.equal((await store.getById("agent-1"))?.state, "idle")
+    assert.equal(await store.markClaimReady("agent-1", "runtime-2", "claim-2", {
+      workerPid: 789,
+      endpoint: "ipc:///tmp/worker-3.sock",
+      sessionPath: "/tmp/session-3.jsonl",
+      sessionId: "session-3",
+    }), false)
+  })
+})
+
+test("allows only one replacement claim across separate processes", async () => {
+  await withStore(async (store, stateDir) => {
+    await store.create({ ...record("researcher", "agent-1"), state: "idle", runtime: { ...record("researcher", "agent-1").runtime, state: "ready" } })
+    const storeUrl = new URL("../../dist/state/store.js", import.meta.url).href
+    const readyDir = join(stateDir, "claim-ready")
+    const goFile = join(stateDir, "claim-go")
+    const claimScript = `
+      import { access, mkdir, writeFile } from "node:fs/promises";
+      import { openStore } from ${JSON.stringify(storeUrl)};
+      const [stateDir, readyDir, goFile, generation, claimId] = process.argv.slice(1);
+      const store = await openStore(stateDir);
+      try {
+        await mkdir(readyDir, { recursive: true });
+        await writeFile(readyDir + "/" + process.pid, "ready");
+        while (true) {
+          try { await access(goFile); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
+        }
+        const result = await store.claimRuntime("agent-1", "runtime-1", {
+          generation, claimId, claimedAt: 100, endpoint: "ipc:///tmp/" + generation + ".sock",
+        }, (cursor) => ({ type: "work.interrupted", cursor }));
+        process.stdout.write(String(result !== undefined));
+      } finally {
+        await store.close();
+      }
+    `
+    const first = execFileAsync(process.execPath, ["--input-type=module", "--eval", claimScript, stateDir, readyDir, goFile, "runtime-2a", "claim-2a"])
+    const second = execFileAsync(process.execPath, ["--input-type=module", "--eval", claimScript, stateDir, readyDir, goFile, "runtime-2b", "claim-2b"])
+
+    for (let attempts = 0; attempts < 100; attempts += 1) {
+      try {
+        if ((await readdir(readyDir)).length === 2) break
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    assert.equal((await readdir(readyDir)).length, 2)
+    await writeFile(goFile, "go")
+
+    const results = await Promise.all([first, second])
+    assert.deepEqual(results.map(({ stdout }) => stdout).sort(), ["false", "true"])
+    assert.match(store.getById("agent-1")?.runtime?.generation ?? "", /^runtime-2[ab]$/)
+  })
+})
+
 test("records recovered Pi session identity and settles interrupted work", async () => {
   await withStore(async (store) => {
     await store.create({ ...record("researcher", "agent-1"), state: "working" })
