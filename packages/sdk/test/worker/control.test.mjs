@@ -4,9 +4,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import { Router } from "zeromq"
-import { AgentUnavailableError } from "../dist/index.js"
-import { decode, encode } from "../dist/internal/protocol.js"
-import { requestSend, requestStatus } from "../dist/internal/worker-client.js"
+import { AgentUnavailableError } from "../../dist/index.js"
+import { decode, encode } from "../../dist/worker/protocol.js"
+import { requestSend, requestStatus } from "../../dist/worker/control.js"
 
 const record = (endpoint) => ({
   id: "agent-1",

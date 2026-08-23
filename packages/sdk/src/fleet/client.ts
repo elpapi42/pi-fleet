@@ -1,25 +1,50 @@
 import { randomUUID } from "node:crypto"
-import { capability } from "zeromq"
 import type { ChildProcess } from "node:child_process"
 import { stat } from "node:fs/promises"
+import { homedir } from "node:os"
 import { resolve } from "node:path"
-import { AgentHandle } from "./agent.js"
-import { AgentNotFoundError, type Agent, type AgentStatus, type AgentSummary, type ConnectOptions, type CreateAgentOptions, type PiFleetClient, type SendDelivery, type SendOptions, type SendResult } from "./types.js"
-import { resolveStateDir, workerEndpoint } from "./internal/paths.js"
-import { openRegistry, type AgentRecord, type Registry } from "./internal/registry.js"
-import { launchWorker } from "./internal/worker-launcher.js"
-import { requestSend, requestStatus } from "./internal/worker-client.js"
+import { capability } from "zeromq"
+import {
+  AgentHandle,
+  AgentNotFoundError,
+  type Agent,
+  type AgentStatus,
+  type AgentSummary,
+  type SendDelivery,
+  type SendOptions,
+  type SendResult,
+} from "./agent.js"
+import { openStore, type AgentRecord, type FleetStore } from "../state/store.js"
+import { launchWorker, requestSend, requestStatus, stopWorker, workerEndpoint } from "../worker/control.js"
 
 const STARTUP_TIMEOUT_MS = 10_000
 const OWNED_PI_OPTIONS = new Set(["--mode", "--no-session"])
 
+export type ConnectOptions = {
+  /** A private state directory. Intended for isolated tests and advanced local setups. */
+  stateDir?: string
+}
+
+export type CreateAgentOptions = {
+  name: string
+  cwd: string
+  piArgs?: string[]
+}
+
+export interface PiFleetClient {
+  create(options: CreateAgentOptions): Promise<Agent>
+  get(name: string): Promise<Agent>
+  list(): Promise<AgentSummary[]>
+  close(): Promise<void>
+}
+
 class PiFleetClientImpl implements PiFleetClient {
-  readonly #registry: Registry
+  readonly #store: FleetStore
   readonly #stateDir: string
   #closed = false
 
-  constructor(registry: Registry, stateDir: string) {
-    this.#registry = registry
+  constructor(store: FleetStore, stateDir: string) {
+    this.#store = store
     this.#stateDir = stateDir
   }
 
@@ -45,7 +70,8 @@ class PiFleetClientImpl implements PiFleetClient {
       updatedAt: now,
     }
 
-    await this.#registry.create(record)
+    await this.#store.create(record)
+
     let worker: ChildProcess | undefined
     try {
       worker = launchWorker(this.#stateDir, id, generation)
@@ -53,26 +79,26 @@ class PiFleetClientImpl implements PiFleetClient {
       return new AgentHandle(this, id, input.name)
     } catch (error) {
       await stopWorker(worker)
-      await this.#registry.rollbackCreation(id, input.name, generation)
+      await this.#store.rollbackCreation(id, input.name, generation)
       throw error
     }
   }
 
   async get(name: string): Promise<Agent> {
     this.assertOpen()
-    const record = this.#registry.getByName(name)
+    const record = this.#store.getByName(name)
     if (!record) throw new AgentNotFoundError(name)
     return new AgentHandle(this, record.id, record.name)
   }
 
   async list(): Promise<AgentSummary[]> {
     this.assertOpen()
-    return this.#registry.list()
+    return this.#store.list()
   }
 
   async status(id: string, name: string): Promise<AgentStatus> {
     this.assertOpen()
-    const record = this.#registry.getById(id)
+    const record = this.#store.getById(id)
     if (!record || record.name !== name) throw new AgentNotFoundError(name)
     const status = await requestStatus(record)
     return { id: status.id, name: status.name, state: status.state }
@@ -80,7 +106,7 @@ class PiFleetClientImpl implements PiFleetClient {
 
   async send(id: string, name: string, message: string, options: SendOptions = {}): Promise<SendResult> {
     this.assertOpen()
-    const record = this.#registry.getById(id)
+    const record = this.#store.getById(id)
     if (!record || record.name !== name) throw new AgentNotFoundError(name)
     if (typeof message !== "string" || !message.trim()) throw new TypeError("Message must not be empty")
     const delivery = options.delivery ?? "steer"
@@ -91,7 +117,7 @@ class PiFleetClientImpl implements PiFleetClient {
   close(): Promise<void> {
     if (this.#closed) return Promise.resolve()
     this.#closed = true
-    return this.#registry.close()
+    return this.#store.close()
   }
 
   private assertOpen(): void {
@@ -102,7 +128,11 @@ class PiFleetClientImpl implements PiFleetClient {
 export async function connectPiFleet(options: ConnectOptions = {}): Promise<PiFleetClient> {
   if (!capability.ipc) throw new Error("pi-fleet requires ZeroMQ ipc:// support on this host")
   const stateDir = resolveStateDir(options)
-  return new PiFleetClientImpl(await openRegistry(stateDir), stateDir)
+  return new PiFleetClientImpl(await openStore(stateDir), stateDir)
+}
+
+export function resolveStateDir(options: ConnectOptions = {}): string {
+  return options.stateDir ? resolve(options.stateDir) : resolve(homedir(), ".pi-fleet")
 }
 
 function isSendDelivery(value: unknown): value is SendDelivery {
@@ -136,29 +166,6 @@ async function waitForWorkerReady(record: AgentRecord, worker: ChildProcess, tim
   } finally {
     worker.off("exit", onExit)
   }
-}
-
-async function stopWorker(worker: ChildProcess | undefined): Promise<void> {
-  if (!worker || worker.exitCode !== null || worker.signalCode !== null) return
-  worker.kill("SIGTERM")
-  if (await waitForExit(worker, 1_000)) return
-  worker.kill("SIGKILL")
-  await waitForExit(worker, 1_000)
-}
-
-async function waitForExit(worker: ChildProcess, timeoutMs: number): Promise<boolean> {
-  if (worker.exitCode !== null || worker.signalCode !== null) return true
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      worker.off("exit", onExit)
-      resolve(false)
-    }, timeoutMs)
-    const onExit = () => {
-      clearTimeout(timeout)
-      resolve(true)
-    }
-    worker.once("exit", onExit)
-  })
 }
 
 async function waitForStatus(record: AgentRecord, timeoutMs: number): Promise<void> {

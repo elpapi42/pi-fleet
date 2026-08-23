@@ -7,3 +7,11 @@
 - Updating the SDK or CLI does not update workers that already run. Existing agents keep their worker code version. Testing new runtime behavior requires a newly created agent.
 - Fake-Pi tests prove pi-fleet protocol behavior, not real-Pi compatibility. Real-Pi checks use the slice-runtime-acceptance skill. Intermediate-state tests use deterministic files or signals instead of fixed delays.
 <!-- opm:managed:end -->
+
+## Code organization
+
+- Organize SDK code by cohesive capability, not by technical category.
+- Keep public contracts beside the behavior that owns them.
+- Prefer one larger cohesive file over generic `types`, `utils`, `common`, `shared`, or `internal` inventories.
+- Split a file only when it has independent responsibilities. Keep the resulting files in one capability folder.
+- Do not add a folder, abstraction, or shared helper before current behavior requires it.

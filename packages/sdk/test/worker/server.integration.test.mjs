@@ -4,14 +4,14 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
-import { connectPiFleet } from "../dist/index.js"
-import { openRegistry } from "../dist/internal/registry.js"
-import { requestSend, requestStatus } from "../dist/internal/worker-client.js"
+import { connectPiFleet } from "../../dist/index.js"
+import { openStore } from "../../dist/state/store.js"
+import { requestSend, requestStatus } from "../../dist/worker/control.js"
 
-const fakePi = join(dirname(fileURLToPath(import.meta.url)), "fake-pi.mjs")
+const fakePi = join(dirname(fileURLToPath(import.meta.url)), "../pi/fake-pi.mjs")
 
 async function terminateWorker(stateDir, id) {
-  const registry = await openRegistry(stateDir)
+  const registry = await openStore(stateDir)
   try {
     const pid = registry.getById(id)?.runtime?.workerPid
     if (!pid) return
@@ -59,7 +59,7 @@ async function withWorker(options, run) {
     await chmod(fakePi, 0o755)
     client = await connectPiFleet({ stateDir })
     agent = await client.create({ name: "researcher", cwd: process.cwd() })
-    const registry = await openRegistry(stateDir)
+    const registry = await openStore(stateDir)
     try {
       await run({ stateDir, agent, record: registry.getById(agent.id) })
     } finally {
@@ -86,7 +86,7 @@ test("worker returns Pi acceptance and persists working then idle", { concurrenc
     assert.equal(typeof accepted.acceptedAt, "number")
 
     await waitFor(async () => (await requestStatus(record)).state === "working", "Worker did not report working")
-    const registry = await openRegistry(stateDir)
+    const registry = await openStore(stateDir)
     try {
       assert.equal(registry.getById(record.id)?.state, "working")
     } finally {
@@ -95,7 +95,7 @@ test("worker returns Pi acceptance and persists working then idle", { concurrenc
 
     await writeFile(join(stateDir, "settle"), "settle")
     await waitFor(async () => (await requestStatus(record)).state === "idle", "Worker did not return to idle")
-    const finalRegistry = await openRegistry(stateDir)
+    const finalRegistry = await openStore(stateDir)
     try {
       assert.equal(finalRegistry.getById(record.id)?.state, "idle")
     } finally {

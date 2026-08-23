@@ -1,21 +1,23 @@
 export const version = "0.4.0"
 
-export { connectPiFleet } from "./client.js"
+export { connectPiFleet } from "./fleet/client.js"
 export {
   AgentNameTakenError,
   AgentNotFoundError,
   AgentUnavailableError,
-} from "./types.js"
+} from "./fleet/agent.js"
 
 export type {
   Agent,
   AgentState,
   AgentStatus,
   AgentSummary,
-  ConnectOptions,
-  CreateAgentOptions,
-  PiFleetClient,
   SendDelivery,
   SendOptions,
   SendResult,
-} from "./types.js"
+} from "./fleet/agent.js"
+export type {
+  ConnectOptions,
+  CreateAgentOptions,
+  PiFleetClient,
+} from "./fleet/client.js"

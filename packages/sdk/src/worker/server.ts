@@ -1,8 +1,7 @@
 import { Router, capability } from "zeromq"
-import { createStateDirectories } from "./paths.js"
 import { decode, encode, type SendRequest, type SendResponse, type StatusRequest, type StatusResponse } from "./protocol.js"
-import { startPi, type PiProcess } from "./pi-rpc.js"
-import { openRegistry, type AgentRecord } from "./registry.js"
+import { startPi, type PiProcess } from "../pi/runtime.js"
+import { openStore, type AgentRecord } from "../state/store.js"
 
 type Arguments = { stateDir: string; agentId: string; generation: string }
 type WorkerRequest = StatusRequest | SendRequest
@@ -11,11 +10,10 @@ async function main(): Promise<void> {
   const { stateDir, agentId, generation } = parseArguments(process.argv.slice(2))
   if (!capability.ipc) throw new Error("pi-fleet requires ZeroMQ ipc:// support on this host")
 
-  const registry = await openRegistry(stateDir)
-  const record = registry.getById(agentId)
+  const store = await openStore(stateDir)
+  const record = store.getById(agentId)
   if (!record || record.runtime?.generation !== generation || !record.runtime.endpoint) throw new Error("Worker claim is no longer current")
 
-  await createStateDirectories(stateDir)
   const router = new Router({ mandatory: true, immediate: true, linger: 0, sendTimeout: 1_000 })
   let routerClosed = false
   let state = record.state
@@ -32,7 +30,7 @@ async function main(): Promise<void> {
   const stop = () => closeRouter()
   const queueStateUpdate = (nextState: "working" | "idle") => {
     stateUpdates = stateUpdates.then(async () => {
-      const updated = await registry.updateState(agentId, generation, nextState)
+      const updated = await store.updateState(agentId, generation, nextState)
       if (!updated) {
         closeRouter()
         return
@@ -61,7 +59,7 @@ async function main(): Promise<void> {
     await router.bind(record.runtime.endpoint)
     pi = await startPi(record, 10_000, onPiEvent)
     pi.process.once("exit", closeRouter)
-    const markedReady = await registry.markReady(agentId, generation, {
+    const markedReady = await store.markReady(agentId, generation, {
       workerPid: process.pid,
       endpoint: record.runtime.endpoint,
       sessionPath: pi.state.sessionFile,
@@ -86,11 +84,11 @@ async function main(): Promise<void> {
     process.off("SIGINT", stop)
     pi?.process.off("exit", closeRouter)
     closeRouter()
-    await stopPi(pi?.process)
+    await pi?.stop()
     await Promise.allSettled(handlers)
     await stateUpdates
     await replies
-    await registry.close()
+    await store.close()
   }
 }
 
@@ -161,29 +159,6 @@ function sendResponse(request: SendRequest, agentId: string, generation: string,
     runtimeGeneration: generation,
     ...(error === undefined ? { acceptedAt } : { error }),
   }
-}
-
-async function stopPi(pi: PiProcess["process"] | undefined): Promise<void> {
-  if (!pi || pi.exitCode !== null || pi.signalCode !== null) return
-  pi.kill("SIGTERM")
-  if (await waitForExit(pi, 1_000)) return
-  pi.kill("SIGKILL")
-  await waitForExit(pi, 1_000)
-}
-
-async function waitForExit(pi: PiProcess["process"], timeoutMs: number): Promise<boolean> {
-  if (pi.exitCode !== null || pi.signalCode !== null) return true
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      pi.off("exit", onExit)
-      resolve(false)
-    }, timeoutMs)
-    const onExit = () => {
-      clearTimeout(timeout)
-      resolve(true)
-    }
-    pi.once("exit", onExit)
-  })
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

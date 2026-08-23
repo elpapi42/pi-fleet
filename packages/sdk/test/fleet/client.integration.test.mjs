@@ -6,14 +6,14 @@ import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
-import { connectPiFleet, AgentNotFoundError } from "../dist/index.js"
-import { openRegistry } from "../dist/internal/registry.js"
+import { connectPiFleet, AgentNotFoundError } from "../../dist/index.js"
+import { openStore } from "../../dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
-const fakePi = join(dirname(fileURLToPath(import.meta.url)), "fake-pi.mjs")
+const fakePi = join(dirname(fileURLToPath(import.meta.url)), "../pi/fake-pi.mjs")
 
 async function terminateWorker(stateDir, id) {
-  const registry = await openRegistry(stateDir)
+  const registry = await openStore(stateDir)
   try {
     const pid = registry.getById(id)?.runtime?.workerPid
     assert.ok(pid, `Agent ${id} must have a ready worker PID`)
@@ -38,7 +38,7 @@ async function terminateWorker(stateDir, id) {
 }
 
 async function terminateAllWorkers(stateDir) {
-  const registry = await openRegistry(stateDir)
+  const registry = await openStore(stateDir)
   let ids
   try {
     ids = registry.list().map(({ id }) => id)
@@ -214,7 +214,7 @@ test("removes an agent record when Pi cannot become ready", { concurrency: false
 
 test("worker remains available after its creating process exits", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
-    const sdk = new URL("../dist/index.js", import.meta.url).href
+    const sdk = new URL("../../dist/index.js", import.meta.url).href
     await execFileAsync(process.execPath, ["--input-type=module", "--eval", `
       import { connectPiFleet } from ${JSON.stringify(sdk)};
       const client = await connectPiFleet({ stateDir: ${JSON.stringify(stateDir)} });

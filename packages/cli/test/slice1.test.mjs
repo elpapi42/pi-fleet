@@ -5,18 +5,18 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
-import { openRegistry } from "../../sdk/dist/internal/registry.js"
+import { openStore } from "../../sdk/dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
 const pif = resolve("dist/main.js")
-const fakePi = resolve("../sdk/test/fake-pi.mjs")
+const fakePi = resolve("../sdk/test/pi/fake-pi.mjs")
 
 async function run(args, env) {
   return execFileAsync(process.execPath, [pif, ...args], { env: { ...process.env, ...env } })
 }
 
 async function terminateWorker(stateDir, id) {
-  const registry = await openRegistry(stateDir)
+  const registry = await openStore(stateDir)
   try {
     const pid = registry.getById(id)?.runtime?.workerPid
     assert.ok(pid, `Agent ${id} must have a ready worker PID`)
@@ -98,7 +98,7 @@ test("lists agents in sorted fixed-width columns", async () => {
   const home = join(root, "home")
   const stateDir = join(home, ".pi-fleet")
   const env = { HOME: home }
-  const registry = await openRegistry(stateDir)
+  const registry = await openStore(stateDir)
   try {
     const now = Date.now()
     for (const [id, name, state] of [

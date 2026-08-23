@@ -1,10 +1,37 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import { spawn, type ChildProcess } from "node:child_process"
 import { Dealer } from "zeromq"
-import { AgentUnavailableError } from "../types.js"
+import { fileURLToPath } from "node:url"
+import { join } from "node:path"
+import { AgentUnavailableError } from "../fleet/agent.js"
 import { decode, encode, type SendRequest, type SendResponse, type StatusRequest, type StatusResponse } from "./protocol.js"
-import type { AgentRecord } from "./registry.js"
+import type { AgentRecord } from "../state/store.js"
 
 const AGENT_STATES = new Set(["starting", "idle", "working", "stopped", "failed"])
+
+export function workerEndpoint(stateDir: string, agentId: string, generation: string): string {
+  const identity = createHash("sha256").update(`${stateDir}\0${agentId}\0${generation}`).digest("hex").slice(0, 24)
+  return `ipc://${join(stateDir, "ipc", `${identity}.sock`)}`
+}
+
+export function launchWorker(stateDir: string, agentId: string, generation: string): ChildProcess {
+  const serverPath = fileURLToPath(new URL("./server.js", import.meta.url))
+  const child = spawn(process.execPath, [serverPath, "--state-dir", stateDir, "--agent", agentId, "--generation", generation], {
+    detached: true,
+    stdio: "ignore",
+    env: process.env,
+  })
+  child.unref()
+  return child
+}
+
+export async function stopWorker(worker: ChildProcess | undefined): Promise<void> {
+  if (!worker || worker.exitCode !== null || worker.signalCode !== null) return
+  worker.kill("SIGTERM")
+  if (await waitForExit(worker, 1_000)) return
+  worker.kill("SIGKILL")
+  await waitForExit(worker, 1_000)
+}
 
 export async function requestStatus(record: AgentRecord, timeoutMs = 1_000): Promise<NonNullable<StatusResponse["status"]>> {
   const request: StatusRequest = {
@@ -16,16 +43,9 @@ export async function requestStatus(record: AgentRecord, timeoutMs = 1_000): Pro
   }
   const response = await requestWorker(record, request, timeoutMs)
 
-  if (
-    !isStatusResponse(response) ||
-    response.requestId !== request.requestId ||
-    !response.ok ||
-    !response.status ||
-    response.status.id !== record.id ||
-    response.status.name !== record.name ||
-    response.status.runtimeGeneration !== record.runtime?.generation ||
-    !AGENT_STATES.has(response.status.state)
-  ) {
+  if (!isStatusResponse(response) || response.requestId !== request.requestId || !response.ok || !response.status ||
+    response.status.id !== record.id || response.status.name !== record.name ||
+    response.status.runtimeGeneration !== record.runtime?.generation || !AGENT_STATES.has(response.status.state)) {
     throw new AgentUnavailableError(record.name)
   }
   return response.status
@@ -96,4 +116,19 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, name: stri
   } finally {
     if (timeout) clearTimeout(timeout)
   }
+}
+
+async function waitForExit(worker: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (worker.exitCode !== null || worker.signalCode !== null) return true
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      worker.off("exit", onExit)
+      resolve(false)
+    }, timeoutMs)
+    const onExit = () => {
+      clearTimeout(timeout)
+      resolve(true)
+    }
+    worker.once("exit", onExit)
+  })
 }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
-import { PiRequestError, PiStartupError, startPi } from "../dist/internal/pi-rpc.js"
+import { PiRequestError, PiStartupError, startPi } from "../../dist/pi/runtime.js"
 
 const fakePi = join(dirname(fileURLToPath(import.meta.url)), "fake-pi.mjs")
 

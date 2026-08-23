@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto"
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { StringDecoder } from "node:string_decoder"
-import type { AgentRecord } from "./registry.js"
+
+export type PiLaunch = {
+  cwd: string
+  piArgs: string[]
+  sessionPath?: string
+}
 
 export type PiState = {
   sessionFile: string
@@ -15,6 +20,7 @@ export type PiProcess = {
   process: ChildProcessWithoutNullStreams
   state: PiState
   send(message: string, delivery: PiDelivery, timeoutMs?: number): Promise<void>
+  stop(): Promise<void>
 }
 
 export class PiStartupError extends Error {}
@@ -165,14 +171,14 @@ class PiRpcClient {
   }
 }
 
-export async function startPi(record: AgentRecord, timeoutMs = 10_000, onEvent?: PiEventHandler): Promise<PiProcess> {
+export async function startPi(launch: PiLaunch, timeoutMs = 10_000, onEvent?: PiEventHandler): Promise<PiProcess> {
   const command = process.env.PI_FLEET_PI_COMMAND ?? "pi"
-  const args = ["--mode", "rpc", ...record.piArgs]
-  if (record.sessionPath && !record.piArgs.some((arg) => USER_SESSION_SELECTORS.has(arg))) {
-    args.push("--session", record.sessionPath)
+  const args = ["--mode", "rpc", ...launch.piArgs]
+  if (launch.sessionPath && !launch.piArgs.some((arg) => USER_SESSION_SELECTORS.has(arg))) {
+    args.push("--session", launch.sessionPath)
   }
 
-  const child = spawn(command, args, { cwd: record.cwd, stdio: "pipe" })
+  const child = spawn(command, args, { cwd: launch.cwd, stdio: "pipe" })
   let stderr = ""
   child.stderr.on("data", (chunk: Buffer) => {
     stderr = `${stderr}${chunk.toString("utf8")}`.slice(-4_096)
@@ -184,17 +190,19 @@ export async function startPi(record: AgentRecord, timeoutMs = 10_000, onEvent?:
       process: child,
       state,
       send: (message, delivery, requestTimeoutMs) => rpc.send(message, delivery, requestTimeoutMs),
+      stop: () => stopPi(child),
     }
   } catch (error) {
     rpc.close()
-    await terminate(child)
+    await stopPi(child)
     const detail = stderr.trim()
     const message = error instanceof Error ? error.message : String(error)
     throw new PiStartupError(detail ? `${message}: ${detail}` : message)
   }
 }
 
-async function terminate(child: ChildProcessWithoutNullStreams): Promise<void> {
+export async function stopPi(child: ChildProcessWithoutNullStreams | undefined): Promise<void> {
+  if (!child) return
   if (child.exitCode !== null || child.signalCode !== null) return
   child.kill("SIGTERM")
   if (await waitForExit(child, 1_000)) return

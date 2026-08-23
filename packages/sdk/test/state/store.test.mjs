@@ -5,9 +5,9 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
-import { AgentNameTakenError } from "../dist/index.js"
-import { createStateDirectories, resolveStateDir } from "../dist/internal/paths.js"
-import { openRegistry } from "../dist/internal/registry.js"
+import { AgentNameTakenError } from "../../dist/index.js"
+import { resolveStateDir } from "../../dist/fleet/client.js"
+import { openStore } from "../../dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -27,13 +27,13 @@ const record = (name, id) => ({
   updatedAt: 1,
 })
 
-async function withRegistry(run) {
-  const stateDir = await mkdtemp(join(tmpdir(), "pi-fleet-registry-"))
-  const registry = await openRegistry(stateDir)
+async function withStore(run) {
+  const stateDir = await mkdtemp(join(tmpdir(), "pi-fleet-store-"))
+  const store = await openStore(stateDir)
   try {
-    await run(registry, stateDir)
+    await run(store, stateDir)
   } finally {
-    await registry.close()
+    await store.close()
     await rm(stateDir, { recursive: true, force: true })
   }
 }
@@ -50,13 +50,13 @@ test("uses ~/.pi-fleet as the default state directory regardless of XDG_STATE_HO
 })
 
 test("creates an agent and resolves it from the durable name index", async () => {
-  await withRegistry(async (registry) => {
+  await withStore(async (store) => {
     const created = record("researcher", "agent-1")
-    await registry.create(created)
+    await store.create(created)
 
-    assert.deepEqual(await registry.getByName("researcher"), created)
-    assert.deepEqual(await registry.getById("agent-1"), created)
-    assert.deepEqual(await registry.list(), [{
+    assert.deepEqual(await store.getByName("researcher"), created)
+    assert.deepEqual(await store.getById("agent-1"), created)
+    assert.deepEqual(await store.list(), [{
       id: "agent-1",
       name: "researcher",
       cwd: "/work",
@@ -66,70 +66,70 @@ test("creates an agent and resolves it from the durable name index", async () =>
 })
 
 test("atomically rejects a duplicate name", async () => {
-  await withRegistry(async (registry) => {
-    await registry.create(record("researcher", "agent-1"))
+  await withStore(async (store) => {
+    await store.create(record("researcher", "agent-1"))
 
     await assert.rejects(
-      registry.create(record("researcher", "agent-2")),
+      store.create(record("researcher", "agent-2")),
       AgentNameTakenError,
     )
 
-    assert.equal((await registry.getByName("researcher"))?.id, "agent-1")
-    assert.equal(await registry.getById("agent-2"), undefined)
+    assert.equal((await store.getByName("researcher"))?.id, "agent-1")
+    assert.equal(await store.getById("agent-2"), undefined)
   })
 })
 
 test("rolls back an incomplete creation so its name can be reused", async () => {
-  await withRegistry(async (registry) => {
-    await registry.create(record("researcher", "agent-1"))
-    await registry.rollbackCreation("agent-1", "researcher", "runtime-1")
+  await withStore(async (store) => {
+    await store.create(record("researcher", "agent-1"))
+    await store.rollbackCreation("agent-1", "researcher", "runtime-1")
 
-    assert.equal(await registry.getByName("researcher"), undefined)
-    await registry.create(record("researcher", "agent-2"))
-    assert.equal((await registry.getByName("researcher"))?.id, "agent-2")
+    assert.equal(await store.getByName("researcher"), undefined)
+    await store.create(record("researcher", "agent-2"))
+    assert.equal((await store.getByName("researcher"))?.id, "agent-2")
   })
 })
 
 test("rolls back only the runtime generation created by the caller", async () => {
-  await withRegistry(async (registry) => {
-    await registry.create(record("researcher", "agent-1"))
+  await withStore(async (store) => {
+    await store.create(record("researcher", "agent-1"))
 
-    await registry.rollbackCreation("agent-1", "researcher", "wrong-runtime")
-    assert.equal((await registry.getByName("researcher"))?.id, "agent-1")
+    await store.rollbackCreation("agent-1", "researcher", "wrong-runtime")
+    assert.equal((await store.getByName("researcher"))?.id, "agent-1")
 
-    await registry.markReady("agent-1", "runtime-1", {
+    await store.markReady("agent-1", "runtime-1", {
       workerPid: 123,
       endpoint: "ipc:///tmp/worker.sock",
       sessionPath: "/tmp/session.jsonl",
       sessionId: "session-1",
     })
-    await registry.rollbackCreation("agent-1", "researcher", "runtime-1")
-    assert.equal(await registry.getByName("researcher"), undefined)
+    await store.rollbackCreation("agent-1", "researcher", "runtime-1")
+    assert.equal(await store.getByName("researcher"), undefined)
   })
 })
 
 test("allows only one concurrent creation for a name", async () => {
-  await withRegistry(async (registry) => {
+  await withStore(async (store) => {
     const results = await Promise.allSettled([
-      registry.create(record("researcher", "agent-1")),
-      registry.create(record("researcher", "agent-2")),
+      store.create(record("researcher", "agent-1")),
+      store.create(record("researcher", "agent-2")),
     ])
 
     assert.equal(results.filter(({ status }) => status === "fulfilled").length, 1)
     assert.equal(results.filter(({ status }) => status === "rejected").length, 1)
-    assert.match((await registry.getByName("researcher"))?.id ?? "", /^agent-[12]$/)
+    assert.match((await store.getByName("researcher"))?.id ?? "", /^agent-[12]$/)
   })
 })
 
 test("allows only one creation across separate processes", async () => {
-  await withRegistry(async (registry, stateDir) => {
-    const registryUrl = new URL("../dist/internal/registry.js", import.meta.url).href
+  await withStore(async (store, stateDir) => {
+    const storeUrl = new URL("../../dist/state/store.js", import.meta.url).href
     const createScript = `
-      import { openRegistry } from ${JSON.stringify(registryUrl)};
+      import { openStore } from ${JSON.stringify(storeUrl)};
       const [stateDir, id] = process.argv.slice(1);
-      const registry = await openRegistry(stateDir);
+      const store = await openStore(stateDir);
       try {
-        await registry.create({
+        await store.create({
           id,
           name: "researcher",
           cwd: "/work",
@@ -141,7 +141,7 @@ test("allows only one creation across separate processes", async () => {
           updatedAt: 1,
         });
       } finally {
-        await registry.close();
+        await store.close();
       }
     `
     const results = await Promise.allSettled([
@@ -151,7 +151,7 @@ test("allows only one creation across separate processes", async () => {
 
     assert.equal(results.filter(({ status }) => status === "fulfilled").length, 1)
     assert.equal(results.filter(({ status }) => status === "rejected").length, 1)
-    assert.match(registry.getByName("researcher")?.id ?? "", /^agent-[ab]$/)
+    assert.match(store.getByName("researcher")?.id ?? "", /^agent-[ab]$/)
   })
 })
 
@@ -159,7 +159,7 @@ test("repairs private directory permissions", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "pi-fleet-permissions-"))
   try {
     await chmod(stateDir, 0o755)
-    await createStateDirectories(stateDir)
+    await openStore(stateDir).then((store) => store.close())
 
     assert.equal((await stat(stateDir)).mode & 0o777, 0o700)
     assert.equal((await stat(join(stateDir, "ipc"))).mode & 0o777, 0o700)
@@ -172,10 +172,10 @@ test("shares one environment through symlinked state paths", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-alias-"))
   const stateDir = join(root, "state")
   const alias = join(root, "alias")
-  const first = await openRegistry(stateDir)
+  const first = await openStore(stateDir)
   try {
     await symlink(stateDir, alias)
-    const second = await openRegistry(alias)
+    const second = await openStore(alias)
     await first.create(record("researcher", "agent-1"))
     await first.close()
     try {
@@ -191,10 +191,10 @@ test("shares one environment through symlinked state paths", async () => {
 
 test("reopens safely while the previous environment closes", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "pi-fleet-reopen-"))
-  const first = await openRegistry(stateDir)
+  const first = await openStore(stateDir)
   await first.create(record("researcher", "agent-1"))
   const closing = first.close()
-  const [second, third] = await Promise.all([openRegistry(stateDir), openRegistry(stateDir)])
+  const [second, third] = await Promise.all([openStore(stateDir), openStore(stateDir)])
   await closing
   try {
     assert.equal(second.getByName("researcher")?.id, "agent-1")
@@ -207,24 +207,24 @@ test("reopens safely while the previous environment closes", async () => {
 })
 
 test("marks only the claimed runtime generation ready", async () => {
-  await withRegistry(async (registry) => {
-    await registry.create(record("researcher", "agent-1"))
+  await withStore(async (store) => {
+    await store.create(record("researcher", "agent-1"))
 
-    assert.equal(await registry.markReady("agent-1", "wrong", {
+    assert.equal(await store.markReady("agent-1", "wrong", {
       workerPid: 123,
       endpoint: "ipc:///tmp/worker.sock",
       sessionPath: "/tmp/session.jsonl",
       sessionId: "session-1",
     }), false)
 
-    assert.equal(await registry.markReady("agent-1", "runtime-1", {
+    assert.equal(await store.markReady("agent-1", "runtime-1", {
       workerPid: 123,
       endpoint: "ipc:///tmp/worker.sock",
       sessionPath: "/tmp/session.jsonl",
       sessionId: "session-1",
     }), true)
 
-    assert.deepEqual(await registry.getById("agent-1"), {
+    assert.deepEqual(await store.getById("agent-1"), {
       ...record("researcher", "agent-1"),
       state: "idle",
       runtime: {
@@ -235,54 +235,54 @@ test("marks only the claimed runtime generation ready", async () => {
       },
       sessionPath: "/tmp/session.jsonl",
       sessionId: "session-1",
-      updatedAt: (await registry.getById("agent-1")).updatedAt,
+      updatedAt: (await store.getById("agent-1")).updatedAt,
     })
   })
 })
 
 test("updates state only for the claimed runtime generation", async () => {
-  await withRegistry(async (registry) => {
-    await registry.create(record("researcher", "agent-1"))
+  await withStore(async (store) => {
+    await store.create(record("researcher", "agent-1"))
 
-    assert.equal(await registry.updateState("agent-1", "runtime-1", "working"), true)
-    assert.equal((await registry.getById("agent-1"))?.state, "working")
+    assert.equal(await store.updateState("agent-1", "runtime-1", "working"), true)
+    assert.equal((await store.getById("agent-1"))?.state, "working")
 
-    assert.equal(await registry.updateState("agent-1", "wrong-runtime", "idle"), false)
-    assert.equal((await registry.getById("agent-1"))?.state, "working")
+    assert.equal(await store.updateState("agent-1", "wrong-runtime", "idle"), false)
+    assert.equal((await store.getById("agent-1"))?.state, "working")
 
-    assert.equal(await registry.updateState("missing", "runtime-1", "idle"), false)
+    assert.equal(await store.updateState("missing", "runtime-1", "idle"), false)
   })
 })
 
 test("does not rewrite an agent state that already matches", async () => {
-  await withRegistry(async (registry) => {
-    await registry.create({ ...record("researcher", "agent-1"), state: "working", updatedAt: 1 })
+  await withStore(async (store) => {
+    await store.create({ ...record("researcher", "agent-1"), state: "working", updatedAt: 1 })
 
-    assert.equal(await registry.updateState("agent-1", "runtime-1", "working"), true)
-    assert.equal((await registry.getById("agent-1"))?.updatedAt, 1)
+    assert.equal(await store.updateState("agent-1", "runtime-1", "working"), true)
+    assert.equal((await store.getById("agent-1"))?.updatedAt, 1)
   })
 })
 
 test("handles concurrent state writes from separate processes", async () => {
-  await withRegistry(async (registry, stateDir) => {
-    await registry.create(record("researcher", "agent-1"))
-    const registryUrl = new URL("../dist/internal/registry.js", import.meta.url).href
+  await withStore(async (store, stateDir) => {
+    await store.create(record("researcher", "agent-1"))
+    const storeUrl = new URL("../../dist/state/store.js", import.meta.url).href
     const readyDir = join(stateDir, "ready")
     const goFile = join(stateDir, "go")
     const updateScript = `
       import { mkdir, writeFile, access } from "node:fs/promises";
-      import { openRegistry } from ${JSON.stringify(registryUrl)};
+      import { openStore } from ${JSON.stringify(storeUrl)};
       const [stateDir, readyFile, goFile, state] = process.argv.slice(1);
-      const registry = await openRegistry(stateDir);
+      const store = await openStore(stateDir);
       try {
         await mkdir(readyFile, { recursive: true });
         await writeFile(readyFile + "/" + process.pid, "ready");
         while (true) {
           try { await access(goFile); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
         }
-        process.stdout.write(String(await registry.updateState("agent-1", "runtime-1", state)));
+        process.stdout.write(String(await store.updateState("agent-1", "runtime-1", state)));
       } finally {
-        await registry.close();
+        await store.close();
       }
     `
     const first = execFileAsync(process.execPath, ["--input-type=module", "--eval", updateScript, stateDir, readyDir, goFile, "working"])
@@ -300,6 +300,6 @@ test("handles concurrent state writes from separate processes", async () => {
     const [firstResult, secondResult] = await Promise.all([first, second])
     assert.equal(firstResult.stdout, "true")
     assert.equal(secondResult.stdout, "true")
-    assert.match((await registry.getById("agent-1"))?.state ?? "", /^(working|idle)$/)
+    assert.match((await store.getById("agent-1"))?.state ?? "", /^(working|idle)$/)
   })
 })

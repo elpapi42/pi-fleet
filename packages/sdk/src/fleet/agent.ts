@@ -1,16 +1,5 @@
 export type AgentState = "starting" | "idle" | "working" | "stopped" | "failed"
 
-export type ConnectOptions = {
-  /** A private state directory. Intended for isolated tests and advanced local setups. */
-  stateDir?: string
-}
-
-export type CreateAgentOptions = {
-  name: string
-  cwd: string
-  piArgs?: string[]
-}
-
 export type AgentSummary = {
   id: string
   name: string
@@ -41,13 +30,6 @@ export interface Agent {
   send(message: string, options?: SendOptions): Promise<SendResult>
 }
 
-export interface PiFleetClient {
-  create(options: CreateAgentOptions): Promise<Agent>
-  get(name: string): Promise<Agent>
-  list(): Promise<AgentSummary[]>
-  close(): Promise<void>
-}
-
 export class AgentNameTakenError extends Error {
   constructor(name: string) {
     super(`An agent named ${JSON.stringify(name)} already exists`)
@@ -66,5 +48,38 @@ export class AgentUnavailableError extends Error {
   constructor(name: string) {
     super(`Agent ${JSON.stringify(name)} is unavailable`)
     this.name = "AgentUnavailableError"
+  }
+}
+
+type AgentClient = {
+  status(id: string, name: string): Promise<AgentStatus>
+  send(id: string, name: string, message: string, options?: SendOptions): Promise<SendResult>
+}
+
+export class AgentHandle implements Agent {
+  readonly #client: AgentClient
+  readonly #id: string
+  readonly #name: string
+
+  constructor(client: AgentClient, id: string, name: string) {
+    this.#client = client
+    this.#id = id
+    this.#name = name
+  }
+
+  get id(): string {
+    return this.#id
+  }
+
+  get name(): string {
+    return this.#name
+  }
+
+  status(): Promise<AgentStatus> {
+    return this.#client.status(this.#id, this.#name)
+  }
+
+  send(message: string, options?: SendOptions): Promise<SendResult> {
+    return this.#client.send(this.#id, this.#name, message, options)
   }
 }

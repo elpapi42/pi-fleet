@@ -24,8 +24,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc --project tsconfig.json",
-    "test": "node --test test/*.test.mjs"
+    "build": "rm -rf dist && tsc --project tsconfig.json",
+    "test": "node --test test/public/*.test.mjs test/fleet/*.test.mjs test/state/*.test.mjs test/pi/*.test.mjs test/worker/*.test.mjs"
   },
   "dependencies": {
     "lmdb": "3.5.6",

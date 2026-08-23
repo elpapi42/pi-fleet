@@ -1,4 +1,4 @@
-import type { AgentState } from "../types.js"
+import type { AgentState } from "../fleet/agent.js"
 
 export type StatusRequest = {
   version: 1

@@ -1,7 +1,7 @@
+import { chmod, mkdir, realpath } from "node:fs/promises"
+import { join } from "node:path"
 import { open, type Database, type RootDatabase } from "lmdb"
-import { prepareStateDir } from "./paths.js"
-import type { AgentState, AgentSummary } from "../types.js"
-import { AgentNameTakenError } from "../types.js"
+import { AgentNameTakenError, type AgentState, type AgentSummary } from "../fleet/agent.js"
 
 export type AgentRecord = {
   id: string
@@ -24,25 +24,24 @@ export type AgentRecord = {
   updatedAt: number
 }
 
-type Environment = RootDatabase
-type SharedEnvironment = {
-  root: Environment
+type SharedStore = {
+  root: RootDatabase
   agents: Database<AgentRecord, string>
   names: Database<string, string>
   references: number
   closing?: Promise<void>
 }
 
-const environments = new Map<string, SharedEnvironment>()
+const stores = new Map<string, SharedStore>()
 
-export class Registry {
+export class FleetStore {
   readonly #stateDir: string
-  readonly #shared: SharedEnvironment
+  readonly #shared: SharedStore
   readonly #agents: Database<AgentRecord, string>
   readonly #names: Database<string, string>
   #closed = false
 
-  constructor(stateDir: string, shared: SharedEnvironment) {
+  constructor(stateDir: string, shared: SharedStore) {
     this.#stateDir = stateDir
     this.#shared = shared
     this.#agents = shared.agents
@@ -55,7 +54,6 @@ export class Registry {
       this.#agents.put(record.id, record, 1)
       this.#names.put(record.name, record.id)
     })
-
     if (!created) throw new AgentNameTakenError(record.name)
   }
 
@@ -111,11 +109,7 @@ export class Registry {
       if (entry.value.state === state) return true
 
       const version = entry.version ?? 0
-      const updated: AgentRecord = {
-        ...entry.value,
-        state,
-        updatedAt: Date.now(),
-      }
+      const updated: AgentRecord = { ...entry.value, state, updatedAt: Date.now() }
       if (await this.#agents.put(id, updated, version + 1, version)) return true
     }
   }
@@ -141,7 +135,7 @@ export class Registry {
     try {
       await closing
     } finally {
-      if (environments.get(this.#stateDir) === this.#shared) environments.delete(this.#stateDir)
+      if (stores.get(this.#stateDir) === this.#shared) stores.delete(this.#stateDir)
     }
   }
 
@@ -150,12 +144,12 @@ export class Registry {
   }
 }
 
-export async function openRegistry(stateDir: string): Promise<Registry> {
-  const canonicalStateDir = await prepareStateDir(stateDir)
-  let shared = environments.get(canonicalStateDir)
+export async function openStore(stateDir: string): Promise<FleetStore> {
+  const canonicalStateDir = await prepareStateDirectory(stateDir)
+  let shared = stores.get(canonicalStateDir)
   if (shared?.closing) {
     await shared.closing
-    shared = environments.get(canonicalStateDir)
+    shared = stores.get(canonicalStateDir)
   }
   if (!shared) {
     const root = open({ path: canonicalStateDir, maxDbs: 3 })
@@ -165,8 +159,18 @@ export async function openRegistry(stateDir: string): Promise<Registry> {
       names: root.openDB<string, string>("names", { encoding: "string" }),
       references: 0,
     }
-    environments.set(canonicalStateDir, shared)
+    stores.set(canonicalStateDir, shared)
   }
   shared.references += 1
-  return new Registry(canonicalStateDir, shared)
+  return new FleetStore(canonicalStateDir, shared)
+}
+
+async function prepareStateDirectory(stateDir: string): Promise<string> {
+  await mkdir(stateDir, { recursive: true, mode: 0o700 })
+  await chmod(stateDir, 0o700)
+  const canonicalStateDir = await realpath(stateDir)
+  const ipcDir = join(canonicalStateDir, "ipc")
+  await mkdir(ipcDir, { recursive: true, mode: 0o700 })
+  await chmod(ipcDir, 0o700)
+  return canonicalStateDir
 }
