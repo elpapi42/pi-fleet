@@ -6,7 +6,7 @@
 - Before pi-fleet becomes stable, backward compatibility is not required unless a current product reason requires it.
 - Updating the SDK or CLI does not update workers that already run. Existing agents keep their worker code version. Testing new runtime behavior requires a newly created agent.
 - When committed work changes an SDK or CLI package version, publish that version before reporting completion unless the user explicitly says not to publish.
-- Fake-Pi tests prove pi-fleet protocol behavior, not real-Pi compatibility. After each user-visible runtime feature, real-Pi checks use the slice-runtime-acceptance skill with an isolated public-SDK script and an installed `pif` end-to-end flow. Use deterministic intermediate-state signals instead of fixed delays.
+- Fake-Pi tests prove pi-fleet protocol behavior, not real-Pi compatibility. After each user-visible runtime feature, real-Pi checks use the slice-runtime-acceptance skill with an installed public-SDK script and an installed `pif` end-to-end flow. Use deterministic intermediate-state signals instead of fixed delays.
 - The user expects AGENTS.md to remain tracked project guidance and new .pi/ content to remain ignored by Git.
 - The user treats cohesion as the primary code-organization rule. Organize code by capability, prefer larger cohesive files over generic shared inventories, and split only for independent responsibilities while keeping split files in one cohesive folder.
 <!-- opm:managed:end -->
