@@ -26,6 +26,7 @@ export type PiProcess = {
 export class PiStartupError extends Error {}
 export class PiRequestError extends Error {}
 
+const FLEET_PI_OPTIONS = new Set(["--mode", "--no-session"])
 const USER_SESSION_SELECTORS = new Set([
   "--session",
   "--session-id",
@@ -35,6 +36,14 @@ const USER_SESSION_SELECTORS = new Set([
   "-r",
   "--fork",
 ])
+
+export function validatePiArguments(piArgs: readonly string[]): void {
+  for (const arg of piArgs) {
+    if (FLEET_PI_OPTIONS.has(arg) || [...FLEET_PI_OPTIONS].some((option) => arg.startsWith(`${option}=`))) {
+      throw new TypeError(`Pi argument ${JSON.stringify(arg)} is managed by pi-fleet`)
+    }
+  }
+}
 
 class PiRpcClient {
   readonly #process: ChildProcessWithoutNullStreams

@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   process.once("SIGINT", stop)
   try {
     await router.bind(record.runtime.endpoint)
-    pi = await startPi(record, 10_000, onPiEvent)
+    pi = await startPi({ cwd: record.cwd, piArgs: record.piArgs, sessionPath: record.sessionPath }, 10_000, onPiEvent)
     pi.process.once("exit", closeRouter)
     const markedReady = await store.markReady(agentId, generation, {
       workerPid: process.pid,

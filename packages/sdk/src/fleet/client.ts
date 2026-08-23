@@ -6,6 +6,7 @@ import { resolve } from "node:path"
 import { capability } from "zeromq"
 import {
   AgentHandle,
+  AgentNameTakenError,
   AgentNotFoundError,
   type Agent,
   type AgentStatus,
@@ -15,10 +16,10 @@ import {
   type SendResult,
 } from "./agent.js"
 import { openStore, type AgentRecord, type FleetStore } from "../state/store.js"
-import { launchWorker, requestSend, requestStatus, stopWorker, workerEndpoint } from "../worker/control.js"
+import { launchWorker, requestSend, requestStatus, stopWorker, workerEndpoint, type WorkerTarget } from "../worker/control.js"
+import { validatePiArguments } from "../pi/runtime.js"
 
 const STARTUP_TIMEOUT_MS = 10_000
-const OWNED_PI_OPTIONS = new Set(["--mode", "--no-session"])
 
 export type ConnectOptions = {
   /** A private state directory. Intended for isolated tests and advanced local setups. */
@@ -70,12 +71,12 @@ class PiFleetClientImpl implements PiFleetClient {
       updatedAt: now,
     }
 
-    await this.#store.create(record)
+    if (!(await this.#store.create(record))) throw new AgentNameTakenError(input.name)
 
     let worker: ChildProcess | undefined
     try {
       worker = launchWorker(this.#stateDir, id, generation)
-      await waitForWorkerReady(record, worker, STARTUP_TIMEOUT_MS)
+      await waitForWorkerReady(workerTarget(record), worker, STARTUP_TIMEOUT_MS)
       return new AgentHandle(this, id, input.name)
     } catch (error) {
       await stopWorker(worker)
@@ -100,7 +101,7 @@ class PiFleetClientImpl implements PiFleetClient {
     this.assertOpen()
     const record = this.#store.getById(id)
     if (!record || record.name !== name) throw new AgentNotFoundError(name)
-    const status = await requestStatus(record)
+    const status = await requestStatus(workerTarget(record))
     return { id: status.id, name: status.name, state: status.state }
   }
 
@@ -111,7 +112,7 @@ class PiFleetClientImpl implements PiFleetClient {
     if (typeof message !== "string" || !message.trim()) throw new TypeError("Message must not be empty")
     const delivery = options.delivery ?? "steer"
     if (!isSendDelivery(delivery)) throw new TypeError(`Invalid delivery: ${String(delivery)}`)
-    return requestSend(record, message, delivery)
+    return requestSend(workerTarget(record), message, delivery)
   }
 
   close(): Promise<void> {
@@ -147,15 +148,19 @@ async function validateCreateOptions(options: CreateAgentOptions): Promise<{ nam
   const cwd = resolve(options.cwd)
   if (!(await stat(cwd)).isDirectory()) throw new TypeError(`Agent cwd is not a directory: ${cwd}`)
   const piArgs = options.piArgs ? [...options.piArgs] : []
-  for (const arg of piArgs) {
-    if (OWNED_PI_OPTIONS.has(arg) || [...OWNED_PI_OPTIONS].some((option) => arg.startsWith(`${option}=`))) {
-      throw new TypeError(`Pi argument ${JSON.stringify(arg)} is managed by pi-fleet`)
-    }
-  }
+  validatePiArguments(piArgs)
   return { name, cwd, piArgs }
 }
 
-async function waitForWorkerReady(record: AgentRecord, worker: ChildProcess, timeoutMs: number): Promise<void> {
+function workerTarget(record: AgentRecord): WorkerTarget {
+  return {
+    id: record.id,
+    name: record.name,
+    runtime: record.runtime && { generation: record.runtime.generation, endpoint: record.runtime.endpoint },
+  }
+}
+
+async function waitForWorkerReady(record: WorkerTarget, worker: ChildProcess, timeoutMs: number): Promise<void> {
   let onExit: (code: number | null, signal: NodeJS.Signals | null) => void = () => {}
   const exited = new Promise<never>((_, reject) => {
     onExit = (code, signal) => reject(new Error(`Worker exited before readiness (${signal ?? code ?? "unknown"})`))
@@ -168,7 +173,7 @@ async function waitForWorkerReady(record: AgentRecord, worker: ChildProcess, tim
   }
 }
 
-async function waitForStatus(record: AgentRecord, timeoutMs: number): Promise<void> {
+async function waitForStatus(record: WorkerTarget, timeoutMs: number): Promise<void> {
   const end = Date.now() + timeoutMs
   let lastError: unknown
   while (Date.now() < end) {

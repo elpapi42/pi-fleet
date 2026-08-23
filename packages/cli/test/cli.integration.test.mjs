@@ -2,14 +2,16 @@ import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { chmod, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import test from "node:test"
 import { openStore } from "../../sdk/dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
-const pif = resolve("dist/main.js")
-const fakePi = resolve("../sdk/test/pi/fake-pi.mjs")
+const testDir = dirname(fileURLToPath(import.meta.url))
+const pif = resolve(testDir, "../dist/main.js")
+const fakePi = resolve(testDir, "../../sdk/test/pi/fake-pi.mjs")
 
 async function run(args, env) {
   return execFileAsync(process.execPath, [pif, ...args], { env: { ...process.env, ...env } })

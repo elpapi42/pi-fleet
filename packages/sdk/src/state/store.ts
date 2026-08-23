@@ -1,7 +1,7 @@
 import { chmod, mkdir, realpath } from "node:fs/promises"
 import { join } from "node:path"
 import { open, type Database, type RootDatabase } from "lmdb"
-import { AgentNameTakenError, type AgentState } from "../fleet/agent.js"
+import type { AgentState } from "../fleet/agent.js"
 
 export type AgentRecord = {
   id: string
@@ -48,13 +48,12 @@ export class FleetStore {
     this.#names = shared.names
   }
 
-  async create(record: AgentRecord): Promise<void> {
+  async create(record: AgentRecord): Promise<boolean> {
     this.assertOpen()
-    const created = await this.#names.ifNoExists(record.name, () => {
+    return this.#names.ifNoExists(record.name, () => {
       this.#agents.put(record.id, record, 1)
       this.#names.put(record.name, record.id)
     })
-    if (!created) throw new AgentNameTakenError(record.name)
   }
 
   getById(id: string): AgentRecord | undefined {

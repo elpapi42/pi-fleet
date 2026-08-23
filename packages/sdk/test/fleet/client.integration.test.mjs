@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
-import { connectPiFleet, AgentNotFoundError } from "../../dist/index.js"
+import { connectPiFleet, AgentNameTakenError, AgentNotFoundError } from "../../dist/index.js"
 import { openStore } from "../../dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
@@ -78,6 +78,7 @@ test("creates a durable agent that another SDK client can discover and query", {
   await withState(async (stateDir) => {
     const creator = await connectPiFleet({ stateDir })
     const agent = await creator.create({ name: "researcher", cwd: process.cwd() })
+    await assert.rejects(creator.create({ name: "researcher", cwd: process.cwd() }), AgentNameTakenError)
     assert.throws(() => { agent.id = "another-id" }, TypeError)
     await creator.close()
 

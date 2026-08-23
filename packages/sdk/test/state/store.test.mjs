@@ -5,7 +5,6 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
-import { AgentNameTakenError } from "../../dist/index.js"
 import { resolveStateDir } from "../../dist/fleet/client.js"
 import { openStore } from "../../dist/state/store.js"
 
@@ -64,10 +63,7 @@ test("atomically rejects a duplicate name", async () => {
   await withStore(async (store) => {
     await store.create(record("researcher", "agent-1"))
 
-    await assert.rejects(
-      store.create(record("researcher", "agent-2")),
-      AgentNameTakenError,
-    )
+    assert.equal(await store.create(record("researcher", "agent-2")), false)
 
     assert.equal((await store.getByName("researcher"))?.id, "agent-1")
     assert.equal(await store.getById("agent-2"), undefined)
@@ -105,13 +101,12 @@ test("rolls back only the runtime generation created by the caller", async () =>
 
 test("allows only one concurrent creation for a name", async () => {
   await withStore(async (store) => {
-    const results = await Promise.allSettled([
+    const results = await Promise.all([
       store.create(record("researcher", "agent-1")),
       store.create(record("researcher", "agent-2")),
     ])
 
-    assert.equal(results.filter(({ status }) => status === "fulfilled").length, 1)
-    assert.equal(results.filter(({ status }) => status === "rejected").length, 1)
+    assert.equal(results.filter(Boolean).length, 1)
     assert.match((await store.getByName("researcher"))?.id ?? "", /^agent-[12]$/)
   })
 })
@@ -124,7 +119,7 @@ test("allows only one creation across separate processes", async () => {
       const [stateDir, id] = process.argv.slice(1);
       const store = await openStore(stateDir);
       try {
-        await store.create({
+        const created = await store.create({
           id,
           name: "researcher",
           cwd: "/work",
@@ -135,6 +130,7 @@ test("allows only one creation across separate processes", async () => {
           createdAt: 1,
           updatedAt: 1,
         });
+        if (!created) throw new Error("Name already exists");
       } finally {
         await store.close();
       }

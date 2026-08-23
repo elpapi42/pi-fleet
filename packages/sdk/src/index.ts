@@ -1,4 +1,4 @@
-export const version = "0.4.0"
+export const version = "0.4.1"
 
 export { connectPiFleet } from "./fleet/client.js"
 export {

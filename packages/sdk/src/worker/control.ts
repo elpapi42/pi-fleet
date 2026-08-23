@@ -5,7 +5,15 @@ import { fileURLToPath } from "node:url"
 import { join } from "node:path"
 import { AgentUnavailableError } from "../fleet/agent.js"
 import { decode, encode, type SendRequest, type SendResponse, type StatusRequest, type StatusResponse } from "./protocol.js"
-import type { AgentRecord } from "../state/store.js"
+
+export type WorkerTarget = {
+  id: string
+  name: string
+  runtime?: {
+    generation: string
+    endpoint?: string
+  }
+}
 
 const AGENT_STATES = new Set(["starting", "idle", "working", "stopped", "failed"])
 
@@ -33,7 +41,7 @@ export async function stopWorker(worker: ChildProcess | undefined): Promise<void
   await waitForExit(worker, 1_000)
 }
 
-export async function requestStatus(record: AgentRecord, timeoutMs = 1_000): Promise<NonNullable<StatusResponse["status"]>> {
+export async function requestStatus(record: WorkerTarget, timeoutMs = 1_000): Promise<NonNullable<StatusResponse["status"]>> {
   const request: StatusRequest = {
     version: 1,
     requestId: randomUUID(),
@@ -51,7 +59,7 @@ export async function requestStatus(record: AgentRecord, timeoutMs = 1_000): Pro
   return response.status
 }
 
-export async function requestSend(record: AgentRecord, message: string, delivery: "steer" | "followUp", timeoutMs = 10_000): Promise<{ acceptedAt: number }> {
+export async function requestSend(record: WorkerTarget, message: string, delivery: "steer" | "followUp", timeoutMs = 10_000): Promise<{ acceptedAt: number }> {
   const request: SendRequest = {
     version: 1,
     requestId: randomUUID(),
@@ -74,7 +82,7 @@ export async function requestSend(record: AgentRecord, message: string, delivery
   return { acceptedAt: response.acceptedAt }
 }
 
-async function requestWorker(record: AgentRecord, request: StatusRequest | SendRequest, timeoutMs: number): Promise<unknown> {
+async function requestWorker(record: WorkerTarget, request: StatusRequest | SendRequest, timeoutMs: number): Promise<unknown> {
   const runtime = record.runtime
   if (!runtime?.endpoint) throw new AgentUnavailableError(record.name)
 
