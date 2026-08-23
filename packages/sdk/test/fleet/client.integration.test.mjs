@@ -243,6 +243,52 @@ test("releases only its claim when replacement startup fails", { concurrency: fa
   })
 })
 
+test("fails recovery without signaling an old process group that stays alive", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const piPidFile = join(stateDir, "fake-pi.pid")
+    process.env.PI_FLEET_FAKE_PI_PID_FILE = piPidFile
+    process.env.PI_FLEET_FAKE_PI_IGNORE_STDIN_END = "1"
+    const client = await connectPiFleet({ stateDir })
+    let piPid
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      const store = await openStore(stateDir)
+      const before = store.getById(agent.id)
+      await store.close()
+      assert.ok(before?.runtime?.workerPid)
+      piPid = Number(await readFile(piPidFile, "utf8"))
+      process.kill(before.runtime.workerPid, "SIGKILL")
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        try {
+          process.kill(before.runtime.workerPid, 0)
+          await new Promise((resolve) => setTimeout(resolve, 25))
+        } catch {
+          break
+        }
+      }
+      await assert.rejects(agent.status(), AgentUnavailableError)
+      assert.doesNotThrow(() => process.kill(piPid, 0))
+      const afterStore = await openStore(stateDir)
+      try {
+        const after = afterStore.getById(agent.id)
+        assert.notEqual(after?.runtime?.generation, before.runtime.generation)
+        assert.equal(after?.runtime?.claimId, undefined)
+        assert.equal(after?.state, "idle")
+        assert.equal(after?.lastEventSeq, 0)
+      } finally {
+        await afterStore.close()
+      }
+    } finally {
+      if (piPid) {
+        try { process.kill(piPid, "SIGKILL") } catch (error) { if (error?.code !== "ESRCH") throw error }
+      }
+      delete process.env.PI_FLEET_FAKE_PI_PID_FILE
+      delete process.env.PI_FLEET_FAKE_PI_IGNORE_STDIN_END
+      await client.close()
+    }
+  })
+})
+
 test("waits for delayed Pi readiness and reaps Pi when the worker stops", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const piPidFile = join(stateDir, "fake-pi.pid")
