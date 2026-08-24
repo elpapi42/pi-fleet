@@ -32,7 +32,7 @@ await client.create({
 
 Pi owns session lookup, working-directory selection, prompts, and failures. If the user supplies no session selector, Pi-fleet uses the observed session path for later Pi recovery.
 
-By default, pi-fleet stores its LMDB environment and worker IPC sockets in `~/.pi-fleet`. Pre-stable releases do not migrate state from earlier locations automatically. Pass `stateDir` to `connectPiFleet` only when you need an explicit location, such as an isolated test or an advanced local setup:
+By default, pi-fleet stores its LMDB environment and worker IPC sockets in `~/.pi-fleet`. Pre-stable releases do not migrate state from earlier locations automatically. An explicit `stateDir` must leave room for the generated Unix IPC socket path. An overlong path throws `InvalidStateDirectoryError` before pi-fleet creates state. Pass `stateDir` to `connectPiFleet` only when you need an explicit location, such as an isolated test or an advanced local setup:
 
 ```ts
 const client = await connectPiFleet({ stateDir: "/path/to/pi-fleet-state" })
@@ -65,7 +65,7 @@ for await (const event of agent.receive({ after: cursor })) {
 }
 ```
 
-Plain `receive()` starts after the tail captured at subscription time. `receive({ fromStart: true })` starts from the first event. `receive({ after: cursor })` starts after that cursor. The options are mutually exclusive. Cursors are versioned opaque values that bind to one immutable agent ID. Invalid, wrong-agent, or future cursors throw `InvalidCursorError`.
+Plain `receive()` is live-only. It starts the subscription on the first iterator read, so it can miss activity committed before worker acknowledgement. Use `receive({ fromStart: true })` when work starts immediately after receiver creation and the first activity must not be missed. `receive({ after: cursor })` starts after that cursor. The options are mutually exclusive. Cursors are versioned opaque values that bind to one immutable agent ID. Invalid, wrong-agent, or future cursors throw `InvalidCursorError`.
 
 `await agent.destroy()` requires no confirmation. It can stop active work, removes the agent name immediately, yields `agent.destroyed` to healthy active streams, then removes the worker, Pi, IPC socket, agent record, and complete event history. Calls through the old handle then throw `AgentNotFoundError`. Recreating the name creates a new immutable agent ID.
 

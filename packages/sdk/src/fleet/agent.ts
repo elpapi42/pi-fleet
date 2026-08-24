@@ -68,6 +68,7 @@ export interface Agent {
   readonly name: string
   status(): Promise<AgentStatus>
   send(message: string, options?: SendOptions): Promise<SendResult>
+  /** Live-only receive begins when iteration starts. Use fromStart when work can begin before worker subscription acknowledgement. */
   receive(options?: ReceiveOptions): AsyncIterable<AgentEvent>
   destroy(): Promise<void>
 }
