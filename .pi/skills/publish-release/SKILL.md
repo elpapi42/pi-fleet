@@ -132,7 +132,23 @@ If the run fails, inspect:
 gh run view <run-id> --log-failed
 ```
 
+If `--log-failed` is empty, retrieve the complete log:
+
+```bash
+gh run view <run-id> --log
+```
+
 Before recommending a retry, check whether npm already accepted the package version. Never assume that a failed workflow means publication did not occur.
+
+### Stalled test recovery
+
+A release can stall before `Publish package`, usually in a timing-sensitive test. Compare the active step against a normal local duration. After one timer check, if the test remains abnormally stalled and `Publish package` is pending, cancel the workflow:
+
+```bash
+gh run cancel <run-id>
+```
+
+Set a short timer. After cancellation completes, inspect the complete log and npm version. If npm did not accept the version, keep the existing tag and GitHub release immutable. Reproduce the exact failing test, stabilize the proof or fix the source, bump the committed package version and all required pins or exports, then run the normal preflight and create a new tag. Do not move, delete, or reuse the cancelled release tag.
 
 ## 6. Verify npm
 
@@ -144,12 +160,14 @@ After a successful workflow, verify:
 4. The published package has the expected repository URL.
 5. A CLI release still pins the expected SDK version.
 
-For a CLI release, install it in a clean temporary prefix and run its installed executable:
+For a CLI release, install it in a clean temporary prefix and verify the executable, declared SDK pin, and resolved dependency tree. Do not assume npm nests the SDK under the CLI package because npm can hoist it:
 
 ```bash
 temp_prefix="$(mktemp -d)"
 npm install --prefix "$temp_prefix" "@elpapi42/pi-fleet-cli@<version>"
-"$temp_prefix/node_modules/.bin/pif" --help
+test "$("$temp_prefix/node_modules/.bin/pif" --version)" = "<version>"
+node -e "const p=require(process.argv[1]); if(p.dependencies['@elpapi42/pi-fleet-sdk']!=='<sdk-version>') throw Error('wrong SDK pin')" "$temp_prefix/node_modules/@elpapi42/pi-fleet-cli/package.json"
+npm list --prefix "$temp_prefix" @elpapi42/pi-fleet-cli @elpapi42/pi-fleet-sdk --depth=1
 rm -rf "$temp_prefix"
 ```
 
