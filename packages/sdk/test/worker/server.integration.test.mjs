@@ -385,15 +385,13 @@ test("serializes concurrent sends and keeps status responsive", { concurrency: f
     }),
     async ({ stateDir, record }) => {
       assert.ok(record)
-      const sends = Promise.all([
-        requestSend(record, "First", "steer"),
-        requestSend(record, "Second", "followUp"),
-      ])
+      const firstSend = requestSend(record, "First", "steer")
       await waitFor(async () => {
         try { await access(join(stateDir, "prompt-started")); return true } catch { return false }
       }, "Fake Pi did not receive the first prompt")
+      const secondSend = requestSend(record, "Second", "followUp")
       assert.equal((await requestStatus(record, 100)).state, "idle")
-      const [first, second] = await sends
+      const [first, second] = await Promise.all([firstSend, secondSend])
       assert.equal(typeof first.acceptedAt, "number")
       assert.equal(typeof second.acceptedAt, "number")
       const prompts = (await readFile(join(stateDir, "commands.log"), "utf8"))

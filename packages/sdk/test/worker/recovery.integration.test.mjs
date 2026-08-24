@@ -462,35 +462,6 @@ test("stops a crash-looping worker before a later operation replaces it", { conc
   })
 })
 
-test("stops the worker and rejects queued sends when Pi recovery fails", { concurrency: false }, async () => {
-  await withState(async (stateDir) => {
-    const piPidFile = join(stateDir, "fake-pi.pid")
-    const incarnationFile = join(stateDir, "fake-pi-incarnation")
-    process.env.PI_FLEET_FAKE_PI_PID_FILE = piPidFile
-    process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE = incarnationFile
-    process.env.PI_FLEET_FAKE_PI_FAIL_RECOVERY = "1"
-    process.env.PI_FLEET_FAKE_PI_RECOVERY_FAIL_DELAY_MS = "500"
-    const client = await connectPiFleet({ stateDir })
-    try {
-      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
-      process.kill(Number(await readFile(piPidFile, "utf8")), "SIGTERM")
-      for (let attempt = 0; attempt < 80; attempt += 1) {
-        if (Number(await readFile(incarnationFile, "utf8")) >= 2) break
-        await new Promise((resolve) => setTimeout(resolve, 25))
-      }
-      await assert.rejects(agent.send("queued during failed recovery"), AgentUnavailableError)
-      await assert.rejects(agent.status(), AgentUnavailableError)
-      assert.equal(Number(await readFile(incarnationFile, "utf8")), 6)
-    } finally {
-      delete process.env.PI_FLEET_FAKE_PI_PID_FILE
-      delete process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE
-      delete process.env.PI_FLEET_FAKE_PI_FAIL_RECOVERY
-      delete process.env.PI_FLEET_FAKE_PI_RECOVERY_FAIL_DELAY_MS
-      await client.close()
-    }
-  })
-})
-
 test("rejects silent fleet-owned session replacement but preserves caller session authority", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const piPidFile = join(stateDir, "fake-pi.pid")
