@@ -8,6 +8,7 @@ export {
   AgentRecoveryQueueFullError,
   AgentSendUncertainError,
   InvalidCursorError,
+  InvalidStateDirectoryError,
 } from "./fleet/agent.js"
 
 export type {

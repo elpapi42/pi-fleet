@@ -8,7 +8,7 @@ import test from "node:test"
 import { Router } from "zeromq"
 import { AgentRecoveryQueueFullError, AgentSendUncertainError, AgentUnavailableError } from "../../dist/index.js"
 import { decode, encode } from "../../dist/worker/protocol.js"
-import { requestSend, requestStatus, waitForWorkerProcessGroupExit } from "../../dist/worker/control.js"
+import { requestSend, requestStatus, validateWorkerEndpointPath, waitForWorkerProcessGroupExit } from "../../dist/worker/control.js"
 
 const record = (endpoint) => ({
   id: "agent-1",
@@ -39,6 +39,14 @@ async function withRouter(run) {
     await rm(root, { recursive: true, force: true })
   }
 }
+
+test("validates Unix IPC path length by UTF-8 bytes", () => {
+  if (process.platform === "win32") return
+  const exactBoundary = join(tmpdir(), "x".repeat(64))
+  assert.doesNotThrow(() => validateWorkerEndpointPath(exactBoundary))
+  const multibyteOverBoundary = join(tmpdir(), "x".repeat(63) + "é")
+  assert.throws(() => validateWorkerEndpointPath(multibyteOverBoundary), /shorter stateDir/)
+})
 
 test("checks an old worker process group without signaling it", async () => {
   if (process.platform === "win32") return

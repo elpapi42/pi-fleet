@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { Dealer } from "zeromq"
 import { fileURLToPath } from "node:url"
 import { join } from "node:path"
-import { AgentRecoveryQueueFullError, AgentSendUncertainError, AgentUnavailableError } from "../fleet/agent.js"
+import { AgentRecoveryQueueFullError, AgentSendUncertainError, AgentUnavailableError, InvalidStateDirectoryError } from "../fleet/agent.js"
 import { decode, encode, type DestroyRequest, type DestroyResponse, type SendRequest, type SendResponse, type StatusRequest, type StatusResponse } from "./protocol.js"
 
 export type WorkerTarget = {
@@ -16,6 +16,16 @@ export type WorkerTarget = {
 }
 
 const AGENT_STATES = new Set(["starting", "idle", "working", "failed"])
+const MAX_UNIX_IPC_PATH_BYTES = 103
+const ENDPOINT_TEST_AGENT_ID = "0".repeat(36)
+const ENDPOINT_TEST_GENERATION = "0".repeat(36)
+
+export function validateWorkerEndpointPath(stateDir: string): void {
+  if (process.platform === "win32") return
+  const endpointPath = workerEndpoint(stateDir, ENDPOINT_TEST_AGENT_ID, ENDPOINT_TEST_GENERATION).slice("ipc://".length)
+  const byteLength = Buffer.byteLength(endpointPath)
+  if (byteLength > MAX_UNIX_IPC_PATH_BYTES) throw new InvalidStateDirectoryError(stateDir, byteLength, MAX_UNIX_IPC_PATH_BYTES)
+}
 
 export function workerEndpoint(stateDir: string, agentId: string, generation: string): string {
   const identity = createHash("sha256").update(`${stateDir}\0${agentId}\0${generation}`).digest("hex").slice(0, 24)

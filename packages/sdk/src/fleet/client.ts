@@ -19,7 +19,7 @@ import {
   type SendResult,
 } from "./agent.js"
 import { openStore, type AgentRecord, type FleetStore } from "../state/store.js"
-import { launchWorker, requestDestroy, requestSend, requestStatus, stopWorker, waitForWorkerProcessGroupExit, workerEndpoint, type WorkerTarget } from "../worker/control.js"
+import { launchWorker, requestDestroy, requestSend, requestStatus, stopWorker, validateWorkerEndpointPath, waitForWorkerProcessGroupExit, workerEndpoint, type WorkerTarget } from "../worker/control.js"
 import { receiveEvents, type WorkerEventStream } from "../worker/stream.js"
 import { validatePiArguments } from "../pi/runtime.js"
 
@@ -292,6 +292,7 @@ class PiFleetClientImpl implements PiFleetClient {
 export async function connectPiFleet(options: ConnectOptions = {}): Promise<PiFleetClient> {
   if (!capability.ipc) throw new Error("pi-fleet requires ZeroMQ ipc:// support on this host")
   const stateDir = resolveStateDir(options)
+  validateWorkerEndpointPath(stateDir)
   return new PiFleetClientImpl(await openStore(stateDir), stateDir)
 }
 

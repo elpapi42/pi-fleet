@@ -114,6 +114,13 @@ export class InvalidCursorError extends Error {
   }
 }
 
+export class InvalidStateDirectoryError extends Error {
+  constructor(stateDir: string, byteLength: number, maxByteLength: number) {
+    super(`State directory ${JSON.stringify(stateDir)} generates a ${byteLength}-byte IPC path; use a shorter stateDir (maximum ${maxByteLength} bytes)`)
+    this.name = "InvalidStateDirectoryError"
+  }
+}
+
 type AgentClient = {
   status(id: string, name: string): Promise<AgentStatus>
   send(id: string, name: string, message: string, options?: SendOptions): Promise<SendResult>

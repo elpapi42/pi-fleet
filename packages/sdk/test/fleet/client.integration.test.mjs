@@ -1,12 +1,12 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { access, chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
-import { connectPiFleet, AgentNameTakenError, AgentNotFoundError, AgentUnavailableError, InvalidCursorError } from "../../dist/index.js"
+import { connectPiFleet, AgentNameTakenError, AgentNotFoundError, AgentUnavailableError, InvalidCursorError, InvalidStateDirectoryError } from "../../dist/index.js"
 import { decodeEventCursor, encodeEventCursor, openStore } from "../../dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
@@ -207,6 +207,21 @@ test("completes cleanup when the destroy worker exits after admission", { concur
       await client.close()
     }
   })
+})
+
+test("rejects an overlong state directory before creating state", async () => {
+  const stateDir = join(tmpdir(), "pi-fleet-state-path-" + "x".repeat(100))
+  await rm(stateDir, { recursive: true, force: true })
+  try {
+    await assert.rejects(connectPiFleet({ stateDir }), (error) => {
+      assert.ok(error instanceof InvalidStateDirectoryError)
+      assert.match(error.message, /shorter stateDir/)
+      return true
+    })
+    await assert.rejects(access(stateDir))
+  } finally {
+    await rm(stateDir, { recursive: true, force: true })
+  }
 })
 
 test("creates a durable agent that another SDK client can discover and query", { concurrency: false }, async () => {
