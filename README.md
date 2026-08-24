@@ -34,6 +34,9 @@ pif send researcher "Investigate the database schema"
 pif receive researcher --from-start
 pif receive researcher --after pf1.EXAMPLE
 
+# Show full bounded successful tool output and details.
+pif receive researcher --verbose
+
 # Pass session selection directly to Pi
 pif create existing --cwd "$PWD" -- --session /path/to/session.jsonl
 ```
@@ -42,7 +45,7 @@ By default, pi-fleet stores its LMDB state and IPC sockets in `~/.pi-fleet`. Eve
 
 Running agents keep the worker version used at creation. After updating pi-fleet, create a new agent before testing new worker behavior such as worker recovery. Until `destroy` exists, use a new agent name.
 
-A later `status`, `send`, or `receive` operation replaces an unavailable worker through one LMDB recovery claim. Durable identity, session metadata, event history, and cursors continue across the new worker generation. A stream reconnects and replays from its last delivered cursor. Pi-fleet never retries a send that the old worker might have accepted.
+A later `status`, `send`, or `receive` operation replaces an unavailable worker through one LMDB recovery claim. Durable identity, session metadata, event history, and cursors continue across the new worker generation. A stream reconnects and replays from its last delivered cursor. Pi-fleet never retries a send that the old worker might have accepted. `pif receive` shows spaced Thinking, Assistant, Tool, and warning blocks. It previews successful tool output by default. Use `--verbose` for full bounded output and details.
 
 ## Develop locally
 

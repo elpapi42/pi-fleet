@@ -22,6 +22,7 @@ test("shows help from the built executable", () => {
   assert.equal(receive.status, 0)
   assert.match(receive.stdout, /--from-start/)
   assert.match(receive.stdout, /--after <cursor>/)
+  assert.match(receive.stdout, /--verbose/)
 })
 
 test("shows the CLI package version", () => {
@@ -31,5 +32,5 @@ test("shows the CLI package version", () => {
   })
 
   assert.equal(result.status, 0)
-  assert.equal(result.stdout, "0.12.0\n")
+  assert.equal(result.stdout, "0.13.0\n")
 })

@@ -91,7 +91,7 @@ async function handlePrompt(request) {
     return
   }
   if (mode === "prompt-event") write({ type: "agent_start" })
-  if (mode === "semantic-events" || mode === "semantic-error" || mode === "semantic-bounded-error") {
+  if (mode === "semantic-events" || mode === "semantic-error" || mode === "semantic-bounded-error" || mode === "semantic-preview" || mode === "semantic-preview-bytes") {
     write({ type: "agent_start" })
     write({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "ignored" }] } })
     write({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "ignored" } })
@@ -122,7 +122,11 @@ async function handlePrompt(request) {
           }
         : mode === "semantic-error"
           ? { content: [{ type: "text", text: "command failed" }], details: { exitCode: 1 } }
-          : { content: [{ type: "text", text: "\u001b[31m/workspace\u001b[0m\nsecond line" }], details: { exitCode: 0 } },
+          : mode === "semantic-preview"
+            ? { content: [{ type: "text", text: Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join("\n") }], details: { exitCode: 0 } }
+            : mode === "semantic-preview-bytes"
+              ? { content: [{ type: "text", text: "x".repeat(2 * 1024 + 1) }], details: { exitCode: 0 } }
+              : { content: [{ type: "text", text: "\u001b[31m/workspace\u001b[0m\nsecond line" }], details: { exitCode: 0 } },
       isError: mode === "semantic-error" || mode === "semantic-bounded-error",
     })
     write({ type: "message_start", message: { role: "assistant", content: [] } })

@@ -182,7 +182,7 @@ test("shows full successful tool details with verbose receive", async () => {
     createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
     assert.ok(createdId)
 
-    receiver = spawn(process.execPath, [pif, "receive", "researcher", "--verbose"], { env, stdio: ["ignore", "pipe", "pipe"] })
+    receiver = spawn(process.execPath, [pif, "receive", "researcher", "--from-start", "--verbose"], { env, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = ""
     let stderr = ""
     receiver.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
@@ -195,6 +195,86 @@ test("shows full successful tool details with verbose receive", async () => {
     assert.deepEqual(await exited, { code: 130, signal: null })
     assert.match(stdout, /^Tool complete: bash\n  Output:$/m)
     assert.match(stdout, /^  Details: {"exitCode":0}$/m)
+    assert.equal(stderr, "")
+  } finally {
+    if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
+    if (createdId) await terminateWorker(stateDir, createdId)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("limits successful tool output previews", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-preview-receive-"))
+  const home = join(root, "home")
+  const stateDir = join(home, ".pi-fleet")
+  const env = {
+    ...process.env,
+    HOME: home,
+    PI_FLEET_PI_COMMAND: fakePi,
+    PI_FLEET_FAKE_PI_MODE: "semantic-preview",
+  }
+  let createdId
+  let receiver
+  try {
+    await chmod(fakePi, 0o755)
+    const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
+    createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.ok(createdId)
+
+    receiver = spawn(process.execPath, [pif, "receive", "researcher", "--from-start"], { env, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    receiver.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
+    receiver.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk })
+    const exited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
+
+    await run(["send", "researcher", "Preview activity"], env)
+    await waitForText(receiver, () => stdout, "[2 more lines omitted]")
+    receiver.kill("SIGINT")
+    assert.deepEqual(await exited, { code: 130, signal: null })
+    assert.match(stdout, /^    line 8$/m)
+    assert.doesNotMatch(stdout, /^    line 9$/m)
+    assert.match(stdout, /^  \[2 more lines omitted\]$/m)
+    assert.doesNotMatch(stdout, /^  Details:/m)
+    assert.equal(stderr, "")
+  } finally {
+    if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
+    if (createdId) await terminateWorker(stateDir, createdId)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("limits successful tool output previews by bytes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-preview-bytes-receive-"))
+  const home = join(root, "home")
+  const stateDir = join(home, ".pi-fleet")
+  const env = {
+    ...process.env,
+    HOME: home,
+    PI_FLEET_PI_COMMAND: fakePi,
+    PI_FLEET_FAKE_PI_MODE: "semantic-preview-bytes",
+  }
+  let createdId
+  let receiver
+  try {
+    await chmod(fakePi, 0o755)
+    const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
+    createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.ok(createdId)
+
+    receiver = spawn(process.execPath, [pif, "receive", "researcher", "--from-start"], { env, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    receiver.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
+    receiver.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk })
+    const exited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
+
+    await run(["send", "researcher", "Preview bytes"], env)
+    await waitForText(receiver, () => stdout, "[output truncated]")
+    receiver.kill("SIGINT")
+    assert.deepEqual(await exited, { code: 130, signal: null })
+    assert.match(stdout, /^  \[output truncated\]$/m)
+    assert.doesNotMatch(stdout, /^  Details:/m)
     assert.equal(stderr, "")
   } finally {
     if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
