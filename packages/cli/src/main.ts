@@ -42,70 +42,119 @@ function truncateUtf8(value: string, maxBytes = 8 * 1024): { value: string; trun
   return { value, truncated: false }
 }
 
-function printValue(label: string, value: unknown): void {
+function formatValue(value: unknown): string {
   let text: string
-  try {
-    text = JSON.stringify(value) ?? "[unavailable]"
-  } catch {
-    text = "[unavailable]"
+  if (typeof value === "string") text = singleLine(value)
+  else {
+    try {
+      text = singleLine(JSON.stringify(value) ?? "[unavailable]")
+    } catch {
+      text = "[unavailable]"
+    }
   }
   const bounded = truncateUtf8(text)
-  console.log(`  ${label}: ${bounded.value}${bounded.truncated ? " [truncated]" : ""}`)
+  return `${bounded.value}${bounded.truncated ? " [truncated]" : ""}`
 }
 
-function printTextOutput(text: string): void {
-  const bounded = truncateUtf8(safeText(text))
-  const lines = bounded.value.split("\n")
-  if (lines.length === 1) {
-    console.log(`  Output: ${lines[0]}${bounded.truncated ? " [truncated]" : ""}`)
-    return
-  }
-  console.log("  Output:")
-  for (const line of lines) console.log(`    ${line}`)
-  if (bounded.truncated) console.log("    [truncated]")
+function printIndented(text: string): void {
+  for (const line of safeText(text).split("\n")) console.log(`  ${line}`)
 }
 
-function printOutput(event: Extract<AgentEvent, { type: "tool.finished" }>): void {
-  const text = event.output.content
+function textContent(event: Extract<AgentEvent, { type: "tool.finished" }>): string {
+  return event.output.content
     .filter((part): part is Extract<(typeof event.output.content)[number], { type: "text" }> => part.type === "text")
     .map((part) => part.text)
     .join("\n")
-  if (text || event.output.content.some((part) => part.type === "text")) printTextOutput(text)
-  for (const part of event.output.content) {
-    if (part.type === "image") console.log(`  Output: [${singleLine(part.mimeType)} omitted, ${part.byteLength} bytes]`)
-  }
-  if (event.output.content.length === 0) console.log("  Output: [none]")
-  if (event.output.details !== undefined) printValue("Details", event.output.details)
-  else if (event.output.detailsTruncated) console.log("  Details: [omitted]")
-  if (event.output.truncated) console.log("  Note: output was truncated or omitted.")
 }
 
-function printEvent(event: AgentEvent): void {
-  switch (event.type) {
-    case "thinking.started":
-      console.log("Thinking started.")
-      break
-    case "thinking.finished":
-      console.log(`Thinking finished: ${singleLine(event.content)}`)
-      break
-    case "message.started":
-      console.log("Message started.")
-      break
-    case "message.finished":
-      console.log(`Message finished: ${singleLine(event.text)}`)
-      break
-    case "tool.started":
-      console.log(`Tool started: ${singleLine(event.toolName)}`)
-      if (event.argsTruncated) console.log("  Params: [omitted]")
-      else printValue("Params", event.args)
-      break
-    case "tool.finished":
-      console.log(`Tool finished: ${singleLine(event.toolName)}${event.isError ? " with an error" : ""}`)
-      printOutput(event)
-      break
-    case "work.interrupted":
-      console.log("Work interrupted.")
-      break
+class ActivityRenderer {
+  readonly #verbose: boolean
+  #hasOutput = false
+  #openThinkingActivityId: string | undefined
+
+  constructor(verbose: boolean) {
+    this.#verbose = verbose
+  }
+
+  print(event: AgentEvent): void {
+    switch (event.type) {
+      case "thinking.started":
+        this.block("Thinking...")
+        this.#openThinkingActivityId = event.activityId
+        return
+      case "thinking.finished":
+        if (this.#openThinkingActivityId === event.activityId) {
+          printIndented(event.content || "[no content]")
+          this.#openThinkingActivityId = undefined
+        } else {
+          this.block("Thinking")
+          printIndented(event.content || "[no content]")
+        }
+        return
+      case "message.started":
+        return
+      case "message.finished":
+        this.block("Assistant")
+        printIndented(event.text)
+        return
+      case "tool.started":
+        this.block(`Tool: ${singleLine(event.toolName)}`)
+        this.printParameters(event.args, event.argsTruncated)
+        return
+      case "tool.finished":
+        this.block(`${event.isError ? "Tool failed" : "Tool complete"}: ${singleLine(event.toolName)}`)
+        this.printToolOutput(event, event.isError || this.#verbose)
+        return
+      case "work.interrupted":
+        this.block("Warning: Work interrupted")
+        console.log("  The active work may be incomplete.")
+    }
+  }
+
+  private block(title: string): void {
+    if (this.#hasOutput) console.log()
+    this.#hasOutput = true
+    this.#openThinkingActivityId = undefined
+    console.log(title)
+  }
+
+  private printParameters(args: unknown, truncated: boolean): void {
+    if (truncated) {
+      console.log("  args: [omitted]")
+      return
+    }
+    if (args && typeof args === "object" && !Array.isArray(args)) {
+      for (const [key, value] of Object.entries(args)) console.log(`  ${singleLine(key)}: ${formatValue(value)}`)
+      return
+    }
+    console.log(`  args: ${formatValue(args)}`)
+  }
+
+  private printToolOutput(event: Extract<AgentEvent, { type: "tool.finished" }>, full: boolean): void {
+    const text = textContent(event)
+    const hasText = event.output.content.some((part) => part.type === "text")
+    if (hasText) this.printText(text, full ? 8 * 1024 : 2 * 1024, full ? undefined : 8)
+    for (const part of event.output.content) {
+      if (part.type === "image") console.log(`  Output: [${singleLine(part.mimeType)} omitted, ${part.byteLength} bytes]`)
+    }
+    if (!hasText && event.output.content.length === 0) console.log("  Output: [none]")
+    if (full && event.output.details !== undefined) console.log(`  Details: ${formatValue(event.output.details)}`)
+    else if (full && event.output.detailsTruncated) console.log("  Details: [omitted]")
+    if (event.output.truncated) console.log("  Note: output was truncated or omitted.")
+  }
+
+  private printText(text: string, maxBytes: number, maxLines: number | undefined): void {
+    const bounded = truncateUtf8(safeText(text), maxBytes)
+    const allLines = bounded.value.split("\n")
+    const lines = maxLines === undefined ? allLines : allLines.slice(0, maxLines)
+    if (lines.length === 1 && !bounded.truncated && lines.length === allLines.length) {
+      console.log(`  Output: ${lines[0]}`)
+      return
+    }
+    console.log("  Output:")
+    for (const line of lines) console.log(`    ${line}`)
+    if (allLines.length > lines.length) console.log(`  [${allLines.length - lines.length} more lines omitted]`)
+    if (bounded.truncated) console.log("  [output truncated]")
   }
 }
 
@@ -170,8 +219,10 @@ function createProgram(piArgs: string[]): Command {
     .description("Show durable agent activity")
     .addOption(new Option("--from-start", "replay activity from the first event").conflicts("after"))
     .option("--after <cursor>", "replay activity after a cursor")
-    .action(async (name: string, options: { fromStart?: boolean; after?: string }) => {
+    .option("--verbose", "show full bounded tool output and details")
+    .action(async (name: string, options: { fromStart?: boolean; after?: string; verbose?: boolean }) => {
       let interrupted = false
+      const renderer = new ActivityRenderer(options.verbose ?? false)
       await withClient(async (client) => {
         const onInterrupt = () => {
           interrupted = true
@@ -180,7 +231,7 @@ function createProgram(piArgs: string[]): Command {
         process.once("SIGINT", onInterrupt)
         try {
           const receiveOptions = options.fromStart ? { fromStart: true } : options.after ? { after: options.after } : undefined
-          for await (const event of (await client.get(name)).receive(receiveOptions)) printEvent(event)
+          for await (const event of (await client.get(name)).receive(receiveOptions)) renderer.print(event)
         } finally {
           process.off("SIGINT", onInterrupt)
         }

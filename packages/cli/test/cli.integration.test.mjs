@@ -140,22 +140,61 @@ test("receives and renders live activity through the CLI", async () => {
     await run(["send", "researcher", "Warmup one"], env)
     await run(["send", "researcher", "Warmup two"], env)
     await run(["send", "researcher", "CLI activity"], env)
-    await waitForText(receiver, () => stdout, "Message finished: Handled: CLI activity")
-    await waitForText(receiver, () => stdout, "Tool finished: bash")
+    await waitForText(receiver, () => stdout, "Handled: CLI activity")
+    await waitForText(receiver, () => stdout, "Tool complete: bash")
 
     receiver.kill("SIGINT")
     assert.deepEqual(await exited, { code: 130, signal: null })
-    assert.match(stdout, /^Thinking started\.$/m)
-    assert.match(stdout, /^Thinking finished: I will check\.$/m)
-    assert.match(stdout, /^Message started\.$/m)
-    assert.match(stdout, /^Tool started: bash$/m)
-    assert.match(stdout, /^  Params: {"command":"pwd"}$/m)
-    assert.match(stdout, /^  Output:$/m)
+    assert.match(stdout, /^Thinking\.\.\.\n  I will check\.$/m)
+    assert.match(stdout, /^Assistant\n  Handled: CLI activity$/m)
+    assert.doesNotMatch(stdout, /^Message started\.$/m)
+    assert.doesNotMatch(stdout, /^Message finished:/m)
+    assert.match(stdout, /^Tool: bash\n  command: pwd$/m)
+    assert.match(stdout, /^Tool complete: bash\n  Output:$/m)
     assert.match(stdout, /^    \/workspace$/m)
     assert.match(stdout, /^    second line$/m)
     assert.doesNotMatch(stdout, /\u001b/)
-    assert.match(stdout, /^  Details: {"exitCode":0}$/m)
+    assert.doesNotMatch(stdout, /^  Details:/m)
     assert.doesNotMatch(stdout, /^Cursor:/m)
+    assert.equal(stderr, "")
+  } finally {
+    if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
+    if (createdId) await terminateWorker(stateDir, createdId)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("shows full successful tool details with verbose receive", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-verbose-receive-"))
+  const home = join(root, "home")
+  const stateDir = join(home, ".pi-fleet")
+  const env = {
+    ...process.env,
+    HOME: home,
+    PI_FLEET_PI_COMMAND: fakePi,
+    PI_FLEET_FAKE_PI_MODE: "semantic-events",
+  }
+  let createdId
+  let receiver
+  try {
+    await chmod(fakePi, 0o755)
+    const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
+    createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.ok(createdId)
+
+    receiver = spawn(process.execPath, [pif, "receive", "researcher", "--verbose"], { env, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    receiver.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
+    receiver.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk })
+    const exited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
+
+    await run(["send", "researcher", "Verbose activity"], env)
+    await waitForText(receiver, () => stdout, "Handled: Verbose activity")
+    receiver.kill("SIGINT")
+    assert.deepEqual(await exited, { code: 130, signal: null })
+    assert.match(stdout, /^Tool complete: bash\n  Output:$/m)
+    assert.match(stdout, /^  Details: {"exitCode":0}$/m)
     assert.equal(stderr, "")
   } finally {
     if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
@@ -194,13 +233,13 @@ test("recovers status, send, and receive after worker replacement", async () => 
     const exited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
 
     await run(["send", "researcher", "Before worker replacement"], env)
-    await waitForText(receiver, () => stdout, "Message finished: Handled: Before worker replacement")
+    await waitForText(receiver, () => stdout, "Handled: Before worker replacement")
     await terminateWorker(stateDir, createdId)
 
     const status = await run(["status", "researcher"], env)
     assert.match(status.stdout, /^State: idle$/m)
     await run(["send", "researcher", "After worker replacement"], env)
-    await waitForText(receiver, () => stdout, "Message finished: Handled: After worker replacement", 10_000)
+    await waitForText(receiver, () => stdout, "Handled: After worker replacement", 10_000)
 
     const afterStore = await openStore(stateDir)
     const after = afterStore.getById(createdId)
@@ -258,10 +297,10 @@ test("renders durable interrupted work after Pi recovery", async () => {
     receiver.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
     receiver.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk })
     const exited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
-    await waitForText(receiver, () => stdout, "Work interrupted.")
+    await waitForText(receiver, () => stdout, "Warning: Work interrupted")
     receiver.kill("SIGINT")
     assert.deepEqual(await exited, { code: 130, signal: null })
-    assert.match(stdout, /^Work interrupted\.$/m)
+    assert.match(stdout, /^Warning: Work interrupted\n  The active work may be incomplete\.$/m)
     assert.doesNotMatch(stdout, /^Cursor:/m)
     assert.equal(stderr, "")
   } finally {
@@ -298,12 +337,13 @@ test("renders bounded tool errors without terminal control characters", async ()
 
     await run(["send", "researcher", "Warmup"], env)
     await run(["send", "researcher", "Bounded error"], env)
-    await waitForText(receiver, () => stdout, "Tool finished: bash unsafe with an error")
+    await waitForText(receiver, () => stdout, "Tool failed: bash unsafe")
 
     receiver.kill("SIGINT")
     assert.deepEqual(await exited, { code: 130, signal: null })
-    assert.match(stdout, /^Tool started: bash unsafe$/m)
-    assert.match(stdout, /^  Params: \[omitted\]$/m)
+    assert.match(stdout, /^Tool: bash unsafe$/m)
+    assert.match(stdout, /^  args: \[omitted\]$/m)
+    assert.match(stdout, /^Tool failed: bash unsafe$/m)
     assert.match(stdout, /^  Output:$/m)
     assert.match(stdout, /^    command failed$/m)
     assert.match(stdout, /^    next line$/m)
@@ -415,7 +455,7 @@ test("replays and resumes durable activity through CLI receive options", async (
     let replayOutput = ""
     replay.stdout.setEncoding("utf8").on("data", (chunk) => { replayOutput += chunk })
     const replayExited = new Promise((resolve) => replay.once("exit", (code, signal) => resolve({ code, signal })))
-    await waitForText(replay, () => replayOutput, "Message finished: Handled: Replay before")
+    await waitForText(replay, () => replayOutput, "Handled: Replay before")
     assert.doesNotMatch(replayOutput, /^Cursor:/m)
     const registry = await openStore(stateDir)
     const record = registry.getById(createdId)
@@ -430,7 +470,7 @@ test("replays and resumes durable activity through CLI receive options", async (
     resumed.stdout.setEncoding("utf8").on("data", (chunk) => { resumedOutput += chunk })
     const resumedExited = new Promise((resolve) => resumed.once("exit", (code, signal) => resolve({ code, signal })))
     await run(["send", "researcher", "Replay after"], env)
-    await waitForText(resumed, () => resumedOutput, "Message finished: Handled: Replay after")
+    await waitForText(resumed, () => resumedOutput, "Handled: Replay after")
     resumed.kill("SIGINT")
     assert.deepEqual(await resumedExited, { code: 130, signal: null })
     assert.doesNotMatch(resumedOutput, /^Cursor:/m)
