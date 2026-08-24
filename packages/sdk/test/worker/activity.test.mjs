@@ -244,3 +244,19 @@ test("holds committed live activity until replay drains", () => {
   assert.equal(activity.finishReplay(subscriptionId), true)
   assert.equal(activity.nextOutbound()?.message.sequence, 2)
 })
+
+test("queues a terminal after replay and pending live activity", () => {
+  const activity = new LiveActivity("agent-1", "runtime-1")
+  const subscriptionId = activity.subscribe(Buffer.from("subscriber"), true)
+  const replay = normalize(activity, { type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: {} })[0]
+  const live = normalize(activity, { type: "tool_execution_end", toolCallId: "tool-1", toolName: "bash", isError: false })[0]
+  assert.ok(replay)
+  assert.ok(live)
+  assert.equal(activity.queueReplay(subscriptionId, { sequence: 1, event: { ...replay, cursor: "pf1.test-1" } }), true)
+  assert.equal(activity.publishEvent(2, { ...live, cursor: "pf1.test-2" }), true)
+  assert.equal(activity.endSubscriptions(), true)
+  assert.equal(activity.nextOutbound()?.message.command, "event")
+  assert.equal(activity.finishReplay(subscriptionId), true)
+  assert.equal(activity.nextOutbound()?.message.command, "event")
+  assert.equal(activity.nextOutbound()?.message.command, "stream.end")
+})

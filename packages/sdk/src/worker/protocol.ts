@@ -113,6 +113,14 @@ export type EventFrame = {
   event: AgentEvent
 }
 
+export type StreamEndFrame = {
+  version: 1
+  command: "stream.end"
+  agentId: string
+  runtimeGeneration: string
+  subscriptionId: string
+}
+
 export type WorkerMessage =
   | StatusRequest
   | SendRequest
@@ -125,6 +133,7 @@ export type WorkerMessage =
   | UnsubscribeResponse
   | SubscriptionStatusResponse
   | EventFrame
+  | StreamEndFrame
 
 export function encode(message: WorkerMessage): string {
   return JSON.stringify(message)

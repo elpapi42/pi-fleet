@@ -6,6 +6,7 @@ import {
   decode,
   encode,
   type EventFrame,
+  type StreamEndFrame,
   type SubscribeRequest,
   type SubscribeResponse,
   type SubscriptionStatusRequest,
@@ -165,6 +166,10 @@ async function* readSubscription(
       nextFrame = socket.receive()
       void nextFrame.catch(() => {})
       const frame = decode(result[0])
+      if (isStreamEndFrame(frame) && frame.agentId === record.id && frame.runtimeGeneration === runtime.generation &&
+        frame.subscriptionId === subscriptionId) {
+        return
+      }
       if (isEventFrame(frame) && frame.agentId === record.id && frame.runtimeGeneration === runtime.generation &&
         frame.subscriptionId === subscriptionId) {
         if (!cursorMatches(frame.event.cursor, record.id, frame.sequence)) throw new StreamGapError()
@@ -265,6 +270,12 @@ function isSubscriptionStatusResponse(response: unknown): response is Subscripti
     typeof response.ok === "boolean"
 }
 
+function isStreamEndFrame(response: unknown): response is StreamEndFrame {
+  return isRecord(response) && response.version === 1 && response.command === "stream.end" &&
+    typeof response.agentId === "string" && typeof response.runtimeGeneration === "string" &&
+    typeof response.subscriptionId === "string"
+}
+
 function isEventFrame(response: unknown): response is EventFrame {
   if (!isRecord(response) || response.version !== 1 || response.command !== "event" ||
     typeof response.agentId !== "string" || typeof response.runtimeGeneration !== "string" ||
@@ -280,6 +291,7 @@ function isAgentEvent(value: unknown): value is AgentEvent {
     case "thinking.started":
     case "message.started":
     case "work.interrupted":
+    case "agent.destroyed":
       return true
     case "thinking.finished":
       return typeof value.content === "string"

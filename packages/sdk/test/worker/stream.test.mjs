@@ -136,6 +136,54 @@ test("subscribes, yields events, and unsubscribes when iteration ends", async ()
   })
 })
 
+test("ends normally after an ordered stream terminal", async () => {
+  await withRouter(async (router, agent) => {
+    const responder = (async () => {
+      const [route, frame] = await router.receive()
+      const request = decode(frame)
+      await router.send([route, encode({
+        version: 1,
+        requestId: request.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+        afterSequence: 0,
+      })])
+      await router.send([route, encode({
+        version: 1,
+        command: "event",
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+        sequence: 1,
+        event: {
+          type: "agent.destroyed",
+          cursor: encodeEventCursor(agent.id, 1),
+          eventId: "event-1",
+          activityId: "destroy-1",
+          timestamp: 1,
+        },
+      })])
+      await router.send([route, encode({
+        version: 1,
+        command: "stream.end",
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+      })])
+      const [, unsubscribeFrame] = await router.receive()
+      assert.equal(decode(unsubscribeFrame).command, "unsubscribe")
+    })()
+
+    const iterator = receiveEvents(agent)[Symbol.asyncIterator]()
+    assert.equal((await iterator.next()).value.type, "agent.destroyed")
+    assert.deepEqual(await iterator.next(), { value: undefined, done: true })
+    await responder
+  })
+})
+
 test("rejects a subscription with mismatched worker identity", async () => {
   await withRouter(async (router, agent) => {
     const responder = (async () => {

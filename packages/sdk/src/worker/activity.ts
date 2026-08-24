@@ -1,18 +1,18 @@
 import { randomUUID } from "node:crypto"
 import type { AgentEvent, JsonValue, ToolOutput, UnsequencedAgentEvent } from "../fleet/agent.js"
-import type { EventFrame } from "./protocol.js"
+import type { EventFrame, StreamEndFrame } from "./protocol.js"
 
 type Subscriber = {
   route: Buffer
   subscriptionId: string
-  events: EventFrame[]
-  pendingLive: EventFrame[]
+  events: Array<EventFrame | StreamEndFrame>
+  pendingLive: Array<EventFrame | StreamEndFrame>
   replaying: boolean
 }
 
 export type ActivityOutbound = {
   route: Buffer
-  message: EventFrame
+  message: EventFrame | StreamEndFrame
   subscriptionId: string
 }
 
@@ -79,6 +79,14 @@ export class LiveActivity {
     return queued
   }
 
+  endSubscriptions(): boolean {
+    let queued = false
+    for (const subscriber of [...this.#subscribers.values()]) {
+      queued = this.enqueue(subscriber, this.endFrame(subscriber.subscriptionId), subscriber.replaying) || queued
+    }
+    return queued
+  }
+
   unsubscribe(route: Buffer, subscriptionId?: string): void {
     if (subscriptionId) {
       const subscriber = this.#subscribers.get(subscriptionId)
@@ -119,7 +127,7 @@ export class LiveActivity {
     this.#subscribers.clear()
   }
 
-  private enqueue(subscriber: Subscriber, frame: EventFrame, pending: boolean): boolean {
+  private enqueue(subscriber: Subscriber, frame: EventFrame | StreamEndFrame, pending: boolean): boolean {
     if (subscriber.events.length + subscriber.pendingLive.length >= SUBSCRIBER_QUEUE_LIMIT) {
       this.#subscribers.delete(subscriber.subscriptionId)
       return false
@@ -138,6 +146,16 @@ export class LiveActivity {
       subscriptionId,
       sequence,
       event,
+    }
+  }
+
+  private endFrame(subscriptionId: string): StreamEndFrame {
+    return {
+      version: 1,
+      command: "stream.end",
+      agentId: this.#agentId,
+      runtimeGeneration: this.#runtimeGeneration,
+      subscriptionId,
     }
   }
 }

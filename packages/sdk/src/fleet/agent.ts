@@ -61,6 +61,7 @@ export type AgentEvent =
   | (AgentEventBase & { type: "tool.started"; toolName: string; args: JsonValue; argsTruncated: boolean })
   | (AgentEventBase & { type: "tool.finished"; toolName: string; isError: boolean; output: ToolOutput })
   | (AgentEventBase & { type: "work.interrupted" })
+  | (AgentEventBase & { type: "agent.destroyed" })
 
 export interface Agent {
   readonly id: string
