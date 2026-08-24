@@ -541,6 +541,191 @@ test("handles concurrent state writes from separate processes", async () => {
   })
 })
 
+test("atomically admits destroy with a final event and immediate name reuse", async () => {
+  await withStore(async (store) => {
+    await store.create({
+      ...record("researcher", "agent-old"),
+      state: "idle",
+      runtime: {
+        ...record("researcher", "agent-old").runtime,
+        state: "ready",
+        claimId: "claim-old",
+      },
+    })
+
+    const destroyed = await store.beginDestroy("agent-old", "researcher", {
+      runtimeGeneration: "runtime-1",
+      claimId: "claim-old",
+      requestedAt: 100,
+    }, (cursor) => ({ type: "agent.destroyed", cursor }))
+
+    assert.deepEqual(destroyed?.event, {
+      sequence: 1,
+      cursor: encodeEventCursor("agent-old", 1),
+      event: { type: "agent.destroyed", cursor: encodeEventCursor("agent-old", 1) },
+    })
+    assert.equal(destroyed?.record.destroying?.requestedAt, 100)
+    assert.equal(destroyed?.record.destroying?.cleanupAfter, 30_100)
+    assert.equal(destroyed?.record.destroying?.runtimeGeneration, "runtime-1")
+    assert.equal(destroyed?.record.destroying?.claimId, "claim-old")
+    assert.equal(store.getByName("researcher"), undefined)
+    assert.equal(store.getById("agent-old")?.lastEventSeq, 1)
+    assert.deepEqual(store.readEvents("agent-old", 0, 1, 10), [destroyed?.event])
+
+    assert.equal(await store.create(record("researcher", "agent-new")), true)
+    assert.equal(store.getByName("researcher")?.id, "agent-new")
+  })
+})
+
+test("fences runtime mutations and recovery claims after destroy admission", async () => {
+  await withStore(async (store) => {
+    await store.create({
+      ...record("researcher", "agent-old"),
+      state: "idle",
+      runtime: {
+        ...record("researcher", "agent-old").runtime,
+        state: "ready",
+        claimId: "claim-old",
+      },
+    })
+    await store.beginDestroy("agent-old", "researcher", {
+      runtimeGeneration: "runtime-1",
+      claimId: "claim-old",
+      requestedAt: 100,
+    }, (cursor) => ({ type: "agent.destroyed", cursor }))
+
+    assert.equal(await store.markReady("agent-old", "runtime-1", {
+      workerPid: 1, endpoint: "ipc:///tmp/worker.sock", sessionPath: "/tmp/session", sessionId: "session",
+    }), false)
+    assert.equal(await store.markRecovered("agent-old", "runtime-1", { sessionPath: "/tmp/session", sessionId: "session" }), false)
+    assert.equal(await store.updateState("agent-old", "runtime-1", "working"), false)
+    assert.equal(await store.appendEvent("agent-old", "runtime-1", () => ({ type: "message.started" })), undefined)
+    assert.equal(await store.claimRuntime("agent-old", "runtime-1", {
+      generation: "runtime-2", claimId: "claim-2", claimedAt: 200, endpoint: "ipc:///tmp/runtime-2.sock",
+    }, (cursor) => ({ type: "work.interrupted", cursor })), undefined)
+    assert.equal(store.isCurrentRuntimeClaim("agent-old", "runtime-1", "claim-old"), false)
+  })
+})
+
+test("deletes marked event history in finite batches and resumes only after its lease", async () => {
+  await withStore(async (store, stateDir) => {
+    const requestedAt = Date.now()
+    await store.create({
+      ...record("researcher", "agent-old"),
+      state: "idle",
+      runtime: { ...record("researcher", "agent-old").runtime, state: "ready", claimId: "claim-old" },
+    })
+    await store.appendEvent("agent-old", "runtime-1", (cursor) => ({ type: "message.started", cursor }))
+    await store.appendEvent("agent-old", "runtime-1", (cursor) => ({ type: "message.finished", cursor }))
+    const destroy = await store.beginDestroy("agent-old", "researcher", {
+      runtimeGeneration: "runtime-1", claimId: "claim-old", requestedAt,
+    }, (cursor) => ({ type: "agent.destroyed", cursor }))
+    assert.ok(destroy)
+
+    assert.equal(await store.cleanupExpiredDestroys(requestedAt), 0)
+    assert.ok(store.getById("agent-old"))
+    assert.equal(await store.deleteDestroyEventBatch("agent-old", destroy.record.destroying, 2), 2)
+    assert.ok(store.getById("agent-old"))
+    assert.deepEqual(store.readEvents("agent-old", 0, 3, 10).map(({ sequence }) => sequence), [3])
+    assert.equal(await store.finishDestroy("agent-old", destroy.record.destroying), false)
+
+    await store.close()
+    const reopened = await openStore(stateDir)
+    try {
+      assert.ok(reopened.getById("agent-old"))
+      assert.equal(await reopened.cleanupExpiredDestroys(destroy.record.destroying.cleanupAfter), 1)
+      assert.equal(reopened.getById("agent-old"), undefined)
+    } finally {
+      await reopened.close()
+    }
+  })
+})
+
+test("store open resumes expired destroy cleanup but not a live lease", { concurrency: false }, async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "pi-fleet-destroy-open-"))
+  const first = await openStore(stateDir)
+  try {
+    await first.create({
+      ...record("researcher", "agent-old"),
+      state: "idle",
+      runtime: { ...record("researcher", "agent-old").runtime, state: "ready", claimId: "claim-old" },
+    })
+    await first.beginDestroy("agent-old", "researcher", {
+      runtimeGeneration: "runtime-1", claimId: "claim-old", requestedAt: 100,
+    }, (cursor) => ({ type: "agent.destroyed", cursor }))
+  } finally {
+    await first.close()
+  }
+
+  const originalNow = Date.now
+  try {
+    Date.now = () => 30_099
+    const beforeLease = await openStore(stateDir)
+    try {
+      assert.ok(beforeLease.getById("agent-old"))
+    } finally {
+      await beforeLease.close()
+    }
+
+    Date.now = () => 30_100
+    const afterLease = await openStore(stateDir)
+    try {
+      assert.equal(afterLease.getById("agent-old"), undefined)
+    } finally {
+      await afterLease.close()
+    }
+  } finally {
+    Date.now = originalNow
+    await rm(stateDir, { recursive: true, force: true })
+  }
+})
+
+test("admits only one destroy across separate processes", async () => {
+  await withStore(async (store, stateDir) => {
+    await store.create({
+      ...record("researcher", "agent-old"),
+      state: "idle",
+      runtime: { ...record("researcher", "agent-old").runtime, state: "ready", claimId: "claim-old" },
+    })
+    const storeUrl = new URL("../../dist/state/store.js", import.meta.url).href
+    const readyDir = join(stateDir, "destroy-ready")
+    const goFile = join(stateDir, "destroy-go")
+    const destroyScript = `
+      import { access, mkdir, writeFile } from "node:fs/promises";
+      import { openStore } from ${JSON.stringify(storeUrl)};
+      const [stateDir, readyDir, goFile] = process.argv.slice(1);
+      const store = await openStore(stateDir);
+      try {
+        await mkdir(readyDir, { recursive: true });
+        await writeFile(readyDir + "/" + process.pid, "ready");
+        while (true) {
+          try { await access(goFile); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
+        }
+        const result = await store.beginDestroy("agent-old", "researcher", {
+          runtimeGeneration: "runtime-1", claimId: "claim-old", requestedAt: 100,
+        }, (cursor) => ({ type: "agent.destroyed", cursor }));
+        process.stdout.write(String(result !== undefined));
+      } finally {
+        await store.close();
+      }
+    `
+    const first = execFileAsync(process.execPath, ["--input-type=module", "--eval", destroyScript, stateDir, readyDir, goFile])
+    const second = execFileAsync(process.execPath, ["--input-type=module", "--eval", destroyScript, stateDir, readyDir, goFile])
+    for (let attempts = 0; attempts < 100; attempts += 1) {
+      try {
+        if ((await readdir(readyDir)).length === 2) break
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    assert.equal((await readdir(readyDir)).length, 2)
+    await writeFile(goFile, "go")
+    assert.deepEqual((await Promise.all([first, second])).map(({ stdout }) => stdout).sort(), ["false", "true"])
+    assert.equal(store.getByName("researcher"), undefined)
+    assert.equal(store.getById("agent-old")?.lastEventSeq, 1)
+    assert.equal(store.readEvents("agent-old", 0, 1, 10).length, 1)
+  })
+})
+
 test("allocates each durable event sequence once across processes", async () => {
   await withStore(async (store, stateDir) => {
     await store.create(record("researcher", "agent-1"))

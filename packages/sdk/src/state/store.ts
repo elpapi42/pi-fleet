@@ -19,6 +19,12 @@ export type AgentRecord = {
     claimId?: string
     claimedAt?: number
   }
+  destroying?: {
+    requestedAt: number
+    cleanupAfter: number
+    runtimeGeneration: string
+    claimId: string
+  }
   lastEventSeq: number
   createdAt: number
   updatedAt: number
@@ -43,6 +49,17 @@ export type RuntimeClaimResult<Event> = {
   interruption?: EventJournalEntry<Event>
 }
 
+export type DestroyOwner = {
+  runtimeGeneration: string
+  claimId: string
+  requestedAt: number
+}
+
+export type DestroyResult<Event> = {
+  record: AgentRecord
+  event: EventJournalEntry<Event>
+}
+
 type EventCursorPayload = {
   agentId: string
   sequence: number
@@ -60,6 +77,7 @@ type SharedStore = {
 const MAX_EVENT_CURSOR_LENGTH = 4_096
 const EVENT_CURSOR_PAYLOAD = /^[A-Za-z0-9_-]+$/
 export const RUNTIME_CLAIM_WINDOW_MS = 30_000
+export const DESTROY_CLEANUP_LEASE_MS = 30_000
 const stores = new Map<string, SharedStore>()
 
 export class FleetStore {
@@ -99,13 +117,100 @@ export class FleetStore {
 
   list(): AgentRecord[] {
     this.assertOpen()
-    return [...this.#agents.getRange({})].map(({ value }) => value)
+    return [...this.#agents.getRange({})]
+      .map(({ value }) => value)
+      .filter((record) => !record.destroying)
+  }
+
+  async beginDestroy<Event>(id: string, name: string, owner: DestroyOwner, createEvent: (cursor: string) => Event): Promise<DestroyResult<Event> | undefined> {
+    this.assertOpen()
+    while (true) {
+      const entry = this.#agents.getEntry(id)
+      const runtime = entry?.value.runtime
+      if (!entry || entry.value.name !== name || entry.value.destroying || !runtime
+        || runtime.generation !== owner.runtimeGeneration || runtime.claimId !== owner.claimId || runtime.state !== "ready"
+        || this.#names.get(name) !== id) return undefined
+
+      const version = entry.version ?? 0
+      const sequence = entry.value.lastEventSeq + 1
+      const cursor = encodeEventCursor(id, sequence)
+      const event: EventJournalEntry<Event> = { sequence, cursor, event: createEvent(cursor) }
+      const record: AgentRecord = {
+        ...entry.value,
+        destroying: {
+          requestedAt: owner.requestedAt,
+          cleanupAfter: owner.requestedAt + DESTROY_CLEANUP_LEASE_MS,
+          runtimeGeneration: owner.runtimeGeneration,
+          claimId: owner.claimId,
+        },
+        lastEventSeq: sequence,
+        updatedAt: owner.requestedAt,
+      }
+      const admitted = await this.#agents.ifVersion(id, version, () => {
+        this.#events.put([id, sequence], event)
+        this.#names.remove(name)
+        this.#agents.put(id, record, version + 1)
+      })
+      if (admitted) return { record, event }
+    }
+  }
+
+  async deleteDestroyEventBatch(id: string, owner: NonNullable<AgentRecord["destroying"]>, limit: number): Promise<number | undefined> {
+    this.assertOpen()
+    if (limit < 1) return 0
+    while (true) {
+      const entry = this.#agents.getEntry(id)
+      if (!entry || !sameDestroyOwner(entry.value.destroying, owner)) return undefined
+      const events = [...this.#events.getRange({
+        start: [id, 0],
+        end: [id, Number.MAX_SAFE_INTEGER],
+        inclusiveEnd: true,
+        limit,
+      })]
+      if (events.length === 0) return 0
+      const version = entry.version ?? 0
+      const deleted = await this.#agents.ifVersion(id, version, () => {
+        for (const event of events) this.#events.remove(event.key)
+      })
+      if (deleted) return events.length
+    }
+  }
+
+  async finishDestroy(id: string, owner: NonNullable<AgentRecord["destroying"]>): Promise<boolean> {
+    this.assertOpen()
+    while (true) {
+      const entry = this.#agents.getEntry(id)
+      if (!entry || !sameDestroyOwner(entry.value.destroying, owner)) return false
+      const [remaining] = [...this.#events.getRange({
+        start: [id, 0],
+        end: [id, Number.MAX_SAFE_INTEGER],
+        inclusiveEnd: true,
+        limit: 1,
+      })]
+      if (remaining) return false
+      const version = entry.version ?? 0
+      if (await this.#agents.ifVersion(id, version, () => this.#agents.remove(id))) return true
+    }
+  }
+
+  async cleanupExpiredDestroys(now = Date.now()): Promise<number> {
+    this.assertOpen()
+    const expired = [...this.#agents.getRange({})]
+      .map(({ value }) => value)
+      .filter((record) => record.destroying && record.destroying.cleanupAfter <= now)
+    let completed = 0
+    for (const record of expired) {
+      const owner = record.destroying!
+      while ((await this.deleteDestroyEventBatch(record.id, owner, 128)) === 128) {}
+      if (await this.finishDestroy(record.id, owner)) completed += 1
+    }
+    return completed
   }
 
   async markReady(id: string, runtimeGeneration: string, ready: Pick<NonNullable<AgentRecord["runtime"]>, "workerPid" | "endpoint"> & Pick<AgentRecord, "sessionPath" | "sessionId">): Promise<boolean> {
     this.assertOpen()
     const entry = this.#agents.getEntry(id)
-    if (!entry || entry.value.runtime?.generation !== runtimeGeneration) return false
+    if (!entry || entry.value.destroying || entry.value.runtime?.generation !== runtimeGeneration) return false
 
     const { endpoint, workerPid, sessionId, sessionPath } = ready
     const record: AgentRecord = {
@@ -130,7 +235,7 @@ export class FleetStore {
     while (true) {
       const entry = this.#agents.getEntry(id)
       const previousRuntime = entry?.value.runtime
-      if (!entry || !previousRuntime || previousRuntime.generation !== previousGeneration) return undefined
+      if (!entry || entry.value.destroying || !previousRuntime || previousRuntime.generation !== previousGeneration) return undefined
       if (isFreshRuntimeClaim(previousRuntime, claim.claimedAt)) return undefined
 
       const version = entry.version ?? 0
@@ -164,7 +269,7 @@ export class FleetStore {
     while (true) {
       const entry = this.#agents.getEntry(id)
       const runtime = entry?.value.runtime
-      if (!entry || !runtime || runtime.generation !== runtimeGeneration || runtime.claimId !== claimId || runtime.state !== "starting") return false
+      if (!entry || entry.value.destroying || !runtime || runtime.generation !== runtimeGeneration || runtime.claimId !== claimId || runtime.state !== "starting") return false
 
       const version = entry.version ?? 0
       const record: AgentRecord = {
@@ -189,7 +294,7 @@ export class FleetStore {
     while (true) {
       const entry = this.#agents.getEntry(id)
       const runtime = entry?.value.runtime
-      if (!entry || !runtime || runtime.generation !== runtimeGeneration || runtime.claimId !== claimId || runtime.state !== "starting") return false
+      if (!entry || entry.value.destroying || !runtime || runtime.generation !== runtimeGeneration || runtime.claimId !== claimId || runtime.state !== "starting") return false
 
       const version = entry.version ?? 0
       const record: AgentRecord = {
@@ -203,15 +308,16 @@ export class FleetStore {
 
   isCurrentRuntimeClaim(id: string, runtimeGeneration: string, claimId: string): boolean {
     this.assertOpen()
-    const runtime = this.#agents.get(id)?.runtime
-    return runtime?.generation === runtimeGeneration && runtime.claimId === claimId
+    const record = this.#agents.get(id)
+    const runtime = record?.runtime
+    return !record?.destroying && runtime?.generation === runtimeGeneration && runtime.claimId === claimId
   }
 
   async markRecovered(id: string, runtimeGeneration: string, ready: Pick<AgentRecord, "sessionPath" | "sessionId">): Promise<boolean> {
     this.assertOpen()
     while (true) {
       const entry = this.#agents.getEntry(id)
-      if (!entry || entry.value.runtime?.generation !== runtimeGeneration) return false
+      if (!entry || entry.value.destroying || entry.value.runtime?.generation !== runtimeGeneration) return false
       const version = entry.version ?? 0
       const updated: AgentRecord = {
         ...entry.value,
@@ -228,7 +334,7 @@ export class FleetStore {
     this.assertOpen()
     while (true) {
       const entry = this.#agents.getEntry(id)
-      if (!entry || entry.value.runtime?.generation !== runtimeGeneration) return false
+      if (!entry || entry.value.destroying || entry.value.runtime?.generation !== runtimeGeneration) return false
       if (entry.value.state === state) return true
 
       const version = entry.version ?? 0
@@ -241,7 +347,7 @@ export class FleetStore {
     this.assertOpen()
     while (true) {
       const entry = this.#agents.getEntry(id)
-      if (!entry || entry.value.runtime?.generation !== runtimeGeneration) return undefined
+      if (!entry || entry.value.destroying || entry.value.runtime?.generation !== runtimeGeneration) return undefined
 
       const version = entry.version ?? 0
       const sequence = entry.value.lastEventSeq + 1
@@ -317,7 +423,9 @@ export async function openStore(stateDir: string): Promise<FleetStore> {
     stores.set(canonicalStateDir, shared)
   }
   shared.references += 1
-  return new FleetStore(canonicalStateDir, shared)
+  const store = new FleetStore(canonicalStateDir, shared)
+  await store.cleanupExpiredDestroys()
+  return store
 }
 
 export function encodeEventCursor(agentId: string, sequence: number): string {
@@ -340,6 +448,13 @@ export function decodeEventCursor(cursor: string): EventCursorPayload {
     if (error instanceof TypeError && error.message === "Invalid event cursor") throw error
     throw new TypeError("Invalid event cursor")
   }
+}
+
+function sameDestroyOwner(left: AgentRecord["destroying"], right: NonNullable<AgentRecord["destroying"]>): boolean {
+  return left?.requestedAt === right.requestedAt
+    && left.cleanupAfter === right.cleanupAfter
+    && left.runtimeGeneration === right.runtimeGeneration
+    && left.claimId === right.claimId
 }
 
 function isFreshRuntimeClaim(runtime: NonNullable<AgentRecord["runtime"]>, claimedAt: number): boolean {
