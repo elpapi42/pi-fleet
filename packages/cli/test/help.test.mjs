@@ -31,5 +31,5 @@ test("shows the CLI package version", () => {
   })
 
   assert.equal(result.status, 0)
-  assert.equal(result.stdout, "0.10.1\n")
+  assert.equal(result.stdout, "0.11.0\n")
 })

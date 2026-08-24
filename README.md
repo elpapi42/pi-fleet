@@ -30,7 +30,7 @@ pif receive researcher
 # In another terminal:
 pif send researcher "Investigate the database schema"
 
-# Replay all history, or resume after a Cursor line from pif receive.
+# Replay all history, or resume after an SDK event cursor.
 pif receive researcher --from-start
 pif receive researcher --after pf1.EXAMPLE
 

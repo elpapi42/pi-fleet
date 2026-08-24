@@ -155,7 +155,7 @@ test("receives and renders live activity through the CLI", async () => {
     assert.match(stdout, /^    second line$/m)
     assert.doesNotMatch(stdout, /\u001b/)
     assert.match(stdout, /^  Details: {"exitCode":0}$/m)
-    assert.match(stdout, /^Cursor: pf1\.[A-Za-z0-9_-]+$/m)
+    assert.doesNotMatch(stdout, /^Cursor:/m)
     assert.equal(stderr, "")
   } finally {
     if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
@@ -262,7 +262,7 @@ test("renders durable interrupted work after Pi recovery", async () => {
     receiver.kill("SIGINT")
     assert.deepEqual(await exited, { code: 130, signal: null })
     assert.match(stdout, /^Work interrupted\.$/m)
-    assert.match(stdout, /^Cursor: pf1\.[A-Za-z0-9_-]+$/m)
+    assert.doesNotMatch(stdout, /^Cursor:/m)
     assert.equal(stderr, "")
   } finally {
     if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
@@ -416,7 +416,11 @@ test("replays and resumes durable activity through CLI receive options", async (
     replay.stdout.setEncoding("utf8").on("data", (chunk) => { replayOutput += chunk })
     const replayExited = new Promise((resolve) => replay.once("exit", (code, signal) => resolve({ code, signal })))
     await waitForText(replay, () => replayOutput, "Message finished: Handled: Replay before")
-    const cursor = [...replayOutput.matchAll(/^Cursor: (pf1\.[A-Za-z0-9_-]+)$/gm)].at(-1)?.[1]
+    assert.doesNotMatch(replayOutput, /^Cursor:/m)
+    const registry = await openStore(stateDir)
+    const record = registry.getById(createdId)
+    const cursor = record && registry.readEvents(record.id, 0, record.lastEventSeq, record.lastEventSeq).at(-1)?.cursor
+    await registry.close()
     assert.ok(cursor)
     replay.kill("SIGINT")
     assert.deepEqual(await replayExited, { code: 130, signal: null })
@@ -429,7 +433,7 @@ test("replays and resumes durable activity through CLI receive options", async (
     await waitForText(resumed, () => resumedOutput, "Message finished: Handled: Replay after")
     resumed.kill("SIGINT")
     assert.deepEqual(await resumedExited, { code: 130, signal: null })
-    assert.match(resumedOutput, /^Cursor: pf1\.[A-Za-z0-9_-]+$/m)
+    assert.doesNotMatch(resumedOutput, /^Cursor:/m)
   } finally {
     if (replay && replay.exitCode === null && replay.signalCode === null) replay.kill("SIGTERM")
     if (resumed && resumed.exitCode === null && resumed.signalCode === null) resumed.kill("SIGTERM")
