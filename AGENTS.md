@@ -10,4 +10,5 @@
 - Pi-fleet always uses the host's installed `pi` executable without pinning, rejecting, branching on, or promising compatibility with a Pi version. Runtime checks report the observed Pi version only. If a Pi update changes its protocol and breaks pi-fleet, that incompatibility is expected and accepted; update pi-fleet for current Pi behavior without preserving old-version paths.
 - The user expects AGENTS.md to remain tracked project guidance and new .pi/ content to remain ignored by Git.
 - The user treats cohesion as the primary code-organization rule. Organize code by capability, prefer larger cohesive files over generic shared inventories, and split only for independent responsibilities while keeping split files in one cohesive folder.
+- Concurrent SDK calls have no guaranteed relative worker admission order. JavaScript invocation order is not transport arrival order.
 <!-- opm:managed:end -->
