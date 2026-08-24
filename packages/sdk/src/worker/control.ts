@@ -4,7 +4,7 @@ import { Dealer } from "zeromq"
 import { fileURLToPath } from "node:url"
 import { join } from "node:path"
 import { AgentRecoveryQueueFullError, AgentSendUncertainError, AgentUnavailableError } from "../fleet/agent.js"
-import { decode, encode, type SendRequest, type SendResponse, type StatusRequest, type StatusResponse } from "./protocol.js"
+import { decode, encode, type DestroyRequest, type DestroyResponse, type SendRequest, type SendResponse, type StatusRequest, type StatusResponse } from "./protocol.js"
 
 export type WorkerTarget = {
   id: string
@@ -74,6 +74,26 @@ export async function requestStatus(record: WorkerTarget, timeoutMs = 1_000): Pr
   return response.status
 }
 
+export async function requestDestroy(record: WorkerTarget, timeoutMs = 60_000): Promise<void> {
+  const request: DestroyRequest = {
+    version: 1,
+    requestId: randomUUID(),
+    command: "destroy",
+    agentId: record.id,
+    runtimeGeneration: record.runtime?.generation ?? "",
+  }
+  let response: unknown
+  try {
+    response = await requestWorker(record, request, timeoutMs)
+  } catch {
+    throw new AgentUnavailableError(record.name)
+  }
+  if (!isDestroyResponse(response) || response.requestId !== request.requestId || !response.ok ||
+    response.agentId !== record.id || response.runtimeGeneration !== record.runtime?.generation) {
+    throw new AgentUnavailableError(record.name)
+  }
+}
+
 export async function requestSend(record: WorkerTarget, message: string, delivery: "steer" | "followUp", timeoutMs = 60_000, deadlineAt = Date.now() + 60_000): Promise<{ acceptedAt: number }> {
   const request: SendRequest = {
     version: 1,
@@ -119,7 +139,7 @@ class WorkerRequestFailure extends Error {
   }
 }
 
-async function requestWorker(record: WorkerTarget, request: StatusRequest | SendRequest, timeoutMs: number): Promise<unknown> {
+async function requestWorker(record: WorkerTarget, request: StatusRequest | SendRequest | DestroyRequest, timeoutMs: number): Promise<unknown> {
   const runtime = record.runtime
   if (!runtime?.endpoint) throw new AgentUnavailableError(record.name)
 
@@ -131,7 +151,7 @@ async function requestWorker(record: WorkerTarget, request: StatusRequest | Send
     accepted = true
     return decode((await withTimeout(socket.receive(), timeoutMs, record.name))[0])
   } catch (error) {
-    if (request.command === "status" || (error instanceof AgentUnavailableError && !accepted)) throw new AgentUnavailableError(record.name)
+    if (request.command === "status" || request.command === "destroy" || (error instanceof AgentUnavailableError && !accepted)) throw new AgentUnavailableError(record.name)
     throw new WorkerRequestFailure(accepted)
   } finally {
     socket.close()
@@ -140,6 +160,12 @@ async function requestWorker(record: WorkerTarget, request: StatusRequest | Send
 
 function isStatusResponse(response: unknown): response is StatusResponse {
   return isRecord(response) && response.version === 1 && typeof response.requestId === "string"
+}
+
+function isDestroyResponse(response: unknown): response is DestroyResponse {
+  return isRecord(response) && response.version === 1 && response.command === "destroy" &&
+    typeof response.requestId === "string" && typeof response.agentId === "string" &&
+    typeof response.runtimeGeneration === "string" && typeof response.ok === "boolean"
 }
 
 function isSendResponse(response: unknown): response is SendResponse {

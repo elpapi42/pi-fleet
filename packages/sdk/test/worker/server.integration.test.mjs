@@ -63,6 +63,16 @@ async function receiveEvent(subscription) {
   return decode((await subscription.socket.receive())[0])
 }
 
+function destroyRequest(record) {
+  return {
+    version: 1,
+    requestId: randomUUID(),
+    command: "destroy",
+    agentId: record.id,
+    runtimeGeneration: record.runtime.generation,
+  }
+}
+
 function sendRequest(record, message, deadlineAt = Date.now() + 40_000) {
   return {
     version: 1,
@@ -117,6 +127,84 @@ async function withWorker(options, run) {
     await rm(stateDir, { recursive: true, force: true })
   }
 }
+
+test("destroys active work after publishing the final event and stream terminal", { concurrency: false }, async () => {
+  await withWorker(
+    (stateDir) => ({
+      PI_FLEET_FAKE_PI_MODE: "prompt-event",
+      PI_FLEET_FAKE_PI_SETTLE_FILE: join(stateDir, "settle"),
+    }),
+    async ({ stateDir, record }) => {
+      assert.ok(record?.runtime?.endpoint)
+      const subscription = await subscribe(record)
+      const socket = new Dealer({ routingId: randomUUID(), immediate: true, linger: 0 })
+      socket.connect(record.runtime.endpoint)
+      try {
+        await requestSend(record, "active work", "steer")
+        await waitFor(async () => (await requestStatus(record)).state === "working", "Worker did not become working")
+        const request = destroyRequest(record)
+        await socket.send(encode(request))
+        const finalEvent = await receiveEvent(subscription)
+        assert.equal(finalEvent.command, "event")
+        assert.equal(finalEvent.event.type, "agent.destroyed")
+        assert.equal(finalEvent.sequence, 1)
+        const terminal = await receiveEvent(subscription)
+        assert.equal(terminal.command, "stream.end")
+        const response = decode((await socket.receive())[0])
+        assert.equal(response.command, "destroy")
+        assert.equal(response.ok, true)
+        await waitFor(async () => {
+          const store = await openStore(stateDir)
+          try { return store.getById(record.id) === undefined } finally { await store.close() }
+        }, "Destroy cleanup did not remove the old agent")
+      } finally {
+        socket.close()
+        subscription.socket.close()
+      }
+    },
+  )
+})
+
+test("does not deliver sends after destroy admission", { concurrency: false }, async () => {
+  await withWorker(
+    (stateDir) => ({
+      PI_FLEET_FAKE_PI_PROMPT_DELAY_MS: "200",
+      PI_FLEET_FAKE_PI_PROMPT_STARTED_FILE: join(stateDir, "prompt-started"),
+      PI_FLEET_FAKE_PI_COMMAND_LOG_FILE: join(stateDir, "commands.log"),
+    }),
+    async ({ stateDir, record }) => {
+      assert.ok(record?.runtime?.endpoint)
+      const first = requestSend(record, "before destroy", "steer")
+      await waitFor(async () => {
+        try { await access(join(stateDir, "prompt-started")); return true } catch { return false }
+      }, "Fake Pi did not receive the first prompt")
+      const socket = new Dealer({ routingId: randomUUID(), immediate: true, linger: 0 })
+      socket.connect(record.runtime.endpoint)
+      try {
+        const destroy = destroyRequest(record)
+        await socket.send(encode(destroy))
+        await waitFor(async () => {
+          const store = await openStore(stateDir)
+          try { return store.getByName(record.name) === undefined } finally { await store.close() }
+        }, "Destroy admission did not remove the name")
+        await assert.rejects(requestSend(record, "after destroy", "steer"))
+        await first
+        const response = decode((await socket.receive())[0])
+        assert.equal(response.command, "destroy")
+        assert.equal(response.ok, true)
+        const prompts = (await readFile(join(stateDir, "commands.log"), "utf8"))
+          .split("\n")
+          .filter(Boolean)
+          .map(JSON.parse)
+          .map(({ request }) => request)
+          .filter(({ type }) => type === "prompt")
+        assert.deepEqual(prompts.map(({ message }) => message), ["before destroy"])
+      } finally {
+        socket.close()
+      }
+    },
+  )
+})
 
 test("starts a replacement worker only for its matching runtime claim", { concurrency: false }, async () => {
   await withWorker({}, async ({ stateDir, agent, record }) => {

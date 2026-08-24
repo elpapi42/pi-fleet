@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { rm } from "node:fs/promises"
 import { Router, capability } from "zeromq"
 import { type PiState } from "../pi/runtime.js"
 import { type UnsequencedAgentEvent } from "../fleet/agent.js"
@@ -6,6 +7,8 @@ import { decodeEventCursor, encodeEventCursor, openStore, type AgentRecord } fro
 import {
   decode,
   encode,
+  type DestroyRequest,
+  type DestroyResponse,
   type SendRequest,
   type SendResponse,
   type StatusRequest,
@@ -22,8 +25,8 @@ import { LiveActivity } from "./activity.js"
 import { PiSupervisor, SupervisorSendFailure, type SupervisorSendError } from "./supervisor.js"
 
 type Arguments = { stateDir: string; agentId: string; generation: string; claimId?: string }
-type WorkerRequest = StatusRequest | SendRequest | SubscribeRequest | UnsubscribeRequest | SubscriptionStatusRequest
-type WorkerResponse = StatusResponse | SendResponse | SubscribeResponse | UnsubscribeResponse | SubscriptionStatusResponse
+type WorkerRequest = StatusRequest | SendRequest | DestroyRequest | SubscribeRequest | UnsubscribeRequest | SubscriptionStatusRequest
+type WorkerResponse = StatusResponse | SendResponse | DestroyResponse | SubscribeResponse | UnsubscribeResponse | SubscriptionStatusResponse
 type Outbound = { route: Buffer; message: WorkerMessage; subscriptionId?: string }
 
 class InvalidEventCursorRequestError extends Error {}
@@ -40,6 +43,7 @@ async function main(): Promise<void> {
   let routerClosed = false
   let state = record.state
   let workActive = record.state === "working"
+  let destroying = false
   let supervisor: PiSupervisor | undefined
   let fenceTimer: NodeJS.Timeout | undefined
   let outbound = Promise.resolve()
@@ -56,11 +60,15 @@ async function main(): Promise<void> {
   }
   const stop = () => closeRouter()
   const ownsClaim = () => {
-    const current = store.getById(agentId)?.runtime
-    return current?.generation === generation && (!claimId || current.claimId === claimId)
+    const current = store.getById(agentId)
+    return !current?.destroying && current?.runtime?.generation === generation && (!claimId || current.runtime.claimId === claimId)
+  }
+  const ownsDestroy = () => {
+    const marker = store.getById(agentId)?.destroying
+    return marker?.runtimeGeneration === generation && marker.claimId === claimId
   }
   const fence = () => {
-    if (ownsClaim()) return true
+    if (destroying || ownsClaim() || ownsDestroy()) return true
     closeRouter()
     void supervisor?.stop()
     return false
@@ -69,7 +77,7 @@ async function main(): Promise<void> {
     void queueEventOperation(async () => {
       const updated = await store.updateState(agentId, generation, nextState)
       if (!updated) {
-        closeRouter()
+        if (!ownsDestroy()) closeRouter()
         return
       }
       state = nextState
@@ -104,7 +112,7 @@ async function main(): Promise<void> {
     for (const event of events) {
       const appended = await store.appendEvent(agentId, generation, (cursor) => ({ ...event, cursor }))
       if (!appended) {
-        closeRouter()
+        if (!ownsDestroy()) closeRouter()
         return false
       }
       if (activity.publishEvent(appended.sequence, appended.event)) scheduleOutbound()
@@ -149,7 +157,7 @@ async function main(): Promise<void> {
       },
       loadRecord: () => {
         const current = store.getById(agentId)
-        return current && ownsClaim() ? current : undefined
+        return current && !current.destroying && ownsClaim() ? current : undefined
       },
       onRecovered: async (piState) => {
         if (!ownsClaim()) return false
@@ -182,7 +190,7 @@ async function main(): Promise<void> {
 
     for await (const [route, frame] of router) {
       if (!fence()) break
-      const handler = handleRequest(route, frame, record, generation, supervisor, () => state, reply, activity, store, queueEventOperation, scheduleOutbound, () => outbound)
+      const handler = handleRequest(route, frame, record, generation, claimId, supervisor, () => state, () => destroying, () => { destroying = true }, reply, closeRouter, activity, store, queueEventOperation, scheduleOutbound, () => outbound)
       handlers.add(handler)
       void handler.then(
         () => handlers.delete(handler),
@@ -210,9 +218,13 @@ async function handleRequest(
   frame: Buffer,
   record: AgentRecord,
   generation: string,
+  claimId: string | undefined,
   supervisor: PiSupervisor,
   getState: () => AgentRecord["state"],
+  isDestroying: () => boolean,
+  markDestroying: () => void,
   reply: (route: Buffer, response: WorkerResponse) => void,
+  closeRouter: () => void,
   activity: LiveActivity,
   store: Awaited<ReturnType<typeof openStore>>,
   queueEventOperation: <T>(operation: () => Promise<T>) => Promise<T>,
@@ -222,6 +234,46 @@ async function handleRequest(
   const request = decodeRequest(frame)
   if (!request || request.agentId !== record.id || request.runtimeGeneration !== generation) {
     reply(route, invalidResponse(request, record.id, generation))
+    return
+  }
+  if (isDestroying()) {
+    reply(route, destroyingResponse(request, record.id, generation))
+    return
+  }
+
+  if (request.command === "destroy") {
+    try {
+      await supervisor.prepareDestroy()
+      const destroyed = await queueEventOperation(() => store.beginDestroy(record.id, record.name, {
+        runtimeGeneration: generation,
+        claimId: claimId ?? "",
+        requestedAt: Date.now(),
+      }, (cursor) => ({
+        type: "agent.destroyed" as const,
+        cursor,
+        eventId: randomUUID(),
+        activityId: randomUUID(),
+        timestamp: Date.now(),
+      })))
+      if (!destroyed) {
+        reply(route, destroyResponse(request, record.id, generation, "Agent is unavailable"))
+        return
+      }
+      markDestroying()
+      if (activity.publishEvent(destroyed.event.sequence, destroyed.event.event)) scheduleOutbound()
+      if (activity.endSubscriptions()) scheduleOutbound()
+      await currentOutbound()
+      await supervisor.stop()
+      await rm(ipcPath(record.runtime?.endpoint), { force: true })
+      const owner = destroyed.record.destroying!
+      while ((await store.deleteDestroyEventBatch(record.id, owner, 128)) === 128) {}
+      if (!(await store.finishDestroy(record.id, owner))) throw new Error("Destroy cleanup did not complete")
+      reply(route, destroyResponse(request, record.id, generation))
+      await currentOutbound()
+      closeRouter()
+    } catch (error) {
+      reply(route, destroyResponse(request, record.id, generation, error instanceof Error ? error.message : String(error)))
+    }
     return
   }
 
@@ -359,6 +411,7 @@ function decodeRequest(frame: Buffer): WorkerRequest | undefined {
     const request = decode(frame)
     if (!isRecord(request) || request.version !== 1 || typeof request.requestId !== "string" || typeof request.agentId !== "string" || typeof request.runtimeGeneration !== "string") return undefined
     if (request.command === "status") return request as StatusRequest
+    if (request.command === "destroy") return request as DestroyRequest
     if (request.command === "send" && typeof request.message === "string" && typeof request.delivery === "string" &&
       typeof request.deadlineAt === "number" && Number.isSafeInteger(request.deadlineAt) && request.deadlineAt > 0) return request as SendRequest
     if (request.command === "subscribe" && (request.fromStart === undefined || request.fromStart === true) &&
@@ -370,11 +423,29 @@ function decodeRequest(frame: Buffer): WorkerRequest | undefined {
 }
 
 function invalidResponse(request: WorkerRequest | undefined, agentId: string, generation: string): WorkerResponse {
+  if (request?.command === "destroy") return destroyResponse(request, agentId, generation, "Worker identity does not match the request")
   if (request?.command === "send") return sendResponse(request, agentId, generation, "Worker identity does not match the request")
   if (request?.command === "subscribe") return { version: 1, requestId: request.requestId, command: "subscribe", ok: false, agentId, runtimeGeneration: generation, error: "Worker identity does not match the request" }
   if (request?.command === "unsubscribe") return { version: 1, requestId: request.requestId, command: "unsubscribe", ok: false, agentId, runtimeGeneration: generation, subscriptionId: request.subscriptionId, error: "Worker identity does not match the request" }
   if (request?.command === "subscription.status") return { version: 1, requestId: request.requestId, command: "subscription.status", ok: false, agentId, runtimeGeneration: generation, subscriptionId: request.subscriptionId, error: "Worker identity does not match the request" }
   return { version: 1, requestId: request?.requestId ?? "", ok: false, error: "Worker identity does not match the request" }
+}
+
+function destroyingResponse(request: WorkerRequest, agentId: string, generation: string): WorkerResponse {
+  if (request.command === "destroy") return destroyResponse(request, agentId, generation, "Agent is unavailable")
+  return invalidResponse(request, agentId, generation)
+}
+
+function destroyResponse(request: DestroyRequest, agentId: string, generation: string, error?: string): DestroyResponse {
+  return {
+    version: 1,
+    requestId: request.requestId,
+    command: "destroy",
+    ok: error === undefined,
+    agentId,
+    runtimeGeneration: generation,
+    ...(error === undefined ? {} : { error }),
+  }
 }
 
 function sendResponse(request: SendRequest, agentId: string, generation: string, error?: string, acceptedAt?: number, errorCode?: SupervisorSendError): SendResponse {
@@ -404,6 +475,11 @@ function sendErrorMessage(error: SupervisorSendError | undefined): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
+}
+
+function ipcPath(endpoint: string | undefined): string {
+  if (!endpoint?.startsWith("ipc://")) throw new Error("Worker endpoint is not an ipc path")
+  return endpoint.slice("ipc://".length)
 }
 
 function isUnreachablePeer(error: unknown): boolean {

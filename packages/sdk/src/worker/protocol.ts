@@ -19,6 +19,24 @@ export type SendRequest = {
   deadlineAt: number
 }
 
+export type DestroyRequest = {
+  version: 1
+  requestId: string
+  command: "destroy"
+  agentId: string
+  runtimeGeneration: string
+}
+
+export type DestroyResponse = {
+  version: 1
+  requestId: string
+  command: "destroy"
+  ok: boolean
+  agentId: string
+  runtimeGeneration: string
+  error?: string
+}
+
 export type SubscribeRequest = {
   version: 1
   requestId: string
@@ -124,11 +142,13 @@ export type StreamEndFrame = {
 export type WorkerMessage =
   | StatusRequest
   | SendRequest
+  | DestroyRequest
   | SubscribeRequest
   | UnsubscribeRequest
   | SubscriptionStatusRequest
   | StatusResponse
   | SendResponse
+  | DestroyResponse
   | SubscribeResponse
   | UnsubscribeResponse
   | SubscriptionStatusResponse
