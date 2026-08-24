@@ -36,7 +36,7 @@ export class LiveActivity {
     this.#runtimeGeneration = runtimeGeneration
   }
 
-  normalizePiEvent(rawEvent: Record<string, unknown>): UnsequencedAgentEvent | undefined {
+  normalizePiEvent(rawEvent: Record<string, unknown>): UnsequencedAgentEvent[] {
     return this.#normalize(rawEvent)
   }
 
@@ -142,32 +142,56 @@ export class LiveActivity {
   }
 }
 
-function createEventNormalizer(): (event: Record<string, unknown>) => UnsequencedAgentEvent | undefined {
-  let assistantActivityId: string | undefined
+function createEventNormalizer(): (event: Record<string, unknown>) => UnsequencedAgentEvent[] {
+  let assistantEnvelope: { id: string; messageActivityId?: string } | undefined
+
+  const currentEnvelope = () => assistantEnvelope ??= { id: randomUUID() }
+  const startMessage = (envelope: { id: string; messageActivityId?: string }, timestamp: number): UnsequencedAgentEvent => {
+    envelope.messageActivityId ??= randomUUID()
+    return { type: "message.started", eventId: randomUUID(), activityId: envelope.messageActivityId, timestamp }
+  }
 
   return (event) => {
     const timestamp = Date.now()
     if (event.type === "message_start" && isAssistantMessage(event.message)) {
-      assistantActivityId = randomUUID()
-      return { type: "message.started", eventId: randomUUID(), activityId: assistantActivityId, timestamp }
+      assistantEnvelope = { id: randomUUID() }
+      return []
     }
     if (event.type === "message_end" && isAssistantMessage(event.message)) {
-      const activityId = assistantActivityId ?? randomUUID()
-      assistantActivityId = undefined
-      return { type: "message.finished", eventId: randomUUID(), activityId, timestamp, text: assistantText(event.message) }
+      const text = assistantText(event.message)
+      const envelope = currentEnvelope()
+      if (!hasVisibleText(text)) {
+        assistantEnvelope = undefined
+        return []
+      }
+      const started = envelope.messageActivityId ? [] : [startMessage(envelope, timestamp)]
+      const finished: UnsequencedAgentEvent = {
+        type: "message.finished",
+        eventId: randomUUID(),
+        activityId: envelope.messageActivityId!,
+        timestamp,
+        text,
+      }
+      assistantEnvelope = undefined
+      return [...started, finished]
     }
     if (event.type === "message_update" && isRecord(event.assistantMessageEvent)) {
       const update = event.assistantMessageEvent
-      if (!assistantActivityId || typeof update.contentIndex !== "number") return undefined
-      const activityId = `${assistantActivityId}:thinking:${update.contentIndex}`
-      if (update.type === "thinking_start") return { type: "thinking.started", eventId: randomUUID(), activityId, timestamp }
-      if (update.type === "thinking_end" && typeof update.content === "string") {
-        return { type: "thinking.finished", eventId: randomUUID(), activityId, timestamp, content: update.content }
+      if (typeof update.contentIndex !== "number") return []
+      const envelope = currentEnvelope()
+      const thinkingActivityId = `${envelope.id}:thinking:${update.contentIndex}`
+      if (update.type === "thinking_start") {
+        return [{ type: "thinking.started", eventId: randomUUID(), activityId: thinkingActivityId, timestamp }]
       }
+      if (update.type === "thinking_end" && typeof update.content === "string") {
+        return [{ type: "thinking.finished", eventId: randomUUID(), activityId: thinkingActivityId, timestamp, content: update.content }]
+      }
+      if (hasVisibleTextUpdate(update, event.message)) return envelope.messageActivityId ? [] : [startMessage(envelope, timestamp)]
+      return []
     }
     if (event.type === "tool_execution_start" && typeof event.toolCallId === "string" && typeof event.toolName === "string" && "args" in event) {
       const { value: args, truncated: argsTruncated } = boundedJson(event.args, MAX_ARGS_BYTES)
-      return {
+      return [{
         type: "tool.started",
         eventId: randomUUID(),
         activityId: truncateJsonString(event.toolCallId, MAX_TOOL_IDENTITY_BYTES).value,
@@ -175,10 +199,10 @@ function createEventNormalizer(): (event: Record<string, unknown>) => Unsequence
         toolName: truncateJsonString(event.toolName, MAX_TOOL_IDENTITY_BYTES).value,
         args: args ?? null,
         argsTruncated,
-      }
+      }]
     }
     if (event.type === "tool_execution_end" && typeof event.toolCallId === "string" && typeof event.toolName === "string" && typeof event.isError === "boolean") {
-      return {
+      return [{
         type: "tool.finished",
         eventId: randomUUID(),
         activityId: truncateJsonString(event.toolCallId, MAX_TOOL_IDENTITY_BYTES).value,
@@ -186,9 +210,9 @@ function createEventNormalizer(): (event: Record<string, unknown>) => Unsequence
         toolName: truncateJsonString(event.toolName, MAX_TOOL_IDENTITY_BYTES).value,
         isError: event.isError,
         output: normalizeToolOutput(event.result),
-      }
+      }]
     }
-    return undefined
+    return []
   }
 }
 
@@ -258,6 +282,16 @@ function jsonStringByteLength(value: string): number {
 
 function isAssistantMessage(value: unknown): value is { role: "assistant"; content?: unknown } {
   return isRecord(value) && value.role === "assistant"
+}
+
+function hasVisibleTextUpdate(update: Record<string, unknown>, message: unknown): boolean {
+  return (update.type === "text_start" && isAssistantMessage(message) && hasVisibleText(assistantText(message))) ||
+    (update.type === "text_delta" && typeof update.delta === "string" && hasVisibleText(update.delta)) ||
+    (update.type === "text_end" && typeof update.content === "string" && hasVisibleText(update.content))
+}
+
+function hasVisibleText(text: string): boolean {
+  return /\S/.test(text)
 }
 
 function assistantText(message: { content?: unknown }): string {

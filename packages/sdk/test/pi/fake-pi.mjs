@@ -98,9 +98,10 @@ async function handlePrompt(request) {
     write({ type: "tool_execution_start", toolCallId: 42, toolName: "invalid", args: {} })
     write({ type: "unsupported_event" })
     write({ type: "message_start", message: { role: "assistant", content: [] } })
+    const responseText = `Handled: ${request.message}`
     write({ type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } })
     write({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "I will check." } })
-    write({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `Handled: ${request.message}` }] } })
+    write({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "I will check." }, { type: "toolCall", id: "tool-1" }] } })
     write({
       type: "tool_execution_start",
       toolCallId: "tool-1",
@@ -124,6 +125,11 @@ async function handlePrompt(request) {
           : { content: [{ type: "text", text: "\u001b[31m/workspace\u001b[0m\nsecond line" }], details: { exitCode: 0 } },
       isError: mode === "semantic-error" || mode === "semantic-bounded-error",
     })
+    write({ type: "message_start", message: { role: "assistant", content: [] } })
+    write({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } })
+    write({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: responseText } })
+    write({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0, content: responseText } })
+    write({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: responseText }] } })
     write({ type: "agent_settled" })
   }
   write({ type: "response", id: request.id, success: true, command: "prompt" })

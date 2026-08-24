@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { Router, capability } from "zeromq"
 import { type PiState } from "../pi/runtime.js"
+import { type UnsequencedAgentEvent } from "../fleet/agent.js"
 import { decodeEventCursor, encodeEventCursor, openStore, type AgentRecord } from "../state/store.js"
 import {
   decode,
@@ -99,6 +100,17 @@ async function main(): Promise<void> {
     eventOperations = result.then(() => undefined, () => undefined)
     return result
   }
+  const appendSemanticEvents = async (events: readonly UnsequencedAgentEvent[]): Promise<boolean> => {
+    for (const event of events) {
+      const appended = await store.appendEvent(agentId, generation, (cursor) => ({ ...event, cursor }))
+      if (!appended) {
+        closeRouter()
+        return false
+      }
+      if (activity.publishEvent(appended.sequence, appended.event)) scheduleOutbound()
+    }
+    return true
+  }
   const onPiEvent = (event: unknown) => {
     if (!isRecord(event)) return
     if (event.type === "agent_start") {
@@ -110,15 +122,8 @@ async function main(): Promise<void> {
       queueStateUpdate("idle")
     }
     const normalized = activity.normalizePiEvent(event)
-    if (!normalized) return
-    void queueEventOperation(async () => {
-      const appended = await store.appendEvent(agentId, generation, (cursor) => ({ ...normalized, cursor }))
-      if (!appended) {
-        closeRouter()
-        return
-      }
-      if (activity.publishEvent(appended.sequence, appended.event)) scheduleOutbound()
-    }).catch(() => closeRouter())
+    if (normalized.length === 0) return
+    void queueEventOperation(() => appendSemanticEvents(normalized)).catch(() => closeRouter())
   }
 
   process.once("SIGTERM", stop)
@@ -133,17 +138,12 @@ async function main(): Promise<void> {
         const interrupted = workActive
         workActive = false
         await queueEventOperation(async () => {
-          if (interrupted) {
-            const appended = await store.appendEvent(agentId, generation, (cursor) => ({
-              type: "work.interrupted" as const,
-              cursor,
-              eventId: randomUUID(),
-              activityId: randomUUID(),
-              timestamp: Date.now(),
-            }))
-            if (!appended) throw new Error("Worker claim is no longer current")
-            if (activity.publishEvent(appended.sequence, appended.event)) scheduleOutbound()
-          }
+          if (interrupted && !(await appendSemanticEvents([{
+            type: "work.interrupted",
+            eventId: randomUUID(),
+            activityId: randomUUID(),
+            timestamp: Date.now(),
+          }]))) throw new Error("Worker claim is no longer current")
           activity.resetPiActivity()
         })
       },

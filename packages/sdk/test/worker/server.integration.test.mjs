@@ -151,8 +151,8 @@ test("starts a replacement worker only for its matching runtime claim", { concur
   })
 })
 
-test("publishes the same ordered semantic events to independent subscribers", { concurrency: false }, async () => {
-  await withWorker({ PI_FLEET_FAKE_PI_MODE: "semantic-events" }, async ({ record }) => {
+test("persists the exact semantic events it publishes to independent subscribers", { concurrency: false }, async () => {
+  await withWorker({ PI_FLEET_FAKE_PI_MODE: "semantic-events" }, async ({ stateDir, agent, record }) => {
     assert.ok(record)
     const first = await subscribe(record)
     const second = await subscribe(record)
@@ -163,23 +163,33 @@ test("publishes the same ordered semantic events to independent subscribers", { 
       const secondEvents = []
       for (let index = 0; index < 6; index += 1) firstEvents.push(await receiveEvent(first))
       for (let index = 0; index < 6; index += 1) secondEvents.push(await receiveEvent(second))
-      const types = ["message.started", "thinking.started", "thinking.finished", "message.finished", "tool.started", "tool.finished"]
+      const types = ["thinking.started", "thinking.finished", "tool.started", "tool.finished", "message.started", "message.finished"]
       assert.deepEqual(firstEvents.map((event) => event.event.type), types)
       assert.deepEqual(secondEvents.map((event) => event.event.type), types)
       assert.deepEqual(firstEvents.map((event) => event.event), secondEvents.map((event) => event.event))
-      assert.equal(firstEvents[0].event.activityId, firstEvents[3].event.activityId)
-      assert.equal(firstEvents[1].event.activityId, firstEvents[2].event.activityId)
-      assert.equal(firstEvents[2].event.content, "I will check.")
-      assert.equal(firstEvents[3].event.text, "Handled: Inspect the project")
-      assert.deepEqual(firstEvents[4].event.args, { command: "pwd" })
-      assert.equal(firstEvents[4].event.argsTruncated, false)
-      assert.equal(firstEvents[5].event.isError, false)
-      assert.deepEqual(firstEvents[5].event.output, {
+      const journal = await openStore(stateDir)
+      try {
+        const current = journal.getById(agent.id)
+        assert.ok(current)
+        const persisted = journal.readEvents(agent.id, 0, current.lastEventSeq, current.lastEventSeq)
+        assert.deepEqual(firstEvents.map((event) => event.event), persisted.map((entry) => entry.event))
+      } finally {
+        await journal.close()
+      }
+      assert.equal(firstEvents[0].event.activityId, firstEvents[1].event.activityId)
+      assert.equal(firstEvents[2].event.activityId, firstEvents[3].event.activityId)
+      assert.equal(firstEvents[4].event.activityId, firstEvents[5].event.activityId)
+      assert.equal(firstEvents[1].event.content, "I will check.")
+      assert.deepEqual(firstEvents[2].event.args, { command: "pwd" })
+      assert.equal(firstEvents[2].event.argsTruncated, false)
+      assert.equal(firstEvents[3].event.isError, false)
+      assert.deepEqual(firstEvents[3].event.output, {
         content: [{ type: "text", text: "\u001b[31m/workspace\u001b[0m\nsecond line" }],
         details: { exitCode: 0 },
         detailsTruncated: false,
         truncated: false,
       })
+      assert.equal(firstEvents[5].event.text, "Handled: Inspect the project")
     } finally {
       first.socket.close()
       second.socket.close()

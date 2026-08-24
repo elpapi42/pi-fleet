@@ -2,10 +2,14 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { LiveActivity } from "../../dist/worker/activity.js"
 
+function normalize(activity, rawEvent) {
+  return activity.normalizePiEvent(rawEvent)
+}
+
 function publish(activity, rawEvent, sequence) {
-  const event = activity.normalizePiEvent(rawEvent)
-  assert.ok(event)
-  activity.publishEvent(sequence, { ...event, cursor: `pf1.test-${sequence}` })
+  const events = normalize(activity, rawEvent)
+  assert.equal(events.length, 1)
+  activity.publishEvent(sequence, { ...events[0], cursor: `pf1.test-${sequence}` })
 }
 
 test("delivers queued activity fairly across subscribers", () => {
@@ -102,15 +106,116 @@ test("omits malformed tool result data", () => {
   assert.deepEqual(event?.output, { content: [], detailsTruncated: true, truncated: true })
 })
 
-test("resets assistant activity correlation between Pi incarnations", () => {
+test("projects only visible assistant text as a message", () => {
   const activity = new LiveActivity("agent-1", "runtime-1")
-  const started = activity.normalizePiEvent({ type: "message_start", message: { role: "assistant" } })
-  assert.equal(started?.type, "message.started")
+  assert.deepEqual(normalize(activity, { type: "message_start", message: { role: "assistant" } }), [])
+  assert.deepEqual(normalize(activity, {
+    type: "message_update",
+    assistantMessageEvent: { type: "thinking_start", contentIndex: 0 },
+  }).map(({ type }) => type), ["thinking.started"])
+  assert.deepEqual(normalize(activity, {
+    type: "message_update",
+    assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "I will check." },
+  }).map(({ type }) => type), ["thinking.finished"])
+  assert.deepEqual(normalize(activity, {
+    type: "message_update",
+    assistantMessageEvent: { type: "text_start", contentIndex: 1 },
+  }), [])
+  assert.deepEqual(normalize(activity, {
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "   " },
+  }), [])
+  const started = normalize(activity, {
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Visible" },
+  })
+  assert.deepEqual(started.map(({ type }) => type), ["message.started"])
+  const finished = normalize(activity, {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "Visible text" }] },
+  })
+  assert.deepEqual(finished.map(({ type }) => type), ["message.finished"])
+  assert.equal(finished[0].type === "message.finished" && finished[0].text, "Visible text")
+  assert.equal(finished[0].activityId, started[0].activityId)
+})
 
+test("starts a visible message from a populated text start", () => {
+  const activity = new LiveActivity("agent-1", "runtime-1")
+  assert.deepEqual(normalize(activity, { type: "message_start", message: { role: "assistant" } }), [])
+  const started = normalize(activity, {
+    type: "message_update",
+    message: { role: "assistant", content: [{ type: "text", text: "Visible at start" }] },
+    assistantMessageEvent: { type: "text_start", contentIndex: 0 },
+  })
+  assert.deepEqual(started.map(({ type }) => type), ["message.started"])
+  const finished = normalize(activity, {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "Visible at start" }] },
+  })
+  assert.equal(finished[0].activityId, started[0].activityId)
+})
+
+test("suppresses thinking-only and tool-only assistant envelopes", () => {
+  const activity = new LiveActivity("agent-1", "runtime-1")
+  assert.deepEqual(normalize(activity, { type: "message_start", message: { role: "assistant" } }), [])
+  assert.deepEqual(normalize(activity, {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "thinking", thinking: "reasoning" }, { type: "toolCall", id: "call-1" }] },
+  }), [])
+  assert.deepEqual(normalize(activity, { type: "message_start", message: { role: "assistant" } }), [])
+  assert.deepEqual(normalize(activity, {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: " \n\t" }] },
+  }), [])
+})
+
+test("emits a matching fallback message pair from a final-only response", () => {
+  const activity = new LiveActivity("agent-1", "runtime-1")
+  const events = normalize(activity, {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "Final answer" }] },
+  })
+  assert.deepEqual(events.map(({ type }) => type), ["message.started", "message.finished"])
+  assert.equal(events[0].activityId, events[1].activityId)
+  assert.equal(events[1].type === "message.finished" && events[1].text, "Final answer")
+})
+
+test("aggregates multiple visible text blocks into one message", () => {
+  const activity = new LiveActivity("agent-1", "runtime-1")
+  assert.deepEqual(normalize(activity, { type: "message_start", message: { role: "assistant" } }), [])
+  const first = normalize(activity, {
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "First" },
+  })
+  assert.deepEqual(first.map(({ type }) => type), ["message.started"])
+  assert.deepEqual(normalize(activity, {
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Second" },
+  }), [])
+  const finished = normalize(activity, {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "First" }, { type: "text", text: "Second" }] },
+  })
+  assert.equal(finished[0].type === "message.finished" && finished[0].text, "FirstSecond")
+  assert.equal(finished[0].activityId, first[0].activityId)
+})
+
+test("resets private assistant-envelope correlation between Pi incarnations", () => {
+  const activity = new LiveActivity("agent-1", "runtime-1")
+  normalize(activity, { type: "message_start", message: { role: "assistant" } })
+  const oldThinking = normalize(activity, {
+    type: "message_update",
+    assistantMessageEvent: { type: "thinking_start", contentIndex: 0 },
+  })[0]
   activity.resetPiActivity()
-  const finished = activity.normalizePiEvent({ type: "message_end", message: { role: "assistant", content: [] } })
-  assert.equal(finished?.type, "message.finished")
-  assert.notEqual(finished?.activityId, started?.activityId)
+  normalize(activity, { type: "message_start", message: { role: "assistant" } })
+  const newThinking = normalize(activity, {
+    type: "message_update",
+    assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "New Pi" },
+  })[0]
+  assert.equal(oldThinking.type, "thinking.started")
+  assert.equal(newThinking.type, "thinking.finished")
+  assert.notEqual(newThinking.activityId, oldThinking.activityId)
 })
 
 test("removes a subscriber whose bounded activity queue overflows", () => {
@@ -128,8 +233,8 @@ test("removes a subscriber whose bounded activity queue overflows", () => {
 test("holds committed live activity until replay drains", () => {
   const activity = new LiveActivity("agent-1", "runtime-1")
   const subscriptionId = activity.subscribe(Buffer.from("subscriber"), true)
-  const replay = activity.normalizePiEvent({ type: "message_start", message: { role: "assistant" } })
-  const live = activity.normalizePiEvent({ type: "message_end", message: { role: "assistant", content: [] } })
+  const replay = normalize(activity, { type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash", args: {} })[0]
+  const live = normalize(activity, { type: "tool_execution_end", toolCallId: "tool-1", toolName: "bash", isError: false })[0]
   assert.ok(replay)
   assert.ok(live)
   assert.equal(activity.queueReplay(subscriptionId, { sequence: 1, event: { ...replay, cursor: "pf1.test-1" } }), true)

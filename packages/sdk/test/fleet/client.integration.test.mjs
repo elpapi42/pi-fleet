@@ -369,10 +369,10 @@ test("receives live semantic activity through the public agent handle", { concur
       const events = []
       const receiving = (async () => {
         let sawExpectedMessage = false
-        for await (const event of agent.receive()) {
+        for await (const event of agent.receive({ fromStart: true })) {
           events.push(event)
           if (event.type === "message.finished" && event.text === "Handled: Public stream") sawExpectedMessage = true
-          if (sawExpectedMessage && event.type === "tool.finished") break
+          if (sawExpectedMessage) break
         }
       })()
 
@@ -382,21 +382,30 @@ test("receives live semantic activity through the public agent handle", { concur
 
       const currentEvents = events.slice(-6)
       assert.deepEqual(currentEvents.map(({ type }) => type), [
-        "message.started",
         "thinking.started",
         "thinking.finished",
-        "message.finished",
         "tool.started",
         "tool.finished",
+        "message.started",
+        "message.finished",
       ])
-      assert.deepEqual(currentEvents[4].args, { command: "pwd" })
-      assert.equal(currentEvents[4].argsTruncated, false)
-      assert.deepEqual(currentEvents[5].output, {
+      assert.deepEqual(currentEvents[2].args, { command: "pwd" })
+      assert.equal(currentEvents[2].argsTruncated, false)
+      assert.deepEqual(currentEvents[3].output, {
         content: [{ type: "text", text: "\u001b[31m/workspace\u001b[0m\nsecond line" }],
         details: { exitCode: 0 },
         detailsTruncated: false,
         truncated: false,
       })
+      const journal = await openStore(stateDir)
+      try {
+        const record = journal.getById(agent.id)
+        assert.ok(record)
+        const persisted = journal.readEvents(agent.id, 0, record.lastEventSeq, record.lastEventSeq)
+        assert.deepEqual(events, persisted.map((entry) => entry.event))
+      } finally {
+        await journal.close()
+      }
       await terminateWorker(stateDir, agent.id)
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_MODE
@@ -427,7 +436,7 @@ test("replays public activity after a delivered cursor", { concurrency: false },
       await agent.send("After replay")
       const resumed = agent.receive({ after: cursor })[Symbol.asyncIterator]()
       const first = await resumed.next()
-      assert.equal(first.value.type, "message.started")
+      assert.equal(first.value.type, "thinking.started")
       assert.notEqual(first.value.cursor, cursor)
       await resumed.return()
       assert.throws(() => agent.receive({ fromStart: false, after: cursor }), /cannot be combined/)
@@ -464,7 +473,7 @@ test("reconnects a public live stream after worker replacement", { concurrency: 
       let current = await firstEvent
       while (!current.done) {
         if (current.value.type === "message.finished" && current.value.text === "Handled: Before replacement") sawExpectedMessage = true
-        if (sawExpectedMessage && current.value.type === "tool.finished") break
+        if (sawExpectedMessage) break
         current = await iterator.next()
       }
       const previousSequence = decodeEventCursor(current.value.cursor).sequence
@@ -473,7 +482,7 @@ test("reconnects a public live stream after worker replacement", { concurrency: 
       const nextEvent = iterator.next()
       await agent.send("After replacement")
       const resumed = await nextEvent
-      assert.equal(resumed.value.type, "message.started")
+      assert.equal(resumed.value.type, "thinking.started")
       assert.equal(decodeEventCursor(resumed.value.cursor).sequence, previousSequence + 1)
       await iterator.return()
     } finally {
