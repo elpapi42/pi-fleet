@@ -15,7 +15,7 @@ export type WorkerTarget = {
   }
 }
 
-const AGENT_STATES = new Set(["starting", "idle", "working", "stopped", "failed"])
+const AGENT_STATES = new Set(["starting", "idle", "working", "failed"])
 
 export function workerEndpoint(stateDir: string, agentId: string, generation: string): string {
   const identity = createHash("sha256").update(`${stateDir}\0${agentId}\0${generation}`).digest("hex").slice(0, 24)

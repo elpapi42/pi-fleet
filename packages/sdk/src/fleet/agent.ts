@@ -1,4 +1,4 @@
-export type AgentState = "starting" | "idle" | "working" | "stopped" | "failed"
+export type AgentState = "starting" | "idle" | "working" | "failed"
 
 export type AgentSummary = {
   id: string
@@ -69,6 +69,7 @@ export interface Agent {
   status(): Promise<AgentStatus>
   send(message: string, options?: SendOptions): Promise<SendResult>
   receive(options?: ReceiveOptions): AsyncIterable<AgentEvent>
+  destroy(): Promise<void>
 }
 
 export class AgentNameTakenError extends Error {
@@ -117,6 +118,7 @@ type AgentClient = {
   status(id: string, name: string): Promise<AgentStatus>
   send(id: string, name: string, message: string, options?: SendOptions): Promise<SendResult>
   receive(id: string, name: string, options?: ReceiveOptions): AsyncIterable<AgentEvent>
+  destroy(id: string, name: string): Promise<void>
 }
 
 export class AgentHandle implements Agent {
@@ -148,5 +150,9 @@ export class AgentHandle implements Agent {
 
   receive(options?: ReceiveOptions): AsyncIterable<AgentEvent> {
     return this.#client.receive(this.#id, this.#name, options)
+  }
+
+  destroy(): Promise<void> {
+    return this.#client.destroy(this.#id, this.#name)
   }
 }

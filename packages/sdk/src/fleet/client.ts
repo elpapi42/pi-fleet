@@ -19,7 +19,7 @@ import {
   type SendResult,
 } from "./agent.js"
 import { openStore, type AgentRecord, type FleetStore } from "../state/store.js"
-import { launchWorker, requestSend, requestStatus, stopWorker, waitForWorkerProcessGroupExit, workerEndpoint, type WorkerTarget } from "../worker/control.js"
+import { launchWorker, requestDestroy, requestSend, requestStatus, stopWorker, waitForWorkerProcessGroupExit, workerEndpoint, type WorkerTarget } from "../worker/control.js"
 import { receiveEvents, type WorkerEventStream } from "../worker/stream.js"
 import { validatePiArguments } from "../pi/runtime.js"
 
@@ -110,8 +110,7 @@ class PiFleetClientImpl implements PiFleetClient {
 
   async status(id: string, name: string): Promise<AgentStatus> {
     this.assertOpen()
-    const record = this.#store.getById(id)
-    if (!record || record.name !== name) throw new AgentNotFoundError(name)
+    const record = this.recordForHandle(id, name)
     const deadlineAt = Date.now() + OPERATION_TIMEOUT_MS
     let status
     try {
@@ -126,8 +125,7 @@ class PiFleetClientImpl implements PiFleetClient {
 
   async send(id: string, name: string, message: string, options: SendOptions = {}): Promise<SendResult> {
     this.assertOpen()
-    const record = this.#store.getById(id)
-    if (!record || record.name !== name) throw new AgentNotFoundError(name)
+    const record = this.recordForHandle(id, name)
     if (typeof message !== "string" || !message.trim()) throw new TypeError("Message must not be empty")
     const delivery = options.delivery ?? "steer"
     if (!isSendDelivery(delivery)) throw new TypeError(`Invalid delivery: ${String(delivery)}`)
@@ -144,13 +142,20 @@ class PiFleetClientImpl implements PiFleetClient {
 
   receive(id: string, name: string, options: ReceiveOptions = {}): AsyncIterable<AgentEvent> {
     this.assertOpen()
-    const record = this.#store.getById(id)
-    if (!record || record.name !== name) throw new AgentNotFoundError(name)
+    const record = this.recordForHandle(id, name)
     const receiveOptions = normalizeReceiveOptions(options)
     const stream = receiveEvents(workerTarget(record), receiveOptions, () =>
       this.reconcileWorker(record.id, record.name, Date.now() + RECOVERY_TIMEOUT_MS))
     this.#streams.add(stream)
     return trackStream(stream, this.#streams)
+  }
+
+  async destroy(id: string, name: string): Promise<void> {
+    this.assertOpen()
+    const record = this.recordForHandle(id, name)
+    const deadlineAt = Date.now() + OPERATION_TIMEOUT_MS
+    const target = await this.resolveWorker(record, deadlineAt)
+    await requestDestroy(target, Math.max(1, deadlineAt - Date.now()))
   }
 
   async close(): Promise<void> {
@@ -160,6 +165,14 @@ class PiFleetClientImpl implements PiFleetClient {
     this.#streams.clear()
     await Promise.allSettled([...this.#recoveries.values()])
     await this.#store.close()
+  }
+
+  private recordForHandle(id: string, name: string): AgentRecord {
+    const record = this.#store.getById(id)
+    if (!record || record.destroying || record.name !== name || this.#store.getByName(name)?.id !== id) {
+      throw new AgentNotFoundError(name)
+    }
+    return record
   }
 
   private async resolveWorker(record: AgentRecord, deadlineAt: number): Promise<WorkerTarget> {
@@ -186,7 +199,7 @@ class PiFleetClientImpl implements PiFleetClient {
     const recoveryDeadline = Math.min(deadlineAt, Date.now() + RECOVERY_TIMEOUT_MS)
     while (Date.now() < recoveryDeadline) {
       const record = this.#store.getById(id)
-      if (!record || record.name !== name) throw new AgentNotFoundError(name)
+      if (!record || record.destroying || record.name !== name || this.#store.getByName(name)?.id !== id) throw new AgentNotFoundError(name)
       const runtime = record.runtime
       if (!runtime?.endpoint) throw new AgentUnavailableError(name)
       try {

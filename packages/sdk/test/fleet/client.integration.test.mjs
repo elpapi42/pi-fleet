@@ -83,6 +83,43 @@ async function withState(run) {
   }
 }
 
+test("destroys an agent and invalidates old handles before name reuse", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      await agent.destroy()
+      assert.deepEqual(await client.list(), [])
+      await assert.rejects(client.get("researcher"), AgentNotFoundError)
+      await assert.rejects(agent.status(), AgentNotFoundError)
+      await assert.rejects(agent.send("after destroy"), AgentNotFoundError)
+      assert.throws(() => agent.receive(), AgentNotFoundError)
+      await assert.rejects(agent.destroy(), AgentNotFoundError)
+
+      const replacement = await client.create({ name: "researcher", cwd: process.cwd() })
+      assert.notEqual(replacement.id, agent.id)
+      assert.deepEqual(await replacement.status(), { id: replacement.id, name: "researcher", state: "idle" })
+      await terminateWorker(stateDir, replacement.id)
+    } finally {
+      await client.close()
+    }
+  })
+})
+
+test("recovers an unavailable worker before destroy", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      await terminateWorker(stateDir, agent.id)
+      await agent.destroy()
+      assert.deepEqual(await client.list(), [])
+    } finally {
+      await client.close()
+    }
+  })
+})
+
 test("creates a durable agent that another SDK client can discover and query", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const creator = await connectPiFleet({ stateDir })
