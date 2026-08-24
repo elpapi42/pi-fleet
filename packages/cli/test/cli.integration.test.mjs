@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile, spawn } from "node:child_process"
-import { chmod, mkdtemp, readFile, rm } from "node:fs/promises"
+import { access, chmod, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -58,6 +58,22 @@ async function terminateWorker(stateDir, id) {
     await registry.close()
   }
 }
+
+test("reports an overlong default state directory before creating state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-"))
+  const home = join(root, "x".repeat(100))
+  const stateDir = join(home, ".pi-fleet")
+  try {
+    await assert.rejects(run(["list"], { HOME: home }), (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /shorter stateDir/)
+      return true
+    })
+    await assert.rejects(access(stateDir))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 test("creates, lists, and checks a durable agent through the CLI", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-"))
