@@ -55,7 +55,9 @@ export class PiSupervisor {
   #activeSend: QueuedSend | undefined
   #recovering = false
   #stopping = false
+  #sendAdmissionClosed = false
   #draining = false
+  #drainWaiters: Array<() => void> = []
   #crashes: number[] = []
   #incarnation = 0
   #recovery: Promise<void> | undefined
@@ -79,7 +81,7 @@ export class PiSupervisor {
   }
 
   send(message: string, delivery: PiDelivery, deadlineAt: number): Promise<number> {
-    if (this.#stopping) return Promise.reject(new SupervisorSendFailure("unavailable"))
+    if (this.#stopping || this.#sendAdmissionClosed) return Promise.reject(new SupervisorSendFailure("unavailable"))
     const now = Date.now()
     const effectiveDeadline = Math.min(deadlineAt, now + SEND_EXECUTION_MS)
     if (effectiveDeadline - now < PI_REQUEST_MS) return Promise.reject(new SupervisorSendFailure("send-expired"))
@@ -95,6 +97,23 @@ export class PiSupervisor {
       this.#queuedBytes += bytes
       void this.drain()
     })
+  }
+
+  async prepareDestroy(): Promise<void> {
+    if (this.#stopping || this.#sendAdmissionClosed) throw new SupervisorSendFailure("unavailable")
+    this.#sendAdmissionClosed = true
+    try {
+      while (true) {
+        if (this.#recovering) await this.#recovery
+        if (!this.#current) throw new SupervisorSendFailure("unavailable")
+        if (!this.#activeSend && this.#queue.length === 0 && !this.#draining) return
+        void this.drain()
+        await this.waitForDrain()
+      }
+    } catch (error) {
+      this.#sendAdmissionClosed = false
+      throw error
+    }
   }
 
   async stop(): Promise<void> {
@@ -132,8 +151,17 @@ export class PiSupervisor {
       }
     } finally {
       this.#draining = false
+      this.resolveDrainWaiters()
       if (!this.#recovering && !this.#stopping && this.#current && this.#queue.length > 0) void this.drain()
     }
+  }
+
+  private waitForDrain(): Promise<void> {
+    return new Promise((resolve) => this.#drainWaiters.push(resolve))
+  }
+
+  private resolveDrainWaiters(): void {
+    for (const resolve of this.#drainWaiters.splice(0)) resolve()
   }
 
   private async dispatch(send: QueuedSend): Promise<number> {
