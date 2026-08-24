@@ -152,10 +152,32 @@ class PiFleetClientImpl implements PiFleetClient {
 
   async destroy(id: string, name: string): Promise<void> {
     this.assertOpen()
-    const record = this.recordForHandle(id, name)
+    let record = this.recordForHandle(id, name)
     const deadlineAt = Date.now() + OPERATION_TIMEOUT_MS
-    const target = await this.resolveWorker(record, deadlineAt)
-    await requestDestroy(target, Math.max(1, deadlineAt - Date.now()))
+    let target = await this.resolveWorker(record, deadlineAt)
+
+    while (Date.now() < deadlineAt) {
+      const attempt = requestDestroy(target, Math.max(1, Math.min(1_000, deadlineAt - Date.now()))).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+      while (Date.now() < deadlineAt) {
+        const outcome = await Promise.race([attempt, wait(25).then(() => undefined)])
+        if (outcome?.ok) return
+
+        const current = this.#store.getById(id)
+        if (!current) return
+        if (current.destroying) {
+          await this.finishMarkedDestroy(current, deadlineAt)
+          return
+        }
+        if (outcome && !outcome.ok) break
+      }
+
+      record = this.recordForHandle(id, name)
+      target = await this.reconcileWorker(record.id, record.name, deadlineAt)
+    }
+    throw new AgentUnavailableError(name)
   }
 
   async close(): Promise<void> {
@@ -193,6 +215,23 @@ class PiFleetClientImpl implements PiFleetClient {
     const recovery = this.recoverWorker(id, name, deadlineAt).finally(() => this.#recoveries.delete(id))
     this.#recoveries.set(id, recovery)
     return recovery
+  }
+
+  private async finishMarkedDestroy(record: AgentRecord, deadlineAt: number): Promise<void> {
+    while (Date.now() < deadlineAt) {
+      const current = this.#store.getById(record.id)
+      if (!current) return
+      const owner = current.destroying
+      if (!owner) throw new AgentNotFoundError(record.name)
+
+      const workerExited = await waitForWorkerProcessGroupExit(current.runtime?.workerPid, 50)
+      if (workerExited || owner.cleanupAfter <= Date.now()) {
+        await this.#store.completeDestroy(current.id, owner)
+        if (!this.#store.getById(current.id)) return
+      }
+      await wait(25)
+    }
+    throw new AgentUnavailableError(record.name)
   }
 
   private async recoverWorker(id: string, name: string, deadlineAt: number): Promise<WorkerTarget> {

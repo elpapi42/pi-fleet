@@ -184,6 +184,35 @@ test("ends normally after an ordered stream terminal", async () => {
   })
 })
 
+test("rejects a terminal that does not follow agent.destroyed", async () => {
+  await withRouter(async (router, agent) => {
+    const responder = (async () => {
+      const [route, frame] = await router.receive()
+      const request = decode(frame)
+      await router.send([route, encode({
+        version: 1,
+        requestId: request.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+        afterSequence: 0,
+      })])
+      await router.send([route, encode({
+        version: 1,
+        command: "stream.end",
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "subscription-1",
+      })])
+    })()
+
+    await assert.rejects(receiveEvents(agent)[Symbol.asyncIterator]().next(), AgentUnavailableError)
+    await responder
+  })
+})
+
 test("rejects a subscription with mismatched worker identity", async () => {
   await withRouter(async (router, agent) => {
     const responder = (async () => {

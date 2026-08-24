@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
-import { connectPiFleet, AgentNameTakenError, AgentNotFoundError, AgentUnavailableError } from "../../dist/index.js"
+import { connectPiFleet, AgentNameTakenError, AgentNotFoundError, AgentUnavailableError, InvalidCursorError } from "../../dist/index.js"
 import { decodeEventCursor, encodeEventCursor, openStore } from "../../dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
@@ -85,9 +85,14 @@ async function withState(run) {
 
 test("destroys an agent and invalidates old handles before name reuse", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
+    process.env.PI_FLEET_FAKE_PI_MODE = "semantic-events"
     const client = await connectPiFleet({ stateDir })
     try {
       const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      await agent.send("create durable activity")
+      const firstEvent = await agent.receive({ fromStart: true })[Symbol.asyncIterator]().next()
+      assert.equal(firstEvent.done, false)
+      const oldCursor = firstEvent.value.cursor
       await agent.destroy()
       assert.deepEqual(await client.list(), [])
       await assert.rejects(client.get("researcher"), AgentNotFoundError)
@@ -96,11 +101,20 @@ test("destroys an agent and invalidates old handles before name reuse", { concur
       assert.throws(() => agent.receive(), AgentNotFoundError)
       await assert.rejects(agent.destroy(), AgentNotFoundError)
 
+      const destroyedStore = await openStore(stateDir)
+      try {
+        assert.deepEqual(destroyedStore.readEvents(agent.id, 0, Number.MAX_SAFE_INTEGER, 10), [])
+      } finally {
+        await destroyedStore.close()
+      }
+
       const replacement = await client.create({ name: "researcher", cwd: process.cwd() })
       assert.notEqual(replacement.id, agent.id)
       assert.deepEqual(await replacement.status(), { id: replacement.id, name: "researcher", state: "idle" })
+      await assert.rejects(replacement.receive({ after: oldCursor })[Symbol.asyncIterator]().next(), InvalidCursorError)
       await terminateWorker(stateDir, replacement.id)
     } finally {
+      delete process.env.PI_FLEET_FAKE_PI_MODE
       await client.close()
     }
   })
@@ -140,6 +154,56 @@ test("recovers an unavailable worker before destroy", { concurrency: false }, as
       await agent.destroy()
       assert.deepEqual(await client.list(), [])
     } finally {
+      await client.close()
+    }
+  })
+})
+
+test("completes cleanup when the destroy worker exits after admission", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    process.env.PI_FLEET_FAKE_PI_IGNORE_SIGTERM = "1"
+    const client = await connectPiFleet({ stateDir })
+    let workerPid
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      const before = await openStore(stateDir)
+      try {
+        workerPid = before.getById(agent.id)?.runtime?.workerPid
+      } finally {
+        await before.close()
+      }
+      assert.ok(workerPid)
+
+      const destroying = agent.destroy()
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        const store = await openStore(stateDir)
+        try {
+          if (store.getById(agent.id)?.destroying) break
+        } finally {
+          await store.close()
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      const marked = await openStore(stateDir)
+      try {
+        assert.ok(marked.getById(agent.id)?.destroying)
+      } finally {
+        await marked.close()
+      }
+      process.kill(workerPid, "SIGKILL")
+
+      await destroying
+      const after = await openStore(stateDir)
+      try {
+        assert.equal(after.getById(agent.id), undefined)
+      } finally {
+        await after.close()
+      }
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_IGNORE_SIGTERM
+      if (workerPid) {
+        try { process.kill(workerPid, "SIGKILL") } catch {}
+      }
       await client.close()
     }
   })

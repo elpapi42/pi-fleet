@@ -116,6 +116,13 @@ export class PiSupervisor {
     }
   }
 
+  cancelDestroy(): void {
+    if (!this.#stopping) {
+      this.#sendAdmissionClosed = false
+      if (this.#current && this.#queue.length > 0) void this.drain()
+    }
+  }
+
   async stop(): Promise<void> {
     if (this.#stopping) return this.#recovery
     this.#stopping = true

@@ -145,6 +145,7 @@ async function* readSubscription(
     let nextFrame = socket.receive()
     void nextFrame.catch(() => {})
     let probeRequestId: string | undefined
+    let destroyed = false
     while (!signal.aborted) {
       const result = await awaitStreamFrame(nextFrame, signal)
       if (result === "aborted") return
@@ -168,6 +169,7 @@ async function* readSubscription(
       const frame = decode(result[0])
       if (isStreamEndFrame(frame) && frame.agentId === record.id && frame.runtimeGeneration === runtime.generation &&
         frame.subscriptionId === subscriptionId) {
+        if (!destroyed) throw new StreamGapError()
         return
       }
       if (isEventFrame(frame) && frame.agentId === record.id && frame.runtimeGeneration === runtime.generation &&
@@ -179,6 +181,7 @@ async function* readSubscription(
         }
         position.sequence = frame.sequence
         position.cursor = frame.event.cursor
+        destroyed = frame.event.type === "agent.destroyed"
         markHealthy()
         yield frame.event
         continue

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto"
-import { rm } from "node:fs/promises"
 import { Router, capability } from "zeromq"
 import { type PiState } from "../pi/runtime.js"
 import { type UnsequencedAgentEvent } from "../fleet/agent.js"
@@ -190,7 +189,7 @@ async function main(): Promise<void> {
 
     for await (const [route, frame] of router) {
       if (!fence()) break
-      const handler = handleRequest(route, frame, record, generation, claimId, supervisor, () => state, () => destroying, () => { destroying = true }, reply, closeRouter, activity, store, queueEventOperation, scheduleOutbound, () => outbound)
+      const handler = handleRequest(route, frame, record, generation, claimId, supervisor, () => state, () => destroying, (value) => { destroying = value }, reply, closeRouter, activity, store, queueEventOperation, scheduleOutbound, () => outbound)
       handlers.add(handler)
       void handler.then(
         () => handlers.delete(handler),
@@ -222,7 +221,7 @@ async function handleRequest(
   supervisor: PiSupervisor,
   getState: () => AgentRecord["state"],
   isDestroying: () => boolean,
-  markDestroying: () => void,
+  setDestroying: (value: boolean) => void,
   reply: (route: Buffer, response: WorkerResponse) => void,
   closeRouter: () => void,
   activity: LiveActivity,
@@ -236,14 +235,17 @@ async function handleRequest(
     reply(route, invalidResponse(request, record.id, generation))
     return
   }
-  if (isDestroying()) {
+  if (isDestroying() && request.command !== "unsubscribe" && request.command !== "subscription.status") {
     reply(route, destroyingResponse(request, record.id, generation))
     return
   }
 
   if (request.command === "destroy") {
+    let admitted = false
+    setDestroying(true)
     try {
       await supervisor.prepareDestroy()
+      await activity.waitForReplays()
       const destroyed = await queueEventOperation(() => store.beginDestroy(record.id, record.name, {
         runtimeGeneration: generation,
         claimId: claimId ?? "",
@@ -255,23 +257,22 @@ async function handleRequest(
         activityId: randomUUID(),
         timestamp: Date.now(),
       })))
-      if (!destroyed) {
-        reply(route, destroyResponse(request, record.id, generation, "Agent is unavailable"))
-        return
-      }
-      markDestroying()
+      if (!destroyed) throw new Error("Agent is unavailable")
+      admitted = true
       if (activity.publishEvent(destroyed.event.sequence, destroyed.event.event)) scheduleOutbound()
       if (activity.endSubscriptions()) scheduleOutbound()
       await currentOutbound()
       await supervisor.stop()
-      await rm(ipcPath(record.runtime?.endpoint), { force: true })
       const owner = destroyed.record.destroying!
-      while ((await store.deleteDestroyEventBatch(record.id, owner, 128)) === 128) {}
-      if (!(await store.finishDestroy(record.id, owner))) throw new Error("Destroy cleanup did not complete")
+      if (!(await store.completeDestroy(record.id, owner))) throw new Error("Destroy cleanup did not complete")
       reply(route, destroyResponse(request, record.id, generation))
       await currentOutbound()
       closeRouter()
     } catch (error) {
+      if (!admitted) {
+        supervisor.cancelDestroy()
+        setDestroying(false)
+      }
       reply(route, destroyResponse(request, record.id, generation, error instanceof Error ? error.message : String(error)))
     }
     return
@@ -475,11 +476,6 @@ function sendErrorMessage(error: SupervisorSendError | undefined): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
-}
-
-function ipcPath(endpoint: string | undefined): string {
-  if (!endpoint?.startsWith("ipc://")) throw new Error("Worker endpoint is not an ipc path")
-  return endpoint.slice("ipc://".length)
 }
 
 function isUnreachablePeer(error: unknown): boolean {

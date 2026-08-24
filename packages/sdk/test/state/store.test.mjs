@@ -641,6 +641,31 @@ test("deletes marked event history in finite batches and resumes only after its 
   })
 })
 
+test("expired destroy cleanup removes only an owned IPC endpoint", async () => {
+  await withStore(async (store, stateDir) => {
+    const ipcDirectory = join(stateDir, "ipc")
+    const endpointPath = join(ipcDirectory, "old.sock")
+    await writeFile(endpointPath, "stale")
+    await store.create({
+      ...record("researcher", "agent-old"),
+      state: "idle",
+      runtime: {
+        ...record("researcher", "agent-old").runtime,
+        state: "ready",
+        claimId: "claim-old",
+        endpoint: `ipc://${endpointPath}`,
+      },
+    })
+    const destroy = await store.beginDestroy("agent-old", "researcher", {
+      runtimeGeneration: "runtime-1", claimId: "claim-old", requestedAt: 100,
+    }, (cursor) => ({ type: "agent.destroyed", cursor }))
+    assert.ok(destroy)
+
+    assert.equal(await store.cleanupExpiredDestroys(30_100), 1)
+    await assert.rejects(stat(endpointPath), { code: "ENOENT" })
+  })
+})
+
 test("store open resumes expired destroy cleanup but not a live lease", { concurrency: false }, async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "pi-fleet-destroy-open-"))
   const first = await openStore(stateDir)

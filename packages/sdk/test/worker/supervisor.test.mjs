@@ -70,13 +70,15 @@ test("drains admitted sends before closing destroy admission", { concurrency: fa
     )
     await first
     await destroy
+    supervisor.cancelDestroy()
+    await supervisor.send("second", "steer", Date.now() + 20_000)
     const prompts = (await readFile(log, "utf8"))
       .split("\n")
       .filter(Boolean)
       .map(JSON.parse)
       .map(({ request }) => request)
       .filter(({ type }) => type === "prompt")
-    assert.deepEqual(prompts.map(({ message }) => message), ["first"])
+    assert.deepEqual(prompts.map(({ message }) => message), ["first", "second"])
   } finally {
     await supervisor.stop()
     restoreEnv("PI_FLEET_PI_COMMAND", previousCommand)

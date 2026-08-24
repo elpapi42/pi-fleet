@@ -28,6 +28,7 @@ export class LiveActivity {
   readonly #agentId: string
   readonly #runtimeGeneration: string
   readonly #subscribers = new Map<string, Subscriber>()
+  readonly #replayWaiters: Array<() => void> = []
   #normalize = createEventNormalizer()
   #lastSubscriptionId: string | undefined
 
@@ -68,7 +69,13 @@ export class LiveActivity {
     subscriber.replaying = false
     subscriber.events.push(...subscriber.pendingLive)
     subscriber.pendingLive = []
+    this.resolveReplayWaiters()
     return true
+  }
+
+  waitForReplays(): Promise<void> {
+    if (![...this.#subscribers.values()].some(({ replaying }) => replaying)) return Promise.resolve()
+    return new Promise((resolve) => this.#replayWaiters.push(resolve))
   }
 
   publishEvent(sequence: number, event: AgentEvent): boolean {
@@ -91,11 +98,13 @@ export class LiveActivity {
     if (subscriptionId) {
       const subscriber = this.#subscribers.get(subscriptionId)
       if (subscriber?.route.equals(route)) this.#subscribers.delete(subscriptionId)
+      this.resolveReplayWaiters()
       return
     }
     for (const subscriber of this.#subscribers.values()) {
       if (subscriber.route.equals(route)) this.#subscribers.delete(subscriber.subscriptionId)
     }
+    this.resolveReplayWaiters()
   }
 
   hasSubscription(route: Buffer, subscriptionId: string): boolean {
@@ -121,15 +130,18 @@ export class LiveActivity {
 
   deliveryFailed(subscriptionId: string): void {
     this.#subscribers.delete(subscriptionId)
+    this.resolveReplayWaiters()
   }
 
   close(): void {
     this.#subscribers.clear()
+    this.resolveReplayWaiters()
   }
 
   private enqueue(subscriber: Subscriber, frame: EventFrame | StreamEndFrame, pending: boolean): boolean {
     if (subscriber.events.length + subscriber.pendingLive.length >= SUBSCRIBER_QUEUE_LIMIT) {
       this.#subscribers.delete(subscriber.subscriptionId)
+      this.resolveReplayWaiters()
       return false
     }
     if (pending) subscriber.pendingLive.push(frame)
@@ -147,6 +159,11 @@ export class LiveActivity {
       sequence,
       event,
     }
+  }
+
+  private resolveReplayWaiters(): void {
+    if ([...this.#subscribers.values()].some(({ replaying }) => replaying)) return
+    for (const resolve of this.#replayWaiters.splice(0)) resolve()
   }
 
   private endFrame(subscriptionId: string): StreamEndFrame {

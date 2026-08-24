@@ -260,3 +260,16 @@ test("queues a terminal after replay and pending live activity", () => {
   assert.equal(activity.nextOutbound()?.message.command, "event")
   assert.equal(activity.nextOutbound()?.message.command, "stream.end")
 })
+
+test("waits for active replay before final destroy delivery", async () => {
+  const activity = new LiveActivity("agent-1", "runtime-1")
+  const subscriptionId = activity.subscribe(Buffer.from("subscriber"), true)
+  let completed = false
+  const waiting = activity.waitForReplays().then(() => { completed = true })
+  await Promise.resolve()
+  assert.equal(completed, false)
+
+  assert.equal(activity.finishReplay(subscriptionId), true)
+  await waiting
+  assert.equal(completed, true)
+})

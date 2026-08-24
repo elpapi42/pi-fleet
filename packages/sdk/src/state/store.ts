@@ -1,5 +1,5 @@
-import { chmod, mkdir, realpath } from "node:fs/promises"
-import { join } from "node:path"
+import { chmod, mkdir, realpath, rm } from "node:fs/promises"
+import { join, resolve, sep } from "node:path"
 import { open, type Database, type RootDatabase } from "lmdb"
 import type { AgentState } from "../fleet/agent.js"
 
@@ -193,6 +193,15 @@ export class FleetStore {
     }
   }
 
+  async completeDestroy(id: string, owner: NonNullable<AgentRecord["destroying"]>): Promise<boolean> {
+    this.assertOpen()
+    while ((await this.deleteDestroyEventBatch(id, owner, 128)) === 128) {}
+    const record = this.#agents.get(id)
+    if (!record || !sameDestroyOwner(record.destroying, owner)) return false
+    await removeOwnedEndpoint(this.#stateDir, record.runtime?.endpoint)
+    return this.finishDestroy(id, owner)
+  }
+
   async cleanupExpiredDestroys(now = Date.now()): Promise<number> {
     this.assertOpen()
     const expired = [...this.#agents.getRange({})]
@@ -200,9 +209,8 @@ export class FleetStore {
       .filter((record) => record.destroying && record.destroying.cleanupAfter <= now)
     let completed = 0
     for (const record of expired) {
-      const owner = record.destroying!
-      while ((await this.deleteDestroyEventBatch(record.id, owner, 128)) === 128) {}
-      if (await this.finishDestroy(record.id, owner)) completed += 1
+      if (processGroupMayExist(record.runtime?.workerPid)) continue
+      if (await this.completeDestroy(record.id, record.destroying!)) completed += 1
     }
     return completed
   }
@@ -448,6 +456,24 @@ export function decodeEventCursor(cursor: string): EventCursorPayload {
     if (error instanceof TypeError && error.message === "Invalid event cursor") throw error
     throw new TypeError("Invalid event cursor")
   }
+}
+
+function processGroupMayExist(workerPid: number | undefined): boolean {
+  if (!workerPid || process.platform === "win32") return false
+  try {
+    process.kill(-workerPid, 0)
+    return true
+  } catch (error) {
+    return !(typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH")
+  }
+}
+
+async function removeOwnedEndpoint(stateDir: string, endpoint: string | undefined): Promise<void> {
+  if (!endpoint?.startsWith("ipc://")) return
+  const ipcDirectory = resolve(stateDir, "ipc")
+  const endpointPath = resolve(endpoint.slice("ipc://".length))
+  if (!endpointPath.startsWith(`${ipcDirectory}${sep}`)) return
+  await rm(endpointPath, { force: true })
 }
 
 function sameDestroyOwner(left: AgentRecord["destroying"], right: NonNullable<AgentRecord["destroying"]>): boolean {

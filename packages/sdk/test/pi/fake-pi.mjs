@@ -29,6 +29,7 @@ const sessionId = incarnation > 1
   : process.env.PI_FLEET_FAKE_SESSION_ID ?? "fake-session"
 const mode = process.env.PI_FLEET_FAKE_PI_MODE
 if (process.env.PI_FLEET_FAKE_PI_IGNORE_STDIN_END === "1") setInterval(() => {}, 1_000)
+if (process.env.PI_FLEET_FAKE_PI_IGNORE_SIGTERM === "1") process.on("SIGTERM", () => {})
 const commands = []
 const reversePrompts = []
 
