@@ -186,7 +186,7 @@ test("recovers status, send, and receive after worker replacement", async () => 
     await beforeStore.close()
     assert.ok(before?.runtime?.workerPid)
 
-    receiver = spawn(process.execPath, [pif, "receive", "researcher"], { env, stdio: ["ignore", "pipe", "pipe"] })
+    receiver = spawn(process.execPath, [pif, "receive", "researcher", "--from-start"], { env, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = ""
     let stderr = ""
     receiver.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
