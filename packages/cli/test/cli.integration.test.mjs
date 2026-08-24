@@ -439,6 +439,64 @@ test("renders bounded tool errors without terminal control characters", async ()
   }
 })
 
+test("destroys an agent without confirmation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-destroy-"))
+  const home = join(root, "home")
+  const stateDir = join(home, ".pi-fleet")
+  const env = { ...process.env, HOME: home, PI_FLEET_PI_COMMAND: fakePi }
+  try {
+    await chmod(fakePi, 0o755)
+    const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
+    const id = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.ok(id)
+    const destroyed = await run(["destroy", "researcher"], env)
+    assert.equal(destroyed.stdout, "Destroyed agent researcher\n")
+    assert.equal(destroyed.stderr, "")
+    assert.match((await run(["list"], env)).stdout, /^No agents\.$/m)
+    await assert.rejects(run(["destroy", "researcher"], env), (error) => {
+      assert.equal(error.code, 1)
+      assert.match(error.stderr, /No agent named "researcher" exists/)
+      return true
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("renders Agent destroyed then ends receive normally", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-destroy-receive-"))
+  const home = join(root, "home")
+  const stateDir = join(home, ".pi-fleet")
+  const env = { ...process.env, HOME: home, PI_FLEET_PI_COMMAND: fakePi, PI_FLEET_FAKE_PI_MODE: "semantic-events" }
+  let createdId
+  let receiver
+  try {
+    await chmod(fakePi, 0o755)
+    const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
+    createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.ok(createdId)
+    await run(["send", "researcher", "before destroy"], env)
+    receiver = spawn(process.execPath, [pif, "receive", "researcher", "--from-start"], { env, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    receiver.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
+    receiver.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk })
+    const exited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
+    await waitForText(receiver, () => stdout, "Handled: before destroy")
+    const destroyed = await run(["destroy", "researcher"], env)
+    assert.equal(destroyed.stdout, "Destroyed agent researcher\n")
+    createdId = undefined
+    await waitForText(receiver, () => stdout, "Agent destroyed")
+    assert.deepEqual(await exited, { code: 0, signal: null })
+    assert.doesNotMatch(stdout, /^Cursor:/m)
+    assert.equal(stderr, "")
+  } finally {
+    if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
+    if (createdId) await terminateWorker(stateDir, createdId)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("lists agents in sorted fixed-width columns", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-list-"))
   const home = join(root, "home")

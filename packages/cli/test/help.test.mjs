@@ -14,6 +14,7 @@ test("shows help from the built executable", () => {
   assert.match(result.stdout, /create \[options\] <name>/)
   assert.match(result.stdout, /send \[options\] <name> <message>/)
   assert.match(result.stdout, /receive \[options\] <name>/)
+  assert.match(result.stdout, /destroy <name>/)
 
   const receive = spawnSync(process.execPath, ["../dist/main.js", "receive", "--help"], {
     cwd: import.meta.dirname,
@@ -32,5 +33,5 @@ test("shows the CLI package version", () => {
   })
 
   assert.equal(result.status, 0)
-  assert.equal(result.stdout, "0.13.0\n")
+  assert.equal(result.stdout, "0.14.0\n")
 })

@@ -106,6 +106,31 @@ test("destroys an agent and invalidates old handles before name reuse", { concur
   })
 })
 
+test("delivers agent.destroyed then ends a public receive stream normally", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    process.env.PI_FLEET_FAKE_PI_MODE = "semantic-events"
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      await agent.send("create replay activity")
+      const iterator = agent.receive({ fromStart: true })[Symbol.asyncIterator]()
+      assert.equal((await iterator.next()).done, false)
+      const destroying = agent.destroy()
+      const events = []
+      while (true) {
+        const result = await iterator.next()
+        if (result.done) break
+        events.push(result.value)
+      }
+      await destroying
+      assert.equal(events.at(-1)?.type, "agent.destroyed")
+    } finally {
+      delete process.env.PI_FLEET_FAKE_PI_MODE
+      await client.close()
+    }
+  })
+})
+
 test("recovers an unavailable worker before destroy", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const client = await connectPiFleet({ stateDir })

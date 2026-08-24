@@ -37,13 +37,18 @@ pif receive researcher --after pf1.EXAMPLE
 # Show full bounded successful tool output and details.
 pif receive researcher --verbose
 
+# Stop active work, remove the agent, and delete its history.
+pif destroy researcher
+
 # Pass session selection directly to Pi
 pif create existing --cwd "$PWD" -- --session /path/to/session.jsonl
 ```
 
-By default, pi-fleet stores its LMDB state and IPC sockets in `~/.pi-fleet`. Event history includes bounded tool details and remains there until destroy support arrives. There is no expiry or retention setting yet, so disk use can grow. Pre-stable releases do not migrate state from earlier locations automatically.
+By default, pi-fleet stores its LMDB state and IPC sockets in `~/.pi-fleet`. Event history includes bounded tool details and remains there until the owner runs `pif destroy NAME`. There is no expiry or retention setting yet, so disk use can grow. Pre-stable releases do not migrate state from earlier locations automatically.
 
-Running agents keep the worker version used at creation. After updating pi-fleet, create a new agent before testing new worker behavior such as worker recovery. Until `destroy` exists, use a new agent name.
+`pif destroy NAME` requires no confirmation. It can stop active work, emits a final `agent.destroyed` event to healthy active receivers, then removes the worker, Pi, name, agent record, IPC socket, and complete event history. A destroyed name can be recreated as a new agent with a new ID.
+
+Running agents keep the worker version used at creation. After updating pi-fleet, create a new agent before testing new worker behavior such as worker recovery.
 
 A later `status`, `send`, or `receive` operation replaces an unavailable worker through one LMDB recovery claim. Durable identity, session metadata, event history, and cursors continue across the new worker generation. A stream reconnects and replays from its last delivered cursor. Pi-fleet never retries a send that the old worker might have accepted. `pif receive` shows spaced Thinking, Assistant, Tool, and warning blocks. It previews successful tool output by default. Use `--verbose` for full bounded output and details.
 

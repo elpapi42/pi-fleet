@@ -3,7 +3,7 @@ import { stripVTControlCharacters } from "node:util"
 import { Command, Option } from "commander"
 import { connectPiFleet, type AgentEvent } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.13.0"
+const version = "0.14.0"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -108,6 +108,9 @@ class ActivityRenderer {
       case "work.interrupted":
         this.block("Warning: Work interrupted")
         console.log("  The active work may be incomplete.")
+        return
+      case "agent.destroyed":
+        this.block("Agent destroyed")
     }
   }
 
@@ -237,6 +240,14 @@ function createProgram(piArgs: string[]): Command {
         }
       })
       if (interrupted) process.exitCode = 130
+    })
+
+  program
+    .command("destroy <name>")
+    .description("Destroy a durable Pi agent and its event history")
+    .action(async (name: string) => {
+      await withClient(async (client) => (await client.get(name)).destroy())
+      console.log(`Destroyed agent ${name}`)
     })
 
   program
