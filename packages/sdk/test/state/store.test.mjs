@@ -644,7 +644,7 @@ test("deletes marked event history in finite batches and resumes only after its 
 test("expired destroy cleanup removes only an owned IPC endpoint", async () => {
   await withStore(async (store, stateDir) => {
     const ipcDirectory = join(stateDir, "ipc")
-    const endpointPath = join(ipcDirectory, "old.sock")
+    const endpointPath = join(ipcDirectory, `${"a".repeat(24)}.sock`)
     await writeFile(endpointPath, "stale")
     await store.create({
       ...record("researcher", "agent-old"),

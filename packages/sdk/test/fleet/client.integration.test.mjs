@@ -264,6 +264,7 @@ test("replaces an unavailable worker before status and send", { concurrency: fal
       await terminateWorker(stateDir, agent.id)
 
       assert.equal((await agent.status()).state, "idle")
+      await assert.rejects(access(before.runtime.endpoint.slice("ipc://".length)))
       assert.equal(typeof (await agent.send("Continue after worker replacement")).acceptedAt, "number")
 
       const afterStore = await openStore(stateDir)
@@ -373,6 +374,7 @@ test("releases only its claim when replacement startup fails", { concurrency: fa
         assert.equal(record?.runtime?.state, "starting")
         assert.equal(record?.runtime?.claimId, undefined)
         assert.equal(record?.lastEventSeq, 0)
+        assert.deepEqual(await readdir(join(stateDir, "ipc")), [])
       } finally {
         await store.close()
       }
@@ -412,8 +414,8 @@ test("fails recovery without signaling an old process group that stays alive", {
       const afterStore = await openStore(stateDir)
       try {
         const after = afterStore.getById(agent.id)
-        assert.notEqual(after?.runtime?.generation, before.runtime.generation)
-        assert.equal(after?.runtime?.claimId, undefined)
+        assert.equal(after?.runtime?.generation, before.runtime.generation)
+        assert.equal(after?.runtime?.claimId, before.runtime.claimId)
         assert.equal(after?.state, "idle")
         assert.equal(after?.lastEventSeq, 0)
       } finally {
@@ -439,9 +441,14 @@ test("waits for delayed Pi readiness and reaps Pi when the worker stops", { conc
     try {
       const agent = await client.create({ name: "researcher", cwd: process.cwd() })
       assert.equal((await agent.status()).state, "idle")
+      const store = await openStore(stateDir)
+      const endpoint = store.getById(agent.id)?.runtime?.endpoint
+      await store.close()
+      assert.ok(endpoint)
       const piPid = Number(await readFile(piPidFile, "utf8"))
       await terminateWorker(stateDir, agent.id)
       assert.throws(() => process.kill(piPid, 0), { code: "ESRCH" })
+      await assert.rejects(access(endpoint.slice("ipc://".length)))
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_DELAY_MS
       delete process.env.PI_FLEET_FAKE_PI_PID_FILE
@@ -756,6 +763,7 @@ test("removes an agent record when Pi cannot become ready", { concurrency: false
     try {
       await assert.rejects(client.create({ name: "researcher", cwd: process.cwd() }))
       await assert.rejects(client.get("researcher"), AgentNotFoundError)
+      assert.deepEqual(await readdir(join(stateDir, "ipc")), [])
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_MODE
       await client.close()

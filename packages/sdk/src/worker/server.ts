@@ -208,6 +208,7 @@ async function main(): Promise<void> {
     await Promise.allSettled(handlers)
     await eventOperations
     await outbound
+    await store.removeRuntimeEndpoint(record.runtime?.endpoint)
     await store.close()
   }
 }

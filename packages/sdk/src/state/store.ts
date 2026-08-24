@@ -1,5 +1,5 @@
 import { chmod, mkdir, realpath, rm } from "node:fs/promises"
-import { join, resolve, sep } from "node:path"
+import { basename, join, resolve, sep } from "node:path"
 import { open, type Database, type RootDatabase } from "lmdb"
 import type { AgentState } from "../fleet/agent.js"
 
@@ -193,12 +193,17 @@ export class FleetStore {
     }
   }
 
+  async removeRuntimeEndpoint(endpoint: string | undefined): Promise<void> {
+    this.assertOpen()
+    await removeOwnedEndpoint(this.#stateDir, endpoint)
+  }
+
   async completeDestroy(id: string, owner: NonNullable<AgentRecord["destroying"]>): Promise<boolean> {
     this.assertOpen()
     while ((await this.deleteDestroyEventBatch(id, owner, 128)) === 128) {}
     const record = this.#agents.get(id)
     if (!record || !sameDestroyOwner(record.destroying, owner)) return false
-    await removeOwnedEndpoint(this.#stateDir, record.runtime?.endpoint)
+    await this.removeRuntimeEndpoint(record.runtime?.endpoint)
     return this.finishDestroy(id, owner)
   }
 
@@ -472,7 +477,7 @@ async function removeOwnedEndpoint(stateDir: string, endpoint: string | undefine
   if (!endpoint?.startsWith("ipc://")) return
   const ipcDirectory = resolve(stateDir, "ipc")
   const endpointPath = resolve(endpoint.slice("ipc://".length))
-  if (!endpointPath.startsWith(`${ipcDirectory}${sep}`)) return
+  if (!endpointPath.startsWith(`${ipcDirectory}${sep}`) || !/^[a-f0-9]{24}\.sock$/.test(basename(endpointPath))) return
   await rm(endpointPath, { force: true })
 }
 

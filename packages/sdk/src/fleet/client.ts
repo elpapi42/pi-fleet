@@ -91,6 +91,9 @@ class PiFleetClientImpl implements PiFleetClient {
       return new AgentHandle(this, id, input.name)
     } catch (error) {
       await stopWorker(worker)
+      if (!worker?.pid || await waitForWorkerProcessGroupExit(worker.pid)) {
+        await this.#store.removeRuntimeEndpoint(record.runtime?.endpoint)
+      }
       await this.#store.rollbackCreation(id, input.name, generation)
       throw error
     }
@@ -248,6 +251,10 @@ class PiFleetClientImpl implements PiFleetClient {
         if (!(error instanceof AgentUnavailableError)) throw error
       }
 
+      if (!(await waitForWorkerProcessGroupExit(runtime.workerPid, Math.min(5_000, recoveryDeadline - Date.now())))) {
+        throw new AgentUnavailableError(name)
+      }
+
       const generation = randomUUID()
       const claimId = randomUUID()
       const claimedAt = Date.now()
@@ -265,9 +272,7 @@ class PiFleetClientImpl implements PiFleetClient {
 
       let worker: ChildProcess | undefined
       try {
-        if (!(await waitForWorkerProcessGroupExit(claim.record.runtime?.workerPid, Math.min(5_000, recoveryDeadline - Date.now())))) {
-          throw new AgentUnavailableError(name)
-        }
+        await this.#store.removeRuntimeEndpoint(runtime.endpoint)
         worker = launchWorker(this.#stateDir, id, generation, claimId)
         await waitForWorkerReady(workerTarget(claim.record), worker, Math.min(STARTUP_TIMEOUT_MS, recoveryDeadline - Date.now()))
         const ready = this.#store.getById(id)
@@ -277,6 +282,9 @@ class PiFleetClientImpl implements PiFleetClient {
         return workerTarget(ready)
       } catch (error) {
         await stopWorker(worker)
+        if (!worker?.pid || await waitForWorkerProcessGroupExit(worker.pid)) {
+          await this.#store.removeRuntimeEndpoint(claim.record.runtime?.endpoint)
+        }
         await this.#store.releaseRuntimeClaim(id, generation, claimId)
         throw error instanceof AgentUnavailableError ? error : new AgentUnavailableError(name)
       }
