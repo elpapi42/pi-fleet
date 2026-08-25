@@ -1,4 +1,4 @@
-export type AgentState = "starting" | "idle" | "working" | "failed"
+export type AgentState = "starting" | "idle" | "working" | "interrupted" | "failed"
 
 export type AgentSummary = {
   id: string
@@ -60,7 +60,6 @@ export type AgentEvent =
   | (AgentEventBase & { type: "message.finished"; text: string })
   | (AgentEventBase & { type: "tool.started"; toolName: string; args: JsonValue; argsTruncated: boolean })
   | (AgentEventBase & { type: "tool.finished"; toolName: string; isError: boolean; output: ToolOutput })
-  | (AgentEventBase & { type: "work.interrupted" })
   | (AgentEventBase & { type: "agent.destroyed" })
 
 export interface Agent {

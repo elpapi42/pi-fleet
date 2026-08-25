@@ -354,7 +354,7 @@ test("recovers status, send, and receive after worker replacement", async () => 
   }
 })
 
-test("renders durable interrupted work after Pi recovery", async () => {
+test("reports interrupted state without interruption activity", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-recovery-"))
   const home = join(root, "home")
   const stateDir = join(home, ".pi-fleet")
@@ -369,7 +369,6 @@ test("renders durable interrupted work after Pi recovery", async () => {
     PI_FLEET_FAKE_PI_SETTLE_FILE: settleFile,
   }
   let createdId
-  let receiver
   try {
     await chmod(fakePi, 0o755)
     const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
@@ -382,25 +381,29 @@ test("renders durable interrupted work after Pi recovery", async () => {
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
     process.kill(Number(await readFile(piPidFile, "utf8")), "SIGTERM")
+    let status
     for (let attempt = 0; attempt < 80; attempt += 1) {
-      if ((await run(["status", "researcher"], env)).stdout.includes("State: idle")) break
+      status = await run(["status", "researcher"], env)
+      if (status.stdout.includes("State: interrupted")) break
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
+    assert.match(status?.stdout ?? "", /^State: interrupted$/m)
+    const listed = await run(["list"], env)
+    assert.match(listed.stdout, new RegExp(`^researcher\\s+interrupted\\s+${createdId}$`, "m"))
+    const store = await openStore(stateDir)
+    try {
+      assert.equal(store.getById(createdId)?.lastEventSeq, 0)
+    } finally {
+      await store.close()
+    }
 
-    receiver = spawn(process.execPath, [pif, "receive", "researcher", "--from-start"], { env, stdio: ["ignore", "pipe", "pipe"] })
-    let stdout = ""
-    let stderr = ""
-    receiver.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk })
-    receiver.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk })
-    const exited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
-    await waitForText(receiver, () => stdout, "Warning: Work interrupted")
-    receiver.kill("SIGINT")
-    assert.deepEqual(await exited, { code: 130, signal: null })
-    assert.match(stdout, /^Warning: Work interrupted\n  The active work may be incomplete\.$/m)
-    assert.doesNotMatch(stdout, /^Cursor:/m)
-    assert.equal(stderr, "")
+    const destroyed = await run(["destroy", "researcher"], env)
+    assert.equal(destroyed.stdout, "Destroyed agent researcher\n")
+    assert.doesNotMatch(destroyed.stdout, /Warning: Work interrupted/)
+    assert.doesNotMatch(destroyed.stdout, /^Cursor:/m)
+    assert.equal(destroyed.stderr, "")
+    createdId = undefined
   } finally {
-    if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
     if (createdId) await terminateWorker(stateDir, createdId)
     await rm(root, { recursive: true, force: true })
   }

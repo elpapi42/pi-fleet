@@ -247,7 +247,7 @@ test("claims an unavailable ready runtime without changing durable agent data", 
       claimId: "claim-2",
       claimedAt: 100,
       endpoint: "ipc:///tmp/runtime-2.sock",
-    }, (cursor) => ({ type: "work.interrupted", cursor }))
+    })
 
     assert.equal(claim?.record.runtime?.generation, "runtime-2")
     assert.equal(claim?.record.runtime?.state, "starting")
@@ -261,11 +261,11 @@ test("claims an unavailable ready runtime without changing durable agent data", 
     assert.equal(claim?.record.sessionPath, initial.sessionPath)
     assert.equal(claim?.record.sessionId, initial.sessionId)
     assert.equal(claim?.record.lastEventSeq, 0)
-    assert.equal(claim?.interruption, undefined)
+    assert.equal(claim?.interrupted, false)
   })
 })
 
-test("atomically appends an interruption when a working runtime is claimed", async () => {
+test("atomically changes a working runtime claim to interrupted without changing the journal", async () => {
   await withStore(async (store) => {
     await store.create({
       ...record("researcher", "agent-1"),
@@ -278,17 +278,78 @@ test("atomically appends an interruption when a working runtime is claimed", asy
       claimId: "claim-2",
       claimedAt: 100,
       endpoint: "ipc:///tmp/runtime-2.sock",
-    }, (cursor) => ({ type: "work.interrupted", cursor }))
+    })
 
     assert.equal(oldEvent?.sequence, 1)
-    assert.deepEqual(claim?.interruption, {
-      sequence: 2,
-      cursor: encodeEventCursor("agent-1", 2),
-      event: { type: "work.interrupted", cursor: encodeEventCursor("agent-1", 2) },
-    })
-    assert.equal(store.getById("agent-1")?.lastEventSeq, 2)
+    assert.equal(claim?.interrupted, true)
+    assert.equal(claim?.record.state, "interrupted")
+    assert.equal(store.getById("agent-1")?.lastEventSeq, 1)
     assert.equal(await store.appendEvent("agent-1", "runtime-1", (cursor) => ({ type: "message.finished", cursor })), undefined)
-    assert.deepEqual(store.readEvents("agent-1", 0, 2, 10).map(({ sequence }) => sequence), [1, 2])
+    assert.deepEqual(store.readEvents("agent-1", 0, 1, 10).map(({ sequence }) => sequence), [1])
+  })
+})
+
+test("marks only the current working runtime interrupted without changing its journal", async () => {
+  await withStore(async (store) => {
+    const initial = {
+      ...record("researcher", "agent-1"),
+      state: "working",
+      runtime: { ...record("researcher", "agent-1").runtime, state: "ready" },
+    }
+    await store.create(initial)
+    const event = await store.appendEvent("agent-1", "runtime-1", (cursor) => ({ type: "tool.started", cursor }))
+
+    assert.equal(await store.markInterrupted("agent-1", "wrong-runtime"), false)
+    assert.equal(await store.markInterrupted("agent-1", "runtime-1"), true)
+    assert.equal(await store.markInterrupted("agent-1", "runtime-1"), true)
+    assert.equal((await store.getById("agent-1"))?.state, "interrupted")
+    assert.equal((await store.getById("agent-1"))?.lastEventSeq, event?.sequence)
+    assert.deepEqual(store.readEvents("agent-1", 0, 1, 10).map(({ sequence }) => sequence), [1])
+
+    await store.create({
+      ...record("destroying", "agent-2"),
+      state: "working",
+      destroying: { requestedAt: 1, cleanupAfter: 2, runtimeGeneration: "runtime-1", claimId: "claim-1" },
+    })
+    assert.equal(await store.markInterrupted("agent-2", "runtime-1"), false)
+  })
+})
+
+test("preserves interrupted state through claim and Pi readiness", async () => {
+  await withStore(async (store) => {
+    await store.create({
+      ...record("researcher", "agent-1"),
+      state: "working",
+      runtime: { ...record("researcher", "agent-1").runtime, state: "ready" },
+    })
+    const claim = await store.claimRuntime("agent-1", "runtime-1", {
+      generation: "runtime-2",
+      claimId: "claim-2",
+      claimedAt: 100,
+      endpoint: "ipc:///tmp/runtime-2.sock",
+    })
+    assert.equal(claim?.record.state, "interrupted")
+    assert.equal(await store.markClaimReady("agent-1", "runtime-2", "claim-2", {
+      workerPid: 456,
+      endpoint: "ipc:///tmp/worker-2.sock",
+      sessionPath: "/tmp/session-2.jsonl",
+      sessionId: "session-2",
+    }), true)
+    assert.equal((await store.getById("agent-1"))?.state, "interrupted")
+    assert.equal(await store.markRecovered("agent-1", "runtime-2", {
+      sessionPath: "/tmp/session-2.jsonl",
+      sessionId: "session-2",
+    }), true)
+    assert.equal((await store.getById("agent-1"))?.state, "interrupted")
+    const replacement = await store.claimRuntime("agent-1", "runtime-2", {
+      generation: "runtime-3",
+      claimId: "claim-3",
+      claimedAt: 30_101,
+      endpoint: "ipc:///tmp/runtime-3.sock",
+    })
+    assert.equal(replacement?.interrupted, false)
+    assert.equal(replacement?.record.state, "interrupted")
+    assert.equal(replacement?.record.lastEventSeq, 0)
   })
 })
 
@@ -303,7 +364,7 @@ test("protects fresh claims and replaces stale or released claims", async () => 
       claimId,
       claimedAt,
       endpoint: `ipc:///tmp/${generation}.sock`,
-    }, (cursor) => ({ type: "work.interrupted", cursor }))
+    })
 
     assert.equal(await claim("runtime-2", "claim-2", 30_100), undefined)
     assert.equal((await claim("runtime-2", "claim-2", 30_101))?.record.runtime?.generation, "runtime-2")
@@ -314,7 +375,7 @@ test("protects fresh claims and replaces stale or released claims", async () => 
       claimId: "claim-3",
       claimedAt: 30_102,
       endpoint: "ipc:///tmp/runtime-3.sock",
-    }, (cursor) => ({ type: "work.interrupted", cursor })))?.record.runtime?.generation, "runtime-3")
+    }))?.record.runtime?.generation, "runtime-3")
     assert.equal(await store.releaseRuntimeClaim("agent-1", "runtime-2", "claim-2"), false)
     assert.equal(await store.markClaimReady("agent-1", "runtime-2", "claim-2", {
       workerPid: 456,
@@ -333,7 +394,7 @@ test("binds readiness and fences to the current generation and claim", async () 
       claimId: "claim-2",
       claimedAt: 100,
       endpoint: "ipc:///tmp/runtime-2.sock",
-    }, (cursor) => ({ type: "work.interrupted", cursor }))
+    })
 
     assert.equal(await store.markClaimReady("agent-1", "runtime-2", "wrong-claim", {
       workerPid: 456,
@@ -378,7 +439,7 @@ test("allows only one replacement claim across separate processes", async () => 
         }
         const result = await store.claimRuntime("agent-1", "runtime-1", {
           generation, claimId, claimedAt: 100, endpoint: "ipc:///tmp/" + generation + ".sock",
-        }, (cursor) => ({ type: "work.interrupted", cursor }));
+        });
         process.stdout.write(String(result !== undefined));
       } finally {
         await store.close();
@@ -402,7 +463,7 @@ test("allows only one replacement claim across separate processes", async () => 
   })
 })
 
-test("records recovered Pi session identity and settles interrupted work", async () => {
+test("records recovered Pi session identity without changing durable state", async () => {
   await withStore(async (store) => {
     await store.create({ ...record("researcher", "agent-1"), state: "working" })
 
@@ -416,7 +477,7 @@ test("records recovered Pi session identity and settles interrupted work", async
     }), true)
 
     const recovered = store.getById("agent-1")
-    assert.equal(recovered?.state, "idle")
+    assert.equal(recovered?.state, "working")
     assert.equal(recovered?.sessionPath, "/tmp/recovered.jsonl")
     assert.equal(recovered?.sessionId, "recovered-session")
     assert.equal(recovered?.runtime?.generation, "runtime-1")
@@ -602,7 +663,7 @@ test("fences runtime mutations and recovery claims after destroy admission", asy
     assert.equal(await store.appendEvent("agent-old", "runtime-1", () => ({ type: "message.started" })), undefined)
     assert.equal(await store.claimRuntime("agent-old", "runtime-1", {
       generation: "runtime-2", claimId: "claim-2", claimedAt: 200, endpoint: "ipc:///tmp/runtime-2.sock",
-    }, (cursor) => ({ type: "work.interrupted", cursor })), undefined)
+    }), undefined)
     assert.equal(store.isCurrentRuntimeClaim("agent-old", "runtime-1", "claim-old"), false)
   })
 })

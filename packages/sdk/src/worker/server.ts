@@ -145,12 +145,10 @@ async function main(): Promise<void> {
         const interrupted = workActive
         workActive = false
         await queueEventOperation(async () => {
-          if (interrupted && !(await appendSemanticEvents([{
-            type: "work.interrupted",
-            eventId: randomUUID(),
-            activityId: randomUUID(),
-            timestamp: Date.now(),
-          }]))) throw new Error("Worker claim is no longer current")
+          if (interrupted && !(await store.markInterrupted(agentId, generation))) {
+            throw new Error("Worker claim is no longer current")
+          }
+          if (interrupted) state = "interrupted"
           activity.resetPiActivity()
         })
       },
@@ -184,7 +182,7 @@ async function main(): Promise<void> {
       ? await store.markClaimReady(agentId, generation, claimId, ready)
       : await store.markReady(agentId, generation, ready)
     if (!markedReady) throw new Error("Worker claim is no longer current")
-    state = "idle"
+    state = store.getById(agentId)?.state ?? "idle"
     fenceTimer = setInterval(fence, 1_000)
 
     for await (const [route, frame] of router) {
@@ -462,9 +460,12 @@ function sendResponse(request: SendRequest, agentId: string, generation: string,
   }
 }
 
-async function markRecovered(store: Awaited<ReturnType<typeof openStore>>, agentId: string, generation: string, piState: PiState, setState: (state: "idle") => void): Promise<boolean> {
+async function markRecovered(store: Awaited<ReturnType<typeof openStore>>, agentId: string, generation: string, piState: PiState, setState: (state: AgentRecord["state"]) => void): Promise<boolean> {
   const recovered = await store.markRecovered(agentId, generation, { sessionPath: piState.sessionFile, sessionId: piState.sessionId })
-  if (recovered) setState("idle")
+  if (recovered) {
+    const state = store.getById(agentId)?.state
+    if (state) setState(state)
+  }
   return recovered
 }
 

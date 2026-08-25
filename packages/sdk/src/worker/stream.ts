@@ -293,7 +293,6 @@ function isAgentEvent(value: unknown): value is AgentEvent {
   switch (value.type) {
     case "thinking.started":
     case "message.started":
-    case "work.interrupted":
     case "agent.destroyed":
       return true
     case "thinking.finished":

@@ -44,9 +44,9 @@ export type RuntimeClaim = {
   workerPid?: number
 }
 
-export type RuntimeClaimResult<Event> = {
+export type RuntimeClaimResult = {
   record: AgentRecord
-  interruption?: EventJournalEntry<Event>
+  interrupted: boolean
 }
 
 export type DestroyOwner = {
@@ -243,7 +243,7 @@ export class FleetStore {
     return this.#agents.put(id, record, version + 1, version)
   }
 
-  async claimRuntime<Event>(id: string, previousGeneration: string, claim: RuntimeClaim, createInterrupted: (cursor: string) => Event): Promise<RuntimeClaimResult<Event> | undefined> {
+  async claimRuntime(id: string, previousGeneration: string, claim: RuntimeClaim): Promise<RuntimeClaimResult | undefined> {
     this.assertOpen()
     while (true) {
       const entry = this.#agents.getEntry(id)
@@ -253,27 +253,32 @@ export class FleetStore {
 
       const version = entry.version ?? 0
       const interrupted = entry.value.state === "working" && previousRuntime.state === "ready"
-      const sequence = entry.value.lastEventSeq + 1
-      const cursor = encodeEventCursor(id, sequence)
-      const interruption = interrupted
-        ? { sequence, cursor, event: createInterrupted(cursor) }
-        : undefined
       const record: AgentRecord = {
         ...entry.value,
+        state: interrupted ? "interrupted" : entry.value.state,
         runtime: {
           ...previousRuntime,
           ...claim,
           workerPid: claim.workerPid ?? previousRuntime.workerPid,
           state: "starting",
         },
-        lastEventSeq: interruption ? sequence : entry.value.lastEventSeq,
         updatedAt: claim.claimedAt,
       }
-      const claimed = await this.#agents.ifVersion(id, version, () => {
-        if (interruption) this.#events.put([id, sequence], interruption)
-        this.#agents.put(id, record, version + 1)
-      })
-      if (claimed) return { record, interruption }
+      if (await this.#agents.put(id, record, version + 1, version)) return { record, interrupted }
+    }
+  }
+
+  async markInterrupted(id: string, runtimeGeneration: string): Promise<boolean> {
+    this.assertOpen()
+    while (true) {
+      const entry = this.#agents.getEntry(id)
+      if (!entry || entry.value.destroying || entry.value.runtime?.generation !== runtimeGeneration) return false
+      if (entry.value.state === "interrupted") return true
+      if (entry.value.state !== "working") return false
+
+      const version = entry.version ?? 0
+      const updated: AgentRecord = { ...entry.value, state: "interrupted", updatedAt: Date.now() }
+      if (await this.#agents.put(id, updated, version + 1, version)) return true
     }
   }
 
@@ -289,7 +294,7 @@ export class FleetStore {
         ...entry.value,
         sessionId: ready.sessionId,
         sessionPath: ready.sessionPath,
-        state: "idle",
+        state: entry.value.state === "starting" ? "idle" : entry.value.state,
         runtime: {
           ...runtime,
           endpoint: ready.endpoint,
@@ -336,7 +341,7 @@ export class FleetStore {
         ...entry.value,
         sessionPath: ready.sessionPath,
         sessionId: ready.sessionId,
-        state: "idle",
+        state: entry.value.state,
         updatedAt: Date.now(),
       }
       if (await this.#agents.put(id, updated, version + 1, version)) return true

@@ -668,6 +668,44 @@ test("repairs separate sequence gaps after healthy delivery", async () => {
   })
 })
 
+test("rejects a legacy work.interrupted event frame", async () => {
+  await withRouter(async (router, agent) => {
+    const responder = (async () => {
+      const [route, frame] = await router.receive()
+      const request = decode(frame)
+      await router.send([route, encode({
+        version: 1,
+        requestId: request.requestId,
+        command: "subscribe",
+        ok: true,
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "legacy-interruption",
+        afterSequence: 0,
+      })])
+      await router.send([route, encode({
+        version: 1,
+        command: "event",
+        agentId: agent.id,
+        runtimeGeneration: agent.runtime.generation,
+        subscriptionId: "legacy-interruption",
+        sequence: 1,
+        event: {
+          type: "work.interrupted",
+          cursor: encodeEventCursor(agent.id, 1),
+          eventId: "legacy-event",
+          activityId: "legacy-activity",
+          timestamp: 1,
+        },
+      })])
+      assert.equal(decode((await router.receive())[1]).command, "unsubscribe")
+    })()
+
+    await assert.rejects(receiveEvents(agent).next(), AgentUnavailableError)
+    await responder
+  })
+})
+
 test("rejects a frame whose cursor does not match its sequence", async () => {
   await withRouter(async (router, agent) => {
     const responder = (async () => {

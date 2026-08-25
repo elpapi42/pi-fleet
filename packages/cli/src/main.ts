@@ -3,7 +3,7 @@ import { stripVTControlCharacters } from "node:util"
 import { Command } from "commander"
 import { connectPiFleet, type AgentEvent } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.15.0"
+const version = "0.16.0"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -104,10 +104,6 @@ class ActivityRenderer {
       case "tool.finished":
         this.block(`${event.isError ? "Tool failed" : "Tool complete"}: ${singleLine(event.toolName)}`)
         this.printToolOutput(event, event.isError || this.#verbose)
-        return
-      case "work.interrupted":
-        this.block("Warning: Work interrupted")
-        console.log("  The active work may be incomplete.")
         return
       case "agent.destroyed":
         this.block("Agent destroyed")

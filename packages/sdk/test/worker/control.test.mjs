@@ -61,6 +61,29 @@ test("checks an old worker process group without signaling it", async () => {
   assert.equal(await waitForWorkerProcessGroupExit(child.pid, 1_000), true)
 })
 
+test("accepts an interrupted status response", async () => {
+  await withRouter(async (router, agent) => {
+    const responder = (async () => {
+      const [route, frame] = await router.receive()
+      const request = decode(frame)
+      await router.send([route, encode({
+        version: 1,
+        requestId: request.requestId,
+        ok: true,
+        status: {
+          id: request.agentId,
+          name: agent.name,
+          runtimeGeneration: request.runtimeGeneration,
+          state: "interrupted",
+        },
+      })])
+    })()
+
+    assert.equal((await requestStatus(agent, 500)).state, "interrupted")
+    await responder
+  })
+})
+
 test("rejects a status response from the wrong agent identity", async () => {
   await withRouter(async (router, agent) => {
     const responder = (async () => {

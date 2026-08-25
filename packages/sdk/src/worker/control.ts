@@ -15,7 +15,7 @@ export type WorkerTarget = {
   }
 }
 
-const AGENT_STATES = new Set(["starting", "idle", "working", "failed"])
+const AGENT_STATES = new Set(["starting", "idle", "working", "interrupted", "failed"])
 const MAX_UNIX_IPC_PATH_BYTES = 103
 const ENDPOINT_TEST_AGENT_ID = "0".repeat(36)
 const ENDPOINT_TEST_GENERATION = "0".repeat(36)

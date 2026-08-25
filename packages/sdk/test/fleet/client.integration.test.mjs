@@ -357,20 +357,29 @@ test("converges separate SDK processes on one replacement worker", { concurrency
   })
 })
 
-test("releases only its claim when replacement startup fails", { concurrency: false }, async () => {
+test("preserves interrupted state and history when replacement startup fails", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const incarnationFile = join(stateDir, "fake-pi-incarnation")
+    const settleFile = join(stateDir, "release-work")
     process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE = incarnationFile
     process.env.PI_FLEET_FAKE_PI_FAIL_RECOVERY = "1"
+    process.env.PI_FLEET_FAKE_PI_MODE = "prompt-event"
+    process.env.PI_FLEET_FAKE_PI_SETTLE_FILE = settleFile
     const client = await connectPiFleet({ stateDir })
     try {
       const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      await agent.send("Start work before failed recovery")
+      for (let attempt = 0; attempt < 80 && (await agent.status()).state !== "working"; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      assert.equal((await agent.status()).state, "working")
       await terminateWorker(stateDir, agent.id)
       await assert.rejects(agent.status(), AgentUnavailableError)
       const store = await openStore(stateDir)
       try {
         const record = store.getById(agent.id)
         assert.equal(record?.id, agent.id)
+        assert.equal(record?.state, "interrupted")
         assert.equal(record?.runtime?.state, "starting")
         assert.equal(record?.runtime?.claimId, undefined)
         assert.equal(record?.lastEventSeq, 0)
@@ -381,6 +390,8 @@ test("releases only its claim when replacement startup fails", { concurrency: fa
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE
       delete process.env.PI_FLEET_FAKE_PI_FAIL_RECOVERY
+      delete process.env.PI_FLEET_FAKE_PI_MODE
+      delete process.env.PI_FLEET_FAKE_PI_SETTLE_FILE
       await client.close()
     }
   })
@@ -640,27 +651,32 @@ test("reconnects a public live stream after worker replacement", { concurrency: 
   })
 })
 
-test("replays one interruption when a working worker is replaced", { concurrency: false }, async () => {
+test("keeps a working worker-loss interruption through replacement without changing the journal", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     process.env.PI_FLEET_FAKE_PI_MODE = "prompt-event"
     process.env.PI_FLEET_FAKE_PI_SETTLE_FILE = join(stateDir, "release-work")
     const client = await connectPiFleet({ stateDir })
     try {
       const agent = await client.create({ name: "researcher", cwd: process.cwd() })
-      const iterator = agent.receive({ fromStart: true })[Symbol.asyncIterator]()
       await agent.send("Start work before worker loss")
       for (let attempt = 0; attempt < 80; attempt += 1) {
         if ((await agent.status()).state === "working") break
         await new Promise((resolve) => setTimeout(resolve, 25))
       }
       assert.equal((await agent.status()).state, "working")
+      const before = await openStore(stateDir)
+      const sequence = before.getById(agent.id)?.lastEventSeq
+      await before.close()
       await terminateWorker(stateDir, agent.id)
 
-      const interrupted = await iterator.next()
-      assert.equal(interrupted.value.type, "work.interrupted")
-      assert.equal(decodeEventCursor(interrupted.value.cursor).sequence, 1)
-      assert.equal((await agent.status()).state, "idle")
-      await iterator.return()
+      assert.equal((await agent.status()).state, "interrupted")
+      const after = await openStore(stateDir)
+      try {
+        assert.equal(after.getById(agent.id)?.state, "interrupted")
+        assert.equal(after.getById(agent.id)?.lastEventSeq, sequence)
+      } finally {
+        await after.close()
+      }
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_MODE
       delete process.env.PI_FLEET_FAKE_PI_SETTLE_FILE

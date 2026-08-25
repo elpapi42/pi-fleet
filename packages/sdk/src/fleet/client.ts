@@ -264,7 +264,7 @@ class PiFleetClientImpl implements PiFleetClient {
         claimedAt,
         endpoint: workerEndpoint(this.#stateDir, id, generation),
         workerPid: runtime.workerPid,
-      }, (cursor) => ({ type: "work.interrupted" as const, cursor, eventId: randomUUID(), activityId: randomUUID(), timestamp: Date.now() }))
+      })
       if (!claim) {
         await wait(100)
         continue

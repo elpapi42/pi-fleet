@@ -219,7 +219,7 @@ test("starts a replacement worker only for its matching runtime claim", { concur
         claimedAt: Date.now(),
         endpoint: `ipc://${join(stateDir, "ipc", "replacement.sock")}`,
         workerPid: record.runtime.workerPid,
-      }, (cursor) => ({ type: "work.interrupted", cursor }))
+      })
       assert.ok(claim)
       replacement = launchWorker(stateDir, agent.id, "replacement-generation", "replacement-claim")
       const replacementRecord = claim.record
