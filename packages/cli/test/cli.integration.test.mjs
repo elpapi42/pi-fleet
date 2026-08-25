@@ -369,6 +369,7 @@ test("reports interrupted state without interruption activity", async () => {
     PI_FLEET_FAKE_PI_SETTLE_FILE: settleFile,
   }
   let createdId
+  let receiver
   try {
     await chmod(fakePi, 0o755)
     const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
@@ -393,17 +394,37 @@ test("reports interrupted state without interruption activity", async () => {
     const store = await openStore(stateDir)
     try {
       assert.equal(store.getById(createdId)?.lastEventSeq, 0)
+      assert.ok(await store.appendEvent(createdId, store.getById(createdId)?.runtime?.generation ?? "", (cursor) => ({
+        type: "message.finished",
+        cursor,
+        eventId: "interrupted-destroy-message",
+        activityId: "interrupted-destroy-message",
+        timestamp: Date.now(),
+        text: "Interrupted agent destroy proof",
+      })))
     } finally {
       await store.close()
     }
 
+    receiver = spawn(process.execPath, [pif, "receive", "researcher", "--from-start"], { env, stdio: ["ignore", "pipe", "pipe"] })
+    let receiveOutput = ""
+    let receiveError = ""
+    receiver.stdout.setEncoding("utf8").on("data", (chunk) => { receiveOutput += chunk })
+    receiver.stderr.setEncoding("utf8").on("data", (chunk) => { receiveError += chunk })
+    const exited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
+    await waitForText(receiver, () => receiveOutput, "Interrupted agent destroy proof")
+
     const destroyed = await run(["destroy", "researcher"], env)
     assert.equal(destroyed.stdout, "Destroyed agent researcher\n")
-    assert.doesNotMatch(destroyed.stdout, /Warning: Work interrupted/)
-    assert.doesNotMatch(destroyed.stdout, /^Cursor:/m)
     assert.equal(destroyed.stderr, "")
     createdId = undefined
+    await waitForText(receiver, () => receiveOutput, "Agent destroyed")
+    assert.deepEqual(await exited, { code: 0, signal: null })
+    assert.doesNotMatch(receiveOutput, /Warning: Work interrupted/)
+    assert.doesNotMatch(receiveOutput, /^Cursor:/m)
+    assert.equal(receiveError, "")
   } finally {
+    if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
     if (createdId) await terminateWorker(stateDir, createdId)
     await rm(root, { recursive: true, force: true })
   }

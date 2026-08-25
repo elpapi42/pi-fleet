@@ -323,22 +323,31 @@ test("converges separate SDK processes on one replacement worker", { concurrency
       const script = `
         import { access, mkdir, writeFile } from "node:fs/promises";
         import { connectPiFleet } from ${JSON.stringify(sdkUrl)};
-        const [stateDir, readyDir, goFile] = process.argv.slice(1);
+        const [label, stateDir, readyDir, goFile] = process.argv.slice(1);
         await mkdir(readyDir, { recursive: true });
-        await writeFile(readyDir + "/" + process.pid, "ready");
+        await writeFile(readyDir + "/" + label, "ready");
         while (true) {
           try { await access(goFile); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
         }
         const client = await connectPiFleet({ stateDir });
         try {
-          const status = await (await client.get("researcher")).status();
-          process.stdout.write(JSON.stringify(status));
+          const agent = await client.get("researcher");
+          const status = await agent.status();
+          const record = await import(${JSON.stringify(new URL("../../dist/state/store.js", import.meta.url).href)}).then(({ openStore }) => openStore(stateDir));
+          try {
+            const runtime = record.getById(agent.id)?.runtime;
+            process.stdout.write(JSON.stringify({ label, status, generation: runtime?.generation, endpoint: runtime?.endpoint, workerPid: runtime?.workerPid }));
+          } finally {
+            await record.close();
+          }
         } finally {
           await client.close();
         }
       `
-      const first = execFileAsync(process.execPath, ["--input-type=module", "--eval", script, stateDir, readyDir, goFile])
-      const second = execFileAsync(process.execPath, ["--input-type=module", "--eval", script, stateDir, readyDir, goFile])
+      const children = ["first", "second"].map((label) => ({
+        label,
+        result: execFileAsync(process.execPath, ["--input-type=module", "--eval", script, label, stateDir, readyDir, goFile], { timeout: 65_000 }),
+      }))
       for (let attempt = 0; attempt < 100; attempt += 1) {
         try {
           if ((await readdir(readyDir)).length === 2) break
@@ -347,14 +356,35 @@ test("converges separate SDK processes on one replacement worker", { concurrency
       }
       assert.equal((await readdir(readyDir)).length, 2)
       await writeFile(goFile, "go")
-      const results = await Promise.all([first, second])
-      for (const { stdout } of results) assert.equal(JSON.parse(stdout).state, "idle")
+      const results = await Promise.allSettled(children.map(({ result }) => result))
+      const failures = results.flatMap((result, index) => result.status === "rejected"
+        ? [{ label: children[index].label, error: String(result.reason), stdout: result.reason?.stdout, stderr: result.reason?.stderr }]
+        : [])
+      assert.deepEqual(failures, [])
+
       const store = await openStore(stateDir)
       try {
         const runtime = store.getById(agent.id)?.runtime
         assert.equal(runtime?.state, "ready")
+        assert.ok(runtime?.generation)
+        assert.ok(runtime?.endpoint)
         assert.ok(runtime?.workerPid)
-        process.kill(runtime.workerPid, 0)
+        for (const result of results) {
+          assert.equal(result.status, "fulfilled")
+          const observed = JSON.parse(result.value.stdout)
+          assert.equal(observed.status.state, "idle")
+          assert.equal(observed.generation, runtime.generation)
+          assert.equal(observed.endpoint, runtime.endpoint)
+          assert.equal(observed.workerPid, runtime.workerPid)
+        }
+
+        const { stdout } = await execFileAsync("ps", ["-eo", "pid=,args="])
+        const workers = stdout
+          .split("\n")
+          .map((line) => line.trim().match(/^(\d+)\s+(.*)$/))
+          .filter((match) => match && match[2].includes("dist/worker/server.js") && match[2].includes(`--state-dir ${stateDir}`) && match[2].includes(`--agent ${agent.id}`))
+          .map((match) => Number(match[1]))
+        assert.deepEqual(workers, [runtime.workerPid])
       } finally {
         await store.close()
       }

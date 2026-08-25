@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import test from "node:test"
 import { connectPiFleet, AgentRecoveryQueueFullError, AgentSendUncertainError, AgentUnavailableError } from "../../dist/index.js"
-import { openStore } from "../../dist/state/store.js"
+import { decodeEventCursor, openStore } from "../../dist/state/store.js"
 
 const execFileAsync = promisify(execFile)
 const fakePi = join(dirname(fileURLToPath(import.meta.url)), "../pi/fake-pi.mjs")
@@ -121,11 +121,14 @@ test("keeps serving status without an interruption event after an idle Pi exits"
   })
 })
 
-test("keeps a receive stream connected and status interrupted across a working Pi crash", { concurrency: false }, async () => {
+test("keeps a receive stream contiguous and status interrupted across a working Pi crash", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const piPidFile = join(stateDir, "fake-pi.pid")
     const settleFile = join(stateDir, "settle")
+    const incarnationFile = join(stateDir, "fake-pi-incarnation")
     process.env.PI_FLEET_FAKE_PI_MODE = "prompt-event"
+    process.env.PI_FLEET_FAKE_PI_RECOVERY_MODE = "semantic-events"
+    process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE = incarnationFile
     process.env.PI_FLEET_FAKE_PI_PID_FILE = piPidFile
     process.env.PI_FLEET_FAKE_PI_SETTLE_FILE = settleFile
     const client = await connectPiFleet({ stateDir })
@@ -133,18 +136,31 @@ test("keeps a receive stream connected and status interrupted across a working P
       const agent = await client.create({ name: "researcher", cwd: process.cwd() })
       const registry = await openStore(stateDir)
       const before = registry.getById(agent.id)
-      await registry.close()
       assert.ok(before?.runtime?.workerPid)
       assert.ok(before?.runtime?.endpoint)
+      const seeded = await registry.appendEvent(agent.id, before.runtime.generation, (cursor) => ({
+        type: "message.finished",
+        cursor,
+        eventId: "before-interruption",
+        activityId: "before-interruption",
+        timestamp: 1,
+        text: "Before interruption",
+      }))
+      await registry.close()
+      assert.equal(seeded?.sequence, 1)
 
-      const iterator = agent.receive()[Symbol.asyncIterator]()
+      const iterator = agent.receive({ fromStart: true })[Symbol.asyncIterator]()
+      const beforeInterruption = await iterator.next()
+      assert.equal(beforeInterruption.value.type, "message.finished")
+      assert.equal(decodeEventCursor(beforeInterruption.value.cursor).sequence, 1)
+
       await agent.send("Start work")
       for (let attempt = 0; attempt < 40 && (await agent.status()).state !== "working"; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 25))
       }
       assert.equal((await agent.status()).state, "working")
       const oldPiPid = Number(await readFile(piPidFile, "utf8"))
-      process.kill(oldPiPid, "SIGTERM")
+      process.kill(oldPiPid, "SIGKILL")
 
       for (let attempt = 0; attempt < 80 && (await agent.status()).state !== "interrupted"; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 25))
@@ -152,7 +168,7 @@ test("keeps a receive stream connected and status interrupted across a working P
       assert.equal((await agent.status()).state, "interrupted")
       const registryAfterCrash = await openStore(stateDir)
       const afterCrash = registryAfterCrash.getById(agent.id)
-      assert.equal(afterCrash?.lastEventSeq, 0)
+      assert.equal(afterCrash?.lastEventSeq, 1)
       await registryAfterCrash.close()
       assert.equal(afterCrash?.runtime?.workerPid, before.runtime.workerPid)
       assert.equal(afterCrash?.runtime?.endpoint, before.runtime.endpoint)
@@ -163,12 +179,12 @@ test("keeps a receive stream connected and status interrupted across a working P
       }
       assert.notEqual(Number(await readFile(piPidFile, "utf8")), oldPiPid)
       assert.equal((await agent.status()).state, "interrupted")
+
+      const continuation = iterator.next()
       await agent.send("Continue work")
-      for (let attempt = 0; attempt < 40 && (await agent.status()).state !== "working"; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 25))
-      }
-      assert.equal((await agent.status()).state, "working")
-      await writeFile(settleFile, "settle")
+      const firstContinuationEvent = await continuation
+      assert.equal(firstContinuationEvent.value.type, "thinking.started")
+      assert.equal(decodeEventCursor(firstContinuationEvent.value.cursor).sequence, 2)
       for (let attempt = 0; attempt < 40 && (await agent.status()).state !== "idle"; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 25))
       }
@@ -177,6 +193,8 @@ test("keeps a receive stream connected and status interrupted across a working P
       await terminateWorker(stateDir, agent.id)
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_MODE
+      delete process.env.PI_FLEET_FAKE_PI_RECOVERY_MODE
+      delete process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE
       delete process.env.PI_FLEET_FAKE_PI_PID_FILE
       delete process.env.PI_FLEET_FAKE_PI_SETTLE_FILE
       await client.close()
