@@ -559,9 +559,9 @@ test("uses Commander help and errors", async () => {
   assert.match(help.stdout, /Arguments after -- pass through to Pi/)
 
   await assert.rejects(
-    run(["receive", "researcher", "--from-start", "--after", "pf1.invalid"], {}),
+    run(["receive", "researcher", "--after", "pf1.invalid"], {}),
     (error) => {
-      assert.match(error.stderr, /option '--from-start' cannot be used with option '--after <cursor>'/)
+      assert.match(error.stderr, /unknown option '--after'/)
       return true
     },
   )
@@ -585,7 +585,7 @@ test("uses Commander help and errors", async () => {
   )
 })
 
-test("replays and resumes durable activity through CLI receive options", async () => {
+test("replays durable activity through CLI receive from start", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-replay-"))
   const home = join(root, "home")
   const stateDir = join(home, ".pi-fleet")
@@ -597,7 +597,6 @@ test("replays and resumes durable activity through CLI receive options", async (
   }
   let createdId
   let replay
-  let resumed
   try {
     await chmod(fakePi, 0o755)
     const created = await run(["create", "researcher", "--cwd", process.cwd()], env)
@@ -611,26 +610,73 @@ test("replays and resumes durable activity through CLI receive options", async (
     const replayExited = new Promise((resolve) => replay.once("exit", (code, signal) => resolve({ code, signal })))
     await waitForText(replay, () => replayOutput, "Handled: Replay before")
     assert.doesNotMatch(replayOutput, /^Cursor:/m)
-    const registry = await openStore(stateDir)
-    const record = registry.getById(createdId)
-    const cursor = record && registry.readEvents(record.id, 0, record.lastEventSeq, record.lastEventSeq).at(-1)?.cursor
-    await registry.close()
-    assert.ok(cursor)
     replay.kill("SIGINT")
     assert.deepEqual(await replayExited, { code: 130, signal: null })
-
-    resumed = spawn(process.execPath, [pif, "receive", "researcher", "--after", cursor], { env, stdio: ["ignore", "pipe", "pipe"] })
-    let resumedOutput = ""
-    resumed.stdout.setEncoding("utf8").on("data", (chunk) => { resumedOutput += chunk })
-    const resumedExited = new Promise((resolve) => resumed.once("exit", (code, signal) => resolve({ code, signal })))
-    await run(["send", "researcher", "Replay after"], env)
-    await waitForText(resumed, () => resumedOutput, "Handled: Replay after")
-    resumed.kill("SIGINT")
-    assert.deepEqual(await resumedExited, { code: 130, signal: null })
-    assert.doesNotMatch(resumedOutput, /^Cursor:/m)
   } finally {
     if (replay && replay.exitCode === null && replay.signalCode === null) replay.kill("SIGTERM")
-    if (resumed && resumed.exitCode === null && resumed.signalCode === null) resumed.kill("SIGTERM")
+    if (createdId) await terminateWorker(stateDir, createdId)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("uses an alternate state directory for every CLI command", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-state-dir-"))
+  const home = join(root, "home")
+  const defaultStateDir = join(home, ".pi-fleet")
+  const stateDir = join(root, "alternate-state")
+  const argsFile = join(root, "fake-pi-args.json")
+  const env = {
+    ...process.env,
+    HOME: home,
+    PI_FLEET_PI_COMMAND: fakePi,
+    PI_FLEET_FAKE_PI_MODE: "semantic-events",
+    PI_FLEET_FAKE_PI_ARGS_FILE: argsFile,
+  }
+  let createdId
+  let receiver
+  try {
+    await chmod(fakePi, 0o755)
+    const created = await run([
+      "--state-dir", stateDir,
+      "create", "researcher", "--cwd", process.cwd(), "--", "--session-id", "existing",
+    ], env)
+    createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.ok(createdId)
+    assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
+      "--mode", "rpc", "--session-id", "existing",
+    ])
+
+    const listed = await run(["list", "--state-dir", stateDir], env)
+    assert.match(listed.stdout, new RegExp(`^researcher\\s+idle\\s+${createdId}$`, "m"))
+    const status = await run(["--state-dir", stateDir, "status", "researcher"], env)
+    assert.match(status.stdout, new RegExp(`^ID: ${createdId}$`, "m"))
+
+    receiver = spawn(process.execPath, [pif, "receive", "researcher", "--from-start", "--state-dir", stateDir], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    let receiveOutput = ""
+    receiver.stdout.setEncoding("utf8").on("data", (chunk) => { receiveOutput += chunk })
+    const receiverExited = new Promise((resolve) => receiver.once("exit", (code, signal) => resolve({ code, signal })))
+    await run(["send", "researcher", "Alternate state work", "--state-dir", stateDir], env)
+    await waitForText(receiver, () => receiveOutput, "Handled: Alternate state work")
+    receiver.kill("SIGINT")
+    assert.deepEqual(await receiverExited, { code: 130, signal: null })
+    receiver = undefined
+
+    const registry = await openStore(stateDir)
+    try {
+      assert.equal(registry.getByName("researcher")?.id, createdId)
+    } finally {
+      await registry.close()
+    }
+    await assert.rejects(access(defaultStateDir))
+
+    const destroyed = await run(["destroy", "researcher", "--state-dir", stateDir], env)
+    assert.equal(destroyed.stdout, "Destroyed agent researcher\n")
+    createdId = undefined
+  } finally {
+    if (receiver && receiver.exitCode === null && receiver.signalCode === null) receiver.kill("SIGTERM")
     if (createdId) await terminateWorker(stateDir, createdId)
     await rm(root, { recursive: true, force: true })
   }

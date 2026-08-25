@@ -11,6 +11,7 @@ test("shows help from the built executable", () => {
   assert.equal(result.status, 0)
   assert.match(result.stdout, /Usage:/)
   assert.match(result.stdout, /Usage: pif \[options\] \[command\]/)
+  assert.match(result.stdout, /--state-dir <path>/)
   assert.match(result.stdout, /create \[options\] <name>/)
   assert.match(result.stdout, /send \[options\] <name> <message>/)
   assert.match(result.stdout, /receive \[options\] <name>/)
@@ -22,7 +23,7 @@ test("shows help from the built executable", () => {
   })
   assert.equal(receive.status, 0)
   assert.match(receive.stdout, /--from-start/)
-  assert.match(receive.stdout, /--after <cursor>/)
+  assert.doesNotMatch(receive.stdout, /--after <cursor>/)
   assert.match(receive.stdout, /--verbose/)
 })
 
@@ -33,5 +34,5 @@ test("shows the CLI package version", () => {
   })
 
   assert.equal(result.status, 0)
-  assert.equal(result.stdout, "0.14.1\n")
+  assert.equal(result.stdout, "0.15.0\n")
 })

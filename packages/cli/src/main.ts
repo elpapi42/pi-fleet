@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { stripVTControlCharacters } from "node:util"
-import { Command, Option } from "commander"
+import { Command } from "commander"
 import { connectPiFleet, type AgentEvent } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.14.1"
+const version = "0.15.0"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -176,8 +176,8 @@ function printAgentList(agents: Array<{ id: string; name: string; state: string 
   }
 }
 
-async function withClient<T>(action: (client: Awaited<ReturnType<typeof connectPiFleet>>) => Promise<T>): Promise<T> {
-  const client = await connectPiFleet()
+async function withClient<T>(action: (client: Awaited<ReturnType<typeof connectPiFleet>>) => Promise<T>, stateDir?: string): Promise<T> {
+  const client = await connectPiFleet({ stateDir })
   try {
     return await action(client)
   } finally {
@@ -192,8 +192,12 @@ function createProgram(piArgs: string[]): Command {
     .name("pif")
     .description("Manage durable, host-local Pi agents")
     .version(version)
+    .option("--state-dir <path>", "directory for pi-fleet state")
     .showSuggestionAfterError()
     .showHelpAfterError()
+
+  const withProgramClient = <T>(action: (client: Awaited<ReturnType<typeof connectPiFleet>>) => Promise<T>) =>
+    withClient(action, program.opts().stateDir)
 
   program
     .command("create <name>")
@@ -201,7 +205,7 @@ function createProgram(piArgs: string[]): Command {
     .option("--cwd <path>", "working directory", process.cwd())
     .addHelpText("after", "\nArguments after -- pass through to Pi.")
     .action(async (name: string, options: { cwd: string }) => {
-      const agent = await withClient((client) => client.create({ name, cwd: options.cwd, piArgs }))
+      const agent = await withProgramClient((client) => client.create({ name, cwd: options.cwd, piArgs }))
       console.log(`Created agent ${agent.name}`)
       printAgent(agent.id, agent.name, "idle")
     })
@@ -212,7 +216,7 @@ function createProgram(piArgs: string[]): Command {
     .option("--follow-up", "deliver after the current work finishes")
     .action(async (name: string, message: string, options: { followUp?: boolean }) => {
       const delivery = options.followUp ? "followUp" : "steer"
-      await withClient(async (client) => (await client.get(name)).send(message, { delivery }))
+      await withProgramClient(async (client) => (await client.get(name)).send(message, { delivery }))
       console.log(`Instruction accepted by ${name}`)
       console.log(`Delivery: ${delivery}`)
     })
@@ -220,20 +224,19 @@ function createProgram(piArgs: string[]): Command {
   program
     .command("receive <name>")
     .description("Show durable agent activity")
-    .addOption(new Option("--from-start", "replay activity from the first event").conflicts("after"))
-    .option("--after <cursor>", "replay activity after a cursor")
+    .option("--from-start", "replay activity from the first event")
     .option("--verbose", "show full bounded tool output and details")
-    .action(async (name: string, options: { fromStart?: boolean; after?: string; verbose?: boolean }) => {
+    .action(async (name: string, options: { fromStart?: boolean; verbose?: boolean }) => {
       let interrupted = false
       const renderer = new ActivityRenderer(options.verbose ?? false)
-      await withClient(async (client) => {
+      await withProgramClient(async (client) => {
         const onInterrupt = () => {
           interrupted = true
           void client.close()
         }
         process.once("SIGINT", onInterrupt)
         try {
-          const receiveOptions = options.fromStart ? { fromStart: true } : options.after ? { after: options.after } : undefined
+          const receiveOptions = options.fromStart ? { fromStart: true } : undefined
           for await (const event of (await client.get(name)).receive(receiveOptions)) renderer.print(event)
         } finally {
           process.off("SIGINT", onInterrupt)
@@ -246,7 +249,7 @@ function createProgram(piArgs: string[]): Command {
     .command("destroy <name>")
     .description("Destroy a durable Pi agent and its event history")
     .action(async (name: string) => {
-      await withClient(async (client) => (await client.get(name)).destroy())
+      await withProgramClient(async (client) => (await client.get(name)).destroy())
       console.log(`Destroyed agent ${name}`)
     })
 
@@ -254,7 +257,7 @@ function createProgram(piArgs: string[]): Command {
     .command("status <name>")
     .description("Show an agent's current state")
     .action(async (name: string) => {
-      const status = await withClient(async (client) => (await client.get(name)).status())
+      const status = await withProgramClient(async (client) => (await client.get(name)).status())
       printAgent(status.id, status.name, status.state)
     })
 
@@ -262,16 +265,30 @@ function createProgram(piArgs: string[]): Command {
     .command("list")
     .description("List durable Pi agents")
     .action(async () => {
-      printAgentList(await withClient((client) => client.list()))
+      printAgentList(await withProgramClient((client) => client.list()))
     })
 
   return program
 }
 
+function commandName(args: string[]): string | undefined {
+  const commandArgs = [...args]
+  for (let index = 0; index < commandArgs.length; index += 1) {
+    if (commandArgs[index] === "--state-dir") {
+      commandArgs.splice(index, 2)
+      index -= 1
+    } else if (commandArgs[index].startsWith("--state-dir=")) {
+      commandArgs.splice(index, 1)
+      index -= 1
+    }
+  }
+  return commandArgs[0]
+}
+
 async function main(args: string[]): Promise<void> {
   const { pifArgs, piArgs } = splitPiArgs(args)
   const program = createProgram(piArgs)
-  if (piArgs.length > 0 && pifArgs[0] !== "create") {
+  if (piArgs.length > 0 && commandName(pifArgs) !== "create") {
     program.error("Arguments after -- are supported only by pif create")
   }
 
