@@ -40,7 +40,7 @@ const client = await connectPiFleet({ stateDir: "/path/to/pi-fleet-state" })
 
 `client.get(name)` and `client.list()` discover agents created by another local client. `client.close()` only closes this SDK client. It does not stop an agent worker.
 
-Running agents keep the worker version used at creation. After updating the SDK, create a new agent before testing new worker behavior such as worker recovery. SDK `0.12.0` removes `work.interrupted` from replay, so agents created by older versions are unsupported after upgrade and must be destroyed and recreated.
+Running agents keep the worker version used at creation. After updating the SDK, create a new agent before testing new worker behavior such as worker recovery. SDK `0.12.1` removes `work.interrupted` from replay, so agents created by older versions are unsupported after upgrade and must be destroyed and recreated.
 
 `agent.send(message)` starts work when Pi is idle. During active work, it uses `steer` by default. Use `followUp` to deliver after the current work settles:
 

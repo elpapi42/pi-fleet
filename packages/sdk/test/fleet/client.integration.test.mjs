@@ -349,7 +349,15 @@ test("converges separate SDK processes on one replacement worker", { concurrency
       await writeFile(goFile, "go")
       const results = await Promise.all([first, second])
       for (const { stdout } of results) assert.equal(JSON.parse(stdout).state, "idle")
-      assert.equal(Number(await readFile(incarnationFile, "utf8")), 2)
+      const store = await openStore(stateDir)
+      try {
+        const runtime = store.getById(agent.id)?.runtime
+        assert.equal(runtime?.state, "ready")
+        assert.ok(runtime?.workerPid)
+        process.kill(runtime.workerPid, 0)
+      } finally {
+        await store.close()
+      }
     } finally {
       delete process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE
       await creator.close()
