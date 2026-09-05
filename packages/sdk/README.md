@@ -13,6 +13,7 @@ const client = await connectPiFleet()
 const agent = await client.create({
   name: "researcher",
   cwd: process.cwd(),
+  agentDir: "/home/user/pi-profiles/researcher",
 })
 
 await agent.send("Investigate the database schema")
@@ -30,7 +31,9 @@ await client.create({
 })
 ```
 
-Pi owns session lookup, working-directory selection, prompts, and failures. If the user supplies no session selector, Pi-fleet uses the observed session path for later Pi recovery.
+Pi owns session lookup, working-directory selection, prompts, and failures. Caller-owned Pi session selectors remain unchanged and authoritative. For fleet-owned sessions, pi-fleet restores an existing physical session by its exact path. If Pi reported a session path and ID but has not materialized the file, pi-fleet restarts with the persisted session ID and still requires Pi to report that exact ID.
+
+`agentDir` is optional immutable Pi profile configuration. It differs from the agent `cwd` and the pi-fleet `stateDir`. When supplied, the SDK resolves it from the creating process current directory, persists the absolute path, and supplies it as `PI_CODING_AGENT_DIR` to every Pi child during initial startup, Pi recovery, and worker recovery. When omitted, pi-fleet preserves today's inherited Pi environment behavior. Users own profile creation, contents, credentials, permissions, sharing, and errors. Pi determines credential precedence. The selected profile can provide credentials, and provider credentials inherited from the process environment remain available to Pi. Pi-fleet does not copy or delete profile data, alter trust, or treat it as a sandbox. Project `.pi` resources and project or ancestor `AGENTS.md` remain Pi-owned behavior.
 
 By default, pi-fleet stores its LMDB environment and worker IPC sockets in `~/.pi-fleet`. Pre-stable releases do not migrate state from earlier locations automatically. An explicit `stateDir` must leave room for the generated Unix IPC socket path. An overlong path throws `InvalidStateDirectoryError` before pi-fleet creates state. Pass `stateDir` to `connectPiFleet` only when you need an explicit location, such as an isolated test or an advanced local setup:
 
@@ -40,7 +43,7 @@ const client = await connectPiFleet({ stateDir: "/path/to/pi-fleet-state" })
 
 `client.get(name)` and `client.list()` discover agents created by another local client. `client.close()` only closes this SDK client. It does not stop an agent worker.
 
-Running agents keep the worker version used at creation. After updating the SDK, create a new agent before testing new worker behavior such as worker recovery. SDK `0.12.1` removes `work.interrupted` from replay, so agents created by older versions are unsupported after upgrade and must be destroyed and recreated.
+Running agents keep the worker version used at creation. After updating the SDK, create a new agent before testing new worker behavior such as worker recovery. SDK `0.12.2` removes `work.interrupted` from replay, so agents created by older versions are unsupported after upgrade and must be destroyed and recreated.
 
 `agent.send(message)` starts work when Pi is idle. During active work, it uses `steer` by default. Use `followUp` to deliver after the current work settles:
 

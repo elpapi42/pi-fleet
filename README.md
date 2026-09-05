@@ -19,7 +19,7 @@ Install the CLI globally:
 
 ```bash
 npm install --global @elpapi42/pi-fleet-cli
-pif create researcher --cwd "$PWD"
+pif create researcher --cwd /home/user/project
 pif list
 pif status researcher
 pif --help
@@ -40,10 +40,13 @@ pif receive researcher --verbose
 pif destroy researcher
 
 # Pass session selection directly to Pi
-pif create existing --cwd "$PWD" -- --session /path/to/session.jsonl
+pif create existing --cwd /home/user/project -- --session /path/to/session.jsonl
+
+# Select a durable Pi profile for this agent. It must be before Pi arguments.
+pif create profiled --cwd /home/user/project --agent-dir /home/user/pi-profiles/profiled -- --session /path/to/session.jsonl
 
 # Use a separate pi-fleet environment for any command.
-pif --state-dir /tmp/team-fleet create analyst --cwd "$PWD" -- --session /tmp/analyst.jsonl
+pif --state-dir /tmp/team-fleet create analyst --cwd /home/user/project -- --session /tmp/analyst.jsonl
 pif --state-dir /tmp/team-fleet list
 pif --state-dir /tmp/team-fleet status analyst
 pif --state-dir /tmp/team-fleet send analyst "Continue"
@@ -53,9 +56,13 @@ pif --state-dir /tmp/team-fleet destroy analyst
 
 By default, pi-fleet stores its LMDB state and IPC sockets in `~/.pi-fleet`. Use the optional global `--state-dir PATH` to select another environment. Commander also accepts this option after a subcommand, such as `pif list --state-dir /tmp/team-fleet`. Relative paths resolve from the CLI process current directory. Put `--state-dir` before create's `--` separator because everything after that separator passes directly to Pi. Event history includes bounded tool details and remains there until the owner runs `pif destroy NAME`. There is no expiry or retention setting yet, so disk use can grow. Pre-stable releases do not migrate state from earlier locations automatically.
 
+`--agent-dir PATH` is a create-only option for Pi's profile directory. It is different from both the agent `--cwd` and pi-fleet `--state-dir`. A supplied path resolves from the CLI process current directory, becomes durable agent configuration, and reaches each Pi child through `PI_CODING_AGENT_DIR` during initial startup, Pi recovery, and worker recovery. When omitted, pi-fleet preserves today's inherited Pi environment behavior. Users own the selected profile, including its creation, contents, credentials, permissions, sharing, and errors. Pi determines credential precedence. The selected profile can provide credentials, and provider credentials inherited from the process environment remain available to Pi. Pi-fleet does not copy or delete profile data, alter trust, or make the profile a sandbox. Project `.pi` resources and project `AGENTS.md` remain Pi-owned behavior.
+
 `pif destroy NAME` requires no confirmation. It can stop active work, emits a final `agent.destroyed` event to healthy active receivers, then removes the worker, Pi, name, agent record, IPC socket, and complete event history. A destroyed name can be recreated as a new agent with a new ID.
 
-Running agents keep the worker version used at creation. After updating pi-fleet, create a new agent before testing new worker behavior such as worker recovery. SDK `0.12.1` and CLI `0.16.1` remove `work.interrupted` from replay. Destroy and recreate agents made by older versions before using this release.
+Running agents keep the worker version used at creation. After updating pi-fleet, create a new agent before testing new worker behavior such as worker recovery. SDK `0.12.2` and CLI `0.16.2` remove `work.interrupted` from replay. Destroy and recreate agents made by older versions before using this release.
+
+For fleet-owned sessions, pi-fleet restores an existing physical session by its exact path. If Pi reported a session path and ID but has not materialized the file, pi-fleet restarts with the persisted session ID and still requires Pi to report that exact ID. Caller-owned Pi session selectors remain unchanged and authoritative.
 
 A later `status`, `send`, or `receive` operation replaces an unavailable worker through one LMDB recovery claim. Durable identity, session metadata, event history, and SDK cursors continue across the new worker generation. A stream reconnects and replays from its last delivered cursor. Pi-fleet never retries a send that the old worker might have accepted. Active Pi runtime loss changes the agent to sticky `interrupted`; use `status` to detect it. The state remains interrupted until Pi starts newly sent work, while `list` remains inventory and can temporarily show stale working state after unobserved worker loss. `pif receive` supports live-only activity, `--from-start` replay, and `--verbose` full bounded successful output and details. Plain `pif receive NAME` is live-only and can miss activity before subscription acknowledgement. Start `pif receive NAME --from-start` before sending work when no first activity may be missed. Exact cursor resume remains available through the SDK, not through the CLI.
 

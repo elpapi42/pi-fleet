@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { once } from "node:events"
-import { chmod, mkdtemp, readFile, rm } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -65,6 +65,26 @@ async function capturePiArgs(overrides) {
   }
 }
 
+async function capturePiAgentDir(overrides, environment = {}) {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-pi-agent-dir-"))
+  const agentDirFile = join(root, "agent-dir.json")
+  try {
+    return await withFakePi({ PI_FLEET_FAKE_PI_AGENT_DIR_FILE: agentDirFile, ...environment }, async () => {
+      const pi = await startPi(record(overrides))
+      try {
+        return {
+          agentDir: JSON.parse(await readFile(agentDirFile, "utf8")),
+          parentAgentDir: process.env.PI_CODING_AGENT_DIR,
+        }
+      } finally {
+        await stop(pi.process)
+      }
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
 test("starts Pi in RPC mode with caller arguments", { concurrency: false }, async () => {
   const result = await capturePiArgs({})
   assert.deepEqual(result.state, {
@@ -76,6 +96,21 @@ test("starts Pi in RPC mode with caller arguments", { concurrency: false }, asyn
     "rpc",
     "--offline",
   ])
+})
+
+test("overrides only the Pi child agent directory without mutating the parent environment", { concurrency: false }, async () => {
+  const result = await capturePiAgentDir(
+    { agentDir: "/profiles/explicit" },
+    { PI_CODING_AGENT_DIR: "/profiles/ambient" },
+  )
+  assert.equal(result.agentDir, "/profiles/explicit")
+  assert.equal(result.parentAgentDir, "/profiles/ambient")
+})
+
+test("preserves the ambient agent directory when no launch override is supplied", { concurrency: false }, async () => {
+  const result = await capturePiAgentDir({}, { PI_CODING_AGENT_DIR: "/profiles/ambient" })
+  assert.equal(result.agentDir, "/profiles/ambient")
+  assert.equal(result.parentAgentDir, "/profiles/ambient")
 })
 
 test("preserves a user-selected session path instead of appending the observed path", { concurrency: false }, async () => {
@@ -114,18 +149,74 @@ test("preserves other user session selectors", { concurrency: false }, async () 
   }
 })
 
+test("uses the persisted session ID when a fleet-owned session path is absent", { concurrency: false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-missing-session-"))
+  try {
+    const result = await capturePiArgs({
+      piArgs: ["--offline"],
+      sessionPath: join(root, "missing.jsonl"),
+      sessionId: "fleet-session",
+    })
+    assert.deepEqual(result.args, [
+      "--mode",
+      "rpc",
+      "--offline",
+      "--session-id",
+      "fleet-session",
+    ])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("keeps the observed session path when a fleet-owned path is absent without a session ID", { concurrency: false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-missing-session-"))
+  const sessionPath = join(root, "missing.jsonl")
+  try {
+    const result = await capturePiArgs({ piArgs: ["--offline"], sessionPath })
+    assert.deepEqual(result.args, ["--mode", "rpc", "--offline", "--session", sessionPath])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("keeps the observed session path when checking it fails for another reason", { concurrency: false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-invalid-session-"))
+  const parentPath = join(root, "not-a-directory")
+  const sessionPath = join(parentPath, "session.jsonl")
+  try {
+    await writeFile(parentPath, "not a directory\n")
+    const result = await capturePiArgs({
+      piArgs: ["--offline"],
+      sessionPath,
+      sessionId: "fleet-session",
+    })
+    assert.deepEqual(result.args, ["--mode", "rpc", "--offline", "--session", sessionPath])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("appends the observed session path when the user supplied no selector", { concurrency: false }, async () => {
-  const result = await capturePiArgs({
-    piArgs: ["--offline"],
-    sessionPath: "/sessions/observed.jsonl",
-  })
-  assert.deepEqual(result.args, [
-    "--mode",
-    "rpc",
-    "--offline",
-    "--session",
-    "/sessions/observed.jsonl",
-  ])
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-existing-session-"))
+  const sessionPath = join(root, "observed.jsonl")
+  try {
+    await writeFile(sessionPath, "{}\n")
+    const result = await capturePiArgs({
+      piArgs: ["--offline"],
+      sessionPath,
+      sessionId: "fleet-session",
+    })
+    assert.deepEqual(result.args, [
+      "--mode",
+      "rpc",
+      "--offline",
+      "--session",
+      sessionPath,
+    ])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("decodes a get_state response split across UTF-8 chunks", { concurrency: false }, async () => {

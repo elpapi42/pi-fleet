@@ -1,6 +1,6 @@
 {
   "name": "@elpapi42/pi-fleet-cli",
-  "version": "0.16.2",
+  "version": "0.17.0",
   "description": "CLI for durable, host-local Pi agents",
   "license": "MIT",
   "repository": {
@@ -24,7 +24,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@elpapi42/pi-fleet-sdk": "0.12.2",
+    "@elpapi42/pi-fleet-sdk": "0.13.0",
     "commander": "15.0.0"
   }
 }

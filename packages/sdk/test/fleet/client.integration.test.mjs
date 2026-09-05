@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { access, chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { access, chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { promisify } from "node:util"
 import test from "node:test"
 import { connectPiFleet, AgentNameTakenError, AgentNotFoundError, AgentUnavailableError, InvalidCursorError, InvalidStateDirectoryError } from "../../dist/index.js"
@@ -11,6 +11,11 @@ import { decodeEventCursor, encodeEventCursor, openStore } from "../../dist/stat
 
 const execFileAsync = promisify(execFile)
 const fakePi = join(dirname(fileURLToPath(import.meta.url)), "../pi/fake-pi.mjs")
+
+function restoreEnv(name, value) {
+  if (value === undefined) delete process.env[name]
+  else process.env[name] = value
+}
 
 async function terminateWorker(stateDir, id) {
   const registry = await openStore(stateDir)
@@ -232,6 +237,7 @@ test("creates a durable agent that another SDK client can discover and query", {
     try {
       assert.equal(typeof createdStore.getById(agent.id)?.runtime?.claimId, "string")
       assert.equal(typeof createdStore.getById(agent.id)?.runtime?.claimedAt, "number")
+      assert.equal(createdStore.getById(agent.id)?.agentDir, undefined)
     } finally {
       await createdStore.close()
     }
@@ -247,6 +253,119 @@ test("creates a durable agent that another SDK client can discover and query", {
     } finally {
       await terminateWorker(stateDir, agent.id)
       await observer.close()
+    }
+  })
+})
+
+test("persists a supplied agentDir as an absolute launch setting", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "profiled", cwd: process.cwd(), agentDir: "relative-profile" })
+      const store = await openStore(stateDir)
+      try {
+        assert.equal(store.getById(agent.id)?.agentDir, resolve("relative-profile"))
+      } finally {
+        await store.close()
+      }
+      await terminateWorker(stateDir, agent.id)
+    } finally {
+      await client.close()
+    }
+  })
+})
+
+test("rejects invalid agentDir values", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const client = await connectPiFleet({ stateDir })
+    try {
+      await assert.rejects(
+        client.create({ name: "blank-profile", cwd: process.cwd(), agentDir: "  " }),
+        /Agent directory must not be empty/,
+      )
+      await assert.rejects(
+        client.create({ name: "non-string-profile", cwd: process.cwd(), agentDir: 42 }),
+        /Agent directory must be a string/,
+      )
+      await assert.rejects(
+        client.create({ name: "nul-profile", cwd: process.cwd(), agentDir: "profile\0name" }),
+        /Agent directory must not contain a null byte/,
+      )
+      assert.deepEqual(await client.list(), [])
+    } finally {
+      await client.close()
+    }
+  })
+})
+
+test("keeps profile directories separate and leaves them after destroy", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const agentDirLog = join(stateDir, "agent-dir.log")
+    const firstDir = join(stateDir, "profile-first")
+    const secondDir = join(stateDir, "profile-second")
+    const firstMarker = join(firstDir, "user-owned")
+    const secondMarker = join(secondDir, "user-owned")
+    const previousAgentDirLog = process.env.PI_FLEET_FAKE_PI_AGENT_DIR_LOG_FILE
+    const previousAmbientAgentDir = process.env.PI_CODING_AGENT_DIR
+    process.env.PI_FLEET_FAKE_PI_AGENT_DIR_LOG_FILE = agentDirLog
+    await mkdir(firstDir)
+    await mkdir(secondDir)
+    await writeFile(firstMarker, "first")
+    await writeFile(secondMarker, "second")
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const first = await client.create({ name: "first-profile", cwd: process.cwd(), agentDir: firstDir })
+      const second = await client.create({ name: "second-profile", cwd: process.cwd(), agentDir: secondDir })
+      const observed = (await readFile(agentDirLog, "utf8")).trim().split("\n").map(JSON.parse)
+      assert.deepEqual(observed, [firstDir, secondDir])
+      await first.destroy()
+      await second.destroy()
+      assert.equal(await readFile(firstMarker, "utf8"), "first")
+      assert.equal(await readFile(secondMarker, "utf8"), "second")
+    } finally {
+      restoreEnv("PI_FLEET_FAKE_PI_AGENT_DIR_LOG_FILE", previousAgentDirLog)
+      restoreEnv("PI_CODING_AGENT_DIR", previousAmbientAgentDir)
+      await client.close()
+    }
+  })
+})
+
+test("keeps an explicit agentDir after replacement worker recovery from another environment", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const agentDirFile = join(stateDir, "agent-dir")
+    const storedAgentDir = join(stateDir, "stored-profile")
+    const recoveryAgentDir = join(stateDir, "recovery-profile")
+    const previousAgentDirFile = process.env.PI_FLEET_FAKE_PI_AGENT_DIR_FILE
+    const previousAmbientAgentDir = process.env.PI_CODING_AGENT_DIR
+    process.env.PI_FLEET_FAKE_PI_AGENT_DIR_FILE = agentDirFile
+    const creator = await connectPiFleet({ stateDir })
+    try {
+      const agent = await creator.create({ name: "researcher", cwd: process.cwd(), agentDir: storedAgentDir })
+      assert.equal(JSON.parse(await readFile(agentDirFile, "utf8")), storedAgentDir)
+      await terminateWorker(stateDir, agent.id)
+      const sdkUrl = new URL("../../dist/index.js", import.meta.url).href
+      const script = `
+        import { connectPiFleet } from ${JSON.stringify(sdkUrl)};
+        const [stateDir, agentDir] = process.argv.slice(1);
+        const client = await connectPiFleet({ stateDir });
+        try {
+          const status = await (await client.get("researcher")).status();
+          process.stdout.write(JSON.stringify(status));
+        } finally {
+          await client.close();
+        }
+      `
+      const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "--eval", script, stateDir, recoveryAgentDir], {
+        env: { ...process.env, PI_CODING_AGENT_DIR: recoveryAgentDir },
+        timeout: 65_000,
+      })
+      assert.equal(JSON.parse(stdout).state, "idle")
+      assert.equal(JSON.parse(await readFile(agentDirFile, "utf8")), storedAgentDir)
+      await terminateWorker(stateDir, agent.id)
+    } finally {
+      restoreEnv("PI_FLEET_FAKE_PI_AGENT_DIR_FILE", previousAgentDirFile)
+      restoreEnv("PI_CODING_AGENT_DIR", previousAmbientAgentDir)
+      await creator.close()
     }
   })
 })

@@ -3,7 +3,7 @@ import { stripVTControlCharacters } from "node:util"
 import { Command } from "commander"
 import { connectPiFleet, type AgentEvent } from "@elpapi42/pi-fleet-sdk"
 
-const version = "0.16.2"
+const version = "0.17.0"
 
 function splitPiArgs(args: string[]): { pifArgs: string[]; piArgs: string[] } {
   const separator = args.indexOf("--")
@@ -199,9 +199,10 @@ function createProgram(piArgs: string[]): Command {
     .command("create <name>")
     .description("Create a durable Pi agent")
     .option("--cwd <path>", "working directory", process.cwd())
+    .option("--agent-dir <path>", "Pi agent profile directory")
     .addHelpText("after", "\nArguments after -- pass through to Pi.")
-    .action(async (name: string, options: { cwd: string }) => {
-      const agent = await withProgramClient((client) => client.create({ name, cwd: options.cwd, piArgs }))
+    .action(async (name: string, options: { cwd: string; agentDir?: string }) => {
+      const agent = await withProgramClient((client) => client.create({ name, cwd: options.cwd, agentDir: options.agentDir, piArgs }))
       console.log(`Created agent ${agent.name}`)
       printAgent(agent.id, agent.name, "idle")
     })

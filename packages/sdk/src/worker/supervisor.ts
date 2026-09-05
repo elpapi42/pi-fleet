@@ -277,7 +277,13 @@ export class PiSupervisor {
   private async startRecord(record: AgentRecord, timeoutMs: number): Promise<CurrentPi> {
     const incarnation = ++this.#incarnation
     const process = await startPi(
-      { cwd: record.cwd, piArgs: record.piArgs, sessionPath: record.sessionPath },
+      {
+        cwd: record.cwd,
+        piArgs: record.piArgs,
+        agentDir: record.agentDir,
+        sessionPath: record.sessionPath,
+        sessionId: record.sessionId,
+      },
       timeoutMs,
       (event) => {
         if (!this.#stopping && incarnation === this.#incarnation) this.#options.onPiEvent(event)

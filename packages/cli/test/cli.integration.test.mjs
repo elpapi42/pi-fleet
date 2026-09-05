@@ -128,6 +128,43 @@ test("creates, lists, and checks a durable agent through the CLI", async () => {
   }
 })
 
+test("forwards create agentDir before Pi arguments", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-agent-dir-"))
+  const stateDir = join(root, "state")
+  const agentDir = "relative-profile"
+  const agentDirFile = join(root, "fake-pi-agent-dir.json")
+  const argsFile = join(root, "fake-pi-args.json")
+  let createdId
+  try {
+    await chmod(fakePi, 0o755)
+    const env = {
+      PI_FLEET_PI_COMMAND: fakePi,
+      PI_FLEET_FAKE_PI_AGENT_DIR_FILE: agentDirFile,
+      PI_FLEET_FAKE_PI_ARGS_FILE: argsFile,
+    }
+    const created = await run([
+      "--state-dir", stateDir,
+      "create", "profiled",
+      "--cwd", process.cwd(),
+      "--agent-dir", agentDir,
+      "--",
+      "--session-id", "existing",
+    ], env)
+    createdId = created.stdout.match(/^ID: (.+)$/m)?.[1]
+    assert.ok(createdId)
+    assert.equal(JSON.parse(await readFile(agentDirFile, "utf8")), resolve(agentDir))
+    assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
+      "--mode",
+      "rpc",
+      "--session-id",
+      "existing",
+    ])
+  } finally {
+    if (createdId) await terminateWorker(stateDir, createdId)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("receives and renders live activity through the CLI", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-cli-receive-"))
   const home = join(root, "home")

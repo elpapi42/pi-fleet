@@ -235,6 +235,7 @@ test("claims an unavailable ready runtime without changing durable agent data", 
   await withStore(async (store) => {
     const initial = {
       ...record("researcher", "agent-1"),
+      agentDir: "/profiles/researcher",
       state: "idle",
       sessionPath: "/tmp/session-1.jsonl",
       sessionId: "session-1",
@@ -257,6 +258,7 @@ test("claims an unavailable ready runtime without changing durable agent data", 
     assert.equal(claim?.record.runtime?.workerPid, 123)
     assert.equal(claim?.record.state, "idle")
     assert.equal(claim?.record.cwd, initial.cwd)
+    assert.equal(claim?.record.agentDir, initial.agentDir)
     assert.deepEqual(claim?.record.piArgs, initial.piArgs)
     assert.equal(claim?.record.sessionPath, initial.sessionPath)
     assert.equal(claim?.record.sessionId, initial.sessionId)

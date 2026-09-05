@@ -48,7 +48,7 @@ npm install --global @elpapi42/pi-fleet-cli
 Use global `--state-dir` before the command in examples. It can appear after a command, but it must appear before `--` on `create` because everything after that separator passes to Pi.
 
 ```bash
-pif --state-dir /tmp/team-fleet create researcher --cwd /home/user/project -- --session /home/user/project/research.jsonl
+pif --state-dir /tmp/team-fleet create researcher --cwd /home/user/project --agent-dir /home/user/pi-profiles/researcher -- --session /home/user/project/research.jsonl
 pif --state-dir /tmp/team-fleet list
 pif --state-dir /tmp/team-fleet status researcher
 pif --state-dir /tmp/team-fleet send researcher "Summarize the open issues."
@@ -62,7 +62,9 @@ Run activity reception in a separate terminal because it stays open:
 pif --state-dir /tmp/team-fleet receive researcher --from-start
 ```
 
-Use `pif create NAME -- --PI_ARGS...` to pass Pi options unchanged. Use `--cwd` before that separator. Do not pass fleet-owned Pi options `--mode` or `--no-session` because pi-fleet rejects them. Pi session selectors, including `--session`, `--session-id`, `--continue`, `--resume`, and `--fork`, pass through to Pi.
+Use `pif create NAME -- --PI_ARGS...` to pass Pi options unchanged. Use `--cwd` and `--agent-dir` before that separator. Do not pass fleet-owned Pi options `--mode` or `--no-session` because pi-fleet rejects them. Pi session selectors, including `--session`, `--session-id`, `--continue`, `--resume`, and `--fork`, pass through to Pi and remain authoritative. For fleet-owned sessions, pi-fleet restores an existing physical session by its exact path. If Pi reported a session path and ID but has not materialized the file, pi-fleet restarts with the persisted session ID and still requires Pi to report that exact ID.
+
+`--agent-dir PATH` selects Pi's profile directory for one durable agent. It differs from the agent `--cwd` and global pi-fleet `--state-dir`. A supplied value resolves from the CLI process current directory, persists with the agent, and reaches each Pi child as `PI_CODING_AGENT_DIR` during initial startup, Pi recovery, and worker recovery. Omission preserves today's inherited Pi environment behavior. Users own profile creation, contents, credentials, permissions, sharing, and errors. Pi determines credential precedence. The selected profile can provide credentials, and provider credentials inherited from the process environment remain available to Pi. Pi-fleet does not copy or delete profile data, alter project trust, or make the profile a sandbox. Project `.pi` resources and project or ancestor `AGENTS.md` remain Pi-owned behavior.
 
 `pif receive NAME` is live-only. It has no subscription-ready signal, so starting it near a send can still miss the first activity. Use `pif receive NAME --from-start` when the first event must not be missed. It replays all retained activity and then continues live. The CLI has no `--after` option and prints no cursor tokens.
 
@@ -84,6 +86,7 @@ try {
   const agent = await client.create({
     name: "researcher",
     cwd: "/home/user/project",
+    agentDir: "/home/user/pi-profiles/researcher",
     piArgs: ["--session", "/home/user/project/research.jsonl"],
   })
 
@@ -104,7 +107,7 @@ try {
 
 Use these public methods:
 
-- `client.create({ name, cwd, piArgs? })` creates a new durable agent.
+- `client.create({ name, cwd, agentDir?, piArgs? })` creates a new durable agent.
 - `client.get(name)` gets a name-bound agent handle without checking its runtime.
 - `client.list()` returns durable inventory. It does not contact workers.
 - `agent.status()` contacts the worker and can lazily recover a missing worker.
@@ -165,7 +168,7 @@ Treat tool output and tool arguments as local agent data. They can include sensi
 
 Running agents keep the worker version used when they were created. Creating a new SDK client or updating global `pif` does not upgrade an existing worker.
 
-SDK `0.12.1` and CLI `0.16.1` removed `work.interrupted` from replay. Destroy and recreate agents made by older versions before using this replay contract. Do not downgrade packages for an agent that has entered `interrupted` state.
+SDK `0.12.2` and CLI `0.16.2` removed `work.interrupted` from replay. Destroy and recreate agents made by older versions before using this replay contract. Do not downgrade packages for an agent that has entered `interrupted` state.
 
 ## Before executing commands
 

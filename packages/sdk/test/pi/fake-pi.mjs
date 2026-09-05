@@ -13,6 +13,12 @@ if (process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE) {
 if (process.env.PI_FLEET_FAKE_PI_ARGS_FILE) {
   await writeFile(process.env.PI_FLEET_FAKE_PI_ARGS_FILE, JSON.stringify(process.argv.slice(2)))
 }
+if (process.env.PI_FLEET_FAKE_PI_AGENT_DIR_FILE) {
+  await writeFile(process.env.PI_FLEET_FAKE_PI_AGENT_DIR_FILE, JSON.stringify(process.env.PI_CODING_AGENT_DIR ?? null))
+}
+if (process.env.PI_FLEET_FAKE_PI_AGENT_DIR_LOG_FILE) {
+  await appendFile(process.env.PI_FLEET_FAKE_PI_AGENT_DIR_LOG_FILE, `${JSON.stringify(process.env.PI_CODING_AGENT_DIR ?? null)}\n`)
+}
 if (process.env.PI_FLEET_FAKE_PI_PID_FILE) {
   await writeFile(process.env.PI_FLEET_FAKE_PI_PID_FILE, String(process.pid))
 }
@@ -23,7 +29,7 @@ if (process.env.PI_FLEET_FAKE_PI_MODE === "exit" || incarnation > 1 && process.e
   process.exit(1)
 }
 
-const sessionFile = "/tmp/fake-pi-session.jsonl"
+const sessionFile = process.env.PI_FLEET_FAKE_PI_SESSION_FILE ?? "/tmp/fake-pi-session.jsonl"
 const sessionId = incarnation > 1
   ? process.env.PI_FLEET_FAKE_PI_RECOVERY_SESSION_ID ?? process.env.PI_FLEET_FAKE_SESSION_ID ?? "fake-session"
   : process.env.PI_FLEET_FAKE_SESSION_ID ?? "fake-session"

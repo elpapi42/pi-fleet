@@ -25,6 +25,14 @@ test("shows help from the built executable", () => {
   assert.match(receive.stdout, /--from-start/)
   assert.doesNotMatch(receive.stdout, /--after <cursor>/)
   assert.match(receive.stdout, /--verbose/)
+
+  const create = spawnSync(process.execPath, ["../dist/main.js", "create", "--help"], {
+    cwd: import.meta.dirname,
+    encoding: "utf8",
+  })
+  assert.equal(create.status, 0)
+  assert.match(create.stdout, /--agent-dir <path>/)
+  assert.match(create.stdout, /Arguments after -- pass through to Pi\./)
 })
 
 test("shows the CLI package version", () => {
@@ -34,5 +42,5 @@ test("shows the CLI package version", () => {
   })
 
   assert.equal(result.status, 0)
-  assert.equal(result.stdout, "0.16.2\n")
+  assert.equal(result.stdout, "0.17.0\n")
 })

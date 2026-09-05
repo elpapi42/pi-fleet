@@ -12,6 +12,11 @@ import { decodeEventCursor, openStore } from "../../dist/state/store.js"
 const execFileAsync = promisify(execFile)
 const fakePi = join(dirname(fileURLToPath(import.meta.url)), "../pi/fake-pi.mjs")
 
+function restoreEnv(name, value) {
+  if (value === undefined) delete process.env[name]
+  else process.env[name] = value
+}
+
 async function terminateWorker(stateDir, id) {
   const registry = await openStore(stateDir)
   try {
@@ -197,6 +202,85 @@ test("keeps a receive stream contiguous and status interrupted across a working 
       delete process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE
       delete process.env.PI_FLEET_FAKE_PI_PID_FILE
       delete process.env.PI_FLEET_FAKE_PI_SETTLE_FILE
+      await client.close()
+    }
+  })
+})
+
+test("keeps an explicit agentDir across same-worker Pi recovery", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const piPidFile = join(stateDir, "fake-pi.pid")
+    const agentDirFile = join(stateDir, "agent-dir")
+    const readyIncarnationFile = join(stateDir, "fake-pi-ready-incarnation")
+    const agentDir = join(stateDir, "profile")
+    const previousPidFile = process.env.PI_FLEET_FAKE_PI_PID_FILE
+    const previousAgentDirFile = process.env.PI_FLEET_FAKE_PI_AGENT_DIR_FILE
+    const previousIncarnationFile = process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE
+    const previousReadyIncarnationFile = process.env.PI_FLEET_FAKE_PI_READY_INCARNATION_FILE
+    const previousAmbientAgentDir = process.env.PI_CODING_AGENT_DIR
+    process.env.PI_FLEET_FAKE_PI_PID_FILE = piPidFile
+    process.env.PI_FLEET_FAKE_PI_AGENT_DIR_FILE = agentDirFile
+    process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE = join(stateDir, "fake-pi-incarnation")
+    process.env.PI_FLEET_FAKE_PI_READY_INCARNATION_FILE = readyIncarnationFile
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd(), agentDir })
+      assert.equal(JSON.parse(await readFile(agentDirFile, "utf8")), agentDir)
+      const oldPiPid = Number(await readFile(piPidFile, "utf8"))
+      process.kill(oldPiPid, "SIGKILL")
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        if (Number(await readFile(readyIncarnationFile, "utf8")) >= 2) break
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      assert.equal(Number(await readFile(readyIncarnationFile, "utf8")), 2)
+      assert.notEqual(Number(await readFile(piPidFile, "utf8")), oldPiPid)
+      assert.equal(JSON.parse(await readFile(agentDirFile, "utf8")), agentDir)
+    } finally {
+      restoreEnv("PI_FLEET_FAKE_PI_PID_FILE", previousPidFile)
+      restoreEnv("PI_FLEET_FAKE_PI_AGENT_DIR_FILE", previousAgentDirFile)
+      restoreEnv("PI_FLEET_FAKE_PI_INCARNATION_FILE", previousIncarnationFile)
+      restoreEnv("PI_FLEET_FAKE_PI_READY_INCARNATION_FILE", previousReadyIncarnationFile)
+      restoreEnv("PI_CODING_AGENT_DIR", previousAmbientAgentDir)
+      await client.close()
+    }
+  })
+})
+
+test("restores an unmaterialized fleet-owned session by ID", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const piPidFile = join(stateDir, "fake-pi.pid")
+    const argsFile = join(stateDir, "fake-pi-args.json")
+    const incarnationFile = join(stateDir, "fake-pi-incarnation")
+    const readyIncarnationFile = join(stateDir, "fake-pi-ready-incarnation")
+    const sessionPath = join(stateDir, "fake-pi-session.jsonl")
+    const previousPidFile = process.env.PI_FLEET_FAKE_PI_PID_FILE
+    const previousArgsFile = process.env.PI_FLEET_FAKE_PI_ARGS_FILE
+    const previousIncarnationFile = process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE
+    const previousReadyIncarnationFile = process.env.PI_FLEET_FAKE_PI_READY_INCARNATION_FILE
+    const previousSessionFile = process.env.PI_FLEET_FAKE_PI_SESSION_FILE
+    process.env.PI_FLEET_FAKE_PI_PID_FILE = piPidFile
+    process.env.PI_FLEET_FAKE_PI_ARGS_FILE = argsFile
+    process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE = incarnationFile
+    process.env.PI_FLEET_FAKE_PI_READY_INCARNATION_FILE = readyIncarnationFile
+    process.env.PI_FLEET_FAKE_PI_SESSION_FILE = sessionPath
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "researcher", cwd: process.cwd() })
+      assert.equal((await agent.status()).state, "idle")
+      process.kill(Number(await readFile(piPidFile, "utf8")), "SIGKILL")
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        if (Number(await readFile(readyIncarnationFile, "utf8")) >= 2) break
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      assert.equal(Number(await readFile(readyIncarnationFile, "utf8")), 2)
+      assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), ["--mode", "rpc", "--session-id", "fake-session"])
+      assert.equal((await agent.status()).state, "idle")
+    } finally {
+      restoreEnv("PI_FLEET_FAKE_PI_PID_FILE", previousPidFile)
+      restoreEnv("PI_FLEET_FAKE_PI_ARGS_FILE", previousArgsFile)
+      restoreEnv("PI_FLEET_FAKE_PI_INCARNATION_FILE", previousIncarnationFile)
+      restoreEnv("PI_FLEET_FAKE_PI_READY_INCARNATION_FILE", previousReadyIncarnationFile)
+      restoreEnv("PI_FLEET_FAKE_PI_SESSION_FILE", previousSessionFile)
       await client.close()
     }
   })

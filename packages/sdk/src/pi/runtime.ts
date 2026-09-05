@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto"
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { access } from "node:fs/promises"
 import { StringDecoder } from "node:string_decoder"
 
 export type PiLaunch = {
   cwd: string
   piArgs: string[]
+  agentDir?: string
   sessionPath?: string
+  sessionId?: string
 }
 
 export type PiState = {
@@ -191,10 +194,17 @@ export async function startPi(launch: PiLaunch, timeoutMs = 10_000, onEvent?: Pi
   const command = process.env.PI_FLEET_PI_COMMAND ?? "pi"
   const args = ["--mode", "rpc", ...launch.piArgs]
   if (launch.sessionPath && !hasUserSessionSelector(launch.piArgs)) {
-    args.push("--session", launch.sessionPath)
+    if (launch.sessionId && await sessionPathIsAbsent(launch.sessionPath)) {
+      args.push("--session-id", launch.sessionId)
+    } else {
+      args.push("--session", launch.sessionPath)
+    }
   }
 
-  const child = spawn(command, args, { cwd: launch.cwd, stdio: "pipe" })
+  const env = launch.agentDir === undefined
+    ? process.env
+    : { ...process.env, PI_CODING_AGENT_DIR: launch.agentDir }
+  const child = spawn(command, args, { cwd: launch.cwd, stdio: "pipe", env })
   let stderr = ""
   child.stderr.on("data", (chunk: Buffer) => {
     stderr = `${stderr}${chunk.toString("utf8")}`.slice(-4_096)
@@ -214,6 +224,16 @@ export async function startPi(launch: PiLaunch, timeoutMs = 10_000, onEvent?: Pi
     const detail = stderr.trim()
     const message = error instanceof Error ? error.message : String(error)
     throw new PiStartupError(detail ? `${message}: ${detail}` : message)
+  }
+}
+
+async function sessionPathIsAbsent(sessionPath: string): Promise<boolean> {
+  try {
+    await access(sessionPath)
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true
+    return false
   }
 }
 

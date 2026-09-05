@@ -35,6 +35,7 @@ export type ConnectOptions = {
 export type CreateAgentOptions = {
   name: string
   cwd: string
+  agentDir?: string
   piArgs?: string[]
 }
 
@@ -68,6 +69,7 @@ class PiFleetClientImpl implements PiFleetClient {
       id,
       name: input.name,
       cwd: input.cwd,
+      ...(input.agentDir === undefined ? {} : { agentDir: input.agentDir }),
       piArgs: input.piArgs,
       state: "starting",
       runtime: {
@@ -323,16 +325,25 @@ function isSendDelivery(value: unknown): value is SendDelivery {
   return value === "steer" || value === "followUp"
 }
 
-async function validateCreateOptions(options: CreateAgentOptions): Promise<{ name: string; cwd: string; piArgs: string[] }> {
+async function validateCreateOptions(options: CreateAgentOptions): Promise<{ name: string; cwd: string; agentDir?: string; piArgs: string[] }> {
   const name = options.name?.trim()
   if (!name) throw new TypeError("Agent name must not be empty")
   if (name.includes("\0")) throw new TypeError("Agent name must not contain a null byte")
   if (!options.cwd) throw new TypeError("Agent cwd is required")
   const cwd = resolve(options.cwd)
   if (!(await stat(cwd)).isDirectory()) throw new TypeError(`Agent cwd is not a directory: ${cwd}`)
+  const agentDir = validateAgentDir(options.agentDir)
   const piArgs = options.piArgs ? [...options.piArgs] : []
   validatePiArguments(piArgs)
-  return { name, cwd, piArgs }
+  return { name, cwd, agentDir, piArgs }
+}
+
+function validateAgentDir(agentDir: unknown): string | undefined {
+  if (agentDir === undefined) return undefined
+  if (typeof agentDir !== "string") throw new TypeError("Agent directory must be a string")
+  if (!agentDir.trim()) throw new TypeError("Agent directory must not be empty")
+  if (agentDir.includes("\0")) throw new TypeError("Agent directory must not contain a null byte")
+  return resolve(agentDir)
 }
 
 function trackStream(stream: WorkerEventStream, streams: Set<WorkerEventStream>): AsyncIterable<AgentEvent> {
