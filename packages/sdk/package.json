@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/elpapi42/pi-fleet-v2.git",
+    "url": "https://github.com/elpapi42/pi-fleet.git",
     "directory": "packages/sdk"
   },
   "type": "module",
