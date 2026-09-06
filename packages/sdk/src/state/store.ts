@@ -8,6 +8,7 @@ export type AgentRecord = {
   name: string
   cwd: string
   agentDir?: string
+  env?: Record<string, string>
   piArgs: string[]
   sessionPath?: string
   sessionId?: string

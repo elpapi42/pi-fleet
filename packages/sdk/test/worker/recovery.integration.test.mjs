@@ -246,6 +246,55 @@ test("keeps an explicit agentDir across same-worker Pi recovery", { concurrency:
   })
 })
 
+test("keeps durable Pi environment overrides across same-worker Pi recovery", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const piPidFile = join(stateDir, "fake-pi.pid")
+    const incarnationFile = join(stateDir, "fake-pi-incarnation")
+    const readyIncarnationFile = join(stateDir, "fake-pi-ready-incarnation")
+    const environmentLog = join(stateDir, "pi-environment.log")
+    const sentinel = "PI_FLEET_ENV_RECOVERY_SENTINEL"
+    const inherited = "PI_FLEET_ENV_RECOVERY_INHERITED"
+    const previous = new Map([
+      ["PI_FLEET_FAKE_PI_PID_FILE", process.env.PI_FLEET_FAKE_PI_PID_FILE],
+      ["PI_FLEET_FAKE_PI_INCARNATION_FILE", process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE],
+      ["PI_FLEET_FAKE_PI_READY_INCARNATION_FILE", process.env.PI_FLEET_FAKE_PI_READY_INCARNATION_FILE],
+      ["PI_FLEET_FAKE_PI_ENV_LOG_FILE", process.env.PI_FLEET_FAKE_PI_ENV_LOG_FILE],
+      ["PI_FLEET_FAKE_PI_ENV_NAMES", process.env.PI_FLEET_FAKE_PI_ENV_NAMES],
+      [sentinel, process.env[sentinel]],
+      [inherited, process.env[inherited]],
+    ])
+    process.env.PI_FLEET_FAKE_PI_PID_FILE = piPidFile
+    process.env.PI_FLEET_FAKE_PI_INCARNATION_FILE = incarnationFile
+    process.env.PI_FLEET_FAKE_PI_READY_INCARNATION_FILE = readyIncarnationFile
+    process.env.PI_FLEET_FAKE_PI_ENV_LOG_FILE = environmentLog
+    process.env.PI_FLEET_FAKE_PI_ENV_NAMES = JSON.stringify([sentinel, inherited])
+    process.env[sentinel] = "ambient"
+    process.env[inherited] = "inherited"
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "environment", cwd: process.cwd(), env: { [sentinel]: "durable" } })
+      assert.deepEqual((await readFile(environmentLog, "utf8")).trim().split("\n").map(JSON.parse), [{ [sentinel]: "durable", [inherited]: "inherited" }])
+      const oldPiPid = Number(await readFile(piPidFile, "utf8"))
+      process.kill(oldPiPid, "SIGKILL")
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        if (Number(await readFile(readyIncarnationFile, "utf8")) >= 2) break
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      assert.equal(Number(await readFile(readyIncarnationFile, "utf8")), 2)
+      assert.notEqual(Number(await readFile(piPidFile, "utf8")), oldPiPid)
+      assert.deepEqual((await readFile(environmentLog, "utf8")).trim().split("\n").map(JSON.parse), [
+        { [sentinel]: "durable", [inherited]: "inherited" },
+        { [sentinel]: "durable", [inherited]: "inherited" },
+      ])
+      assert.equal(process.env[sentinel], "ambient")
+      await terminateWorker(stateDir, agent.id)
+    } finally {
+      for (const [name, value] of previous) restoreEnv(name, value)
+      await client.close()
+    }
+  })
+})
+
 test("restores an unmaterialized fleet-owned session by ID", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const piPidFile = join(stateDir, "fake-pi.pid")

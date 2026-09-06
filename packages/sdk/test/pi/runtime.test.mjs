@@ -85,6 +85,30 @@ async function capturePiAgentDir(overrides, environment = {}) {
   }
 }
 
+async function capturePiEnvironment(overrides, names, environment = {}) {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-pi-environment-"))
+  const environmentFile = join(root, "environment.json")
+  try {
+    return await withFakePi({
+      PI_FLEET_FAKE_PI_ENV_FILE: environmentFile,
+      PI_FLEET_FAKE_PI_ENV_NAMES: JSON.stringify(names),
+      ...environment,
+    }, async () => {
+      const pi = await startPi(record(overrides))
+      try {
+        return {
+          environment: JSON.parse(await readFile(environmentFile, "utf8")),
+          parent: Object.fromEntries(names.map((name) => [name, process.env[name] ?? null])),
+        }
+      } finally {
+        await stop(pi.process)
+      }
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
 test("starts Pi in RPC mode with caller arguments", { concurrency: false }, async () => {
   const result = await capturePiArgs({})
   assert.deepEqual(result.state, {
@@ -111,6 +135,50 @@ test("preserves the ambient agent directory when no launch override is supplied"
   const result = await capturePiAgentDir({}, { PI_CODING_AGENT_DIR: "/profiles/ambient" })
   assert.equal(result.agentDir, "/profiles/ambient")
   assert.equal(result.parentAgentDir, "/profiles/ambient")
+})
+
+test("overrides the Pi child environment without mutating its parent", { concurrency: false }, async () => {
+  const result = await capturePiEnvironment(
+    {
+      env: {
+        PI_FLEET_TEST_ENV_OVERRIDE: "configured",
+        PI_FLEET_TEST_ENV_EMPTY: "",
+      },
+    },
+    ["PI_FLEET_TEST_ENV_OVERRIDE", "PI_FLEET_TEST_ENV_EMPTY", "PI_FLEET_TEST_ENV_INHERITED"],
+    {
+      PI_FLEET_TEST_ENV_OVERRIDE: "ambient",
+      PI_FLEET_TEST_ENV_INHERITED: "inherited",
+    },
+  )
+  assert.deepEqual(result.environment, {
+    PI_FLEET_TEST_ENV_OVERRIDE: "configured",
+    PI_FLEET_TEST_ENV_EMPTY: "",
+    PI_FLEET_TEST_ENV_INHERITED: "inherited",
+  })
+  assert.deepEqual(result.parent, {
+    PI_FLEET_TEST_ENV_OVERRIDE: "ambient",
+    PI_FLEET_TEST_ENV_EMPTY: null,
+    PI_FLEET_TEST_ENV_INHERITED: "inherited",
+  })
+})
+
+test("gives agentDir precedence over a Pi child environment map", { concurrency: false }, async () => {
+  const result = await capturePiAgentDir({
+    agentDir: "/profiles/explicit",
+    env: { PI_CODING_AGENT_DIR: "/profiles/ignored" },
+  })
+  assert.equal(result.agentDir, "/profiles/explicit")
+})
+
+test("preserves ambient environment variables when no map is supplied", { concurrency: false }, async () => {
+  const result = await capturePiEnvironment(
+    {},
+    ["PI_FLEET_TEST_ENV_OVERRIDE"],
+    { PI_FLEET_TEST_ENV_OVERRIDE: "ambient" },
+  )
+  assert.deepEqual(result.environment, { PI_FLEET_TEST_ENV_OVERRIDE: "ambient" })
+  assert.deepEqual(result.parent, { PI_FLEET_TEST_ENV_OVERRIDE: "ambient" })
 })
 
 test("preserves a user-selected session path instead of appending the observed path", { concurrency: false }, async () => {

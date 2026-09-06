@@ -36,6 +36,7 @@ export type CreateAgentOptions = {
   name: string
   cwd: string
   agentDir?: string
+  env?: Record<string, string>
   piArgs?: string[]
 }
 
@@ -70,6 +71,7 @@ class PiFleetClientImpl implements PiFleetClient {
       name: input.name,
       cwd: input.cwd,
       ...(input.agentDir === undefined ? {} : { agentDir: input.agentDir }),
+      ...(input.env === undefined ? {} : { env: input.env }),
       piArgs: input.piArgs,
       state: "starting",
       runtime: {
@@ -325,7 +327,7 @@ function isSendDelivery(value: unknown): value is SendDelivery {
   return value === "steer" || value === "followUp"
 }
 
-async function validateCreateOptions(options: CreateAgentOptions): Promise<{ name: string; cwd: string; agentDir?: string; piArgs: string[] }> {
+async function validateCreateOptions(options: CreateAgentOptions): Promise<{ name: string; cwd: string; agentDir?: string; env?: Record<string, string>; piArgs: string[] }> {
   const name = options.name?.trim()
   if (!name) throw new TypeError("Agent name must not be empty")
   if (name.includes("\0")) throw new TypeError("Agent name must not contain a null byte")
@@ -333,9 +335,10 @@ async function validateCreateOptions(options: CreateAgentOptions): Promise<{ nam
   const cwd = resolve(options.cwd)
   if (!(await stat(cwd)).isDirectory()) throw new TypeError(`Agent cwd is not a directory: ${cwd}`)
   const agentDir = validateAgentDir(options.agentDir)
+  const env = validateAgentEnv(options.env)
   const piArgs = options.piArgs ? [...options.piArgs] : []
   validatePiArguments(piArgs)
-  return { name, cwd, agentDir, piArgs }
+  return { name, cwd, agentDir, env, piArgs }
 }
 
 function validateAgentDir(agentDir: unknown): string | undefined {
@@ -344,6 +347,25 @@ function validateAgentDir(agentDir: unknown): string | undefined {
   if (!agentDir.trim()) throw new TypeError("Agent directory must not be empty")
   if (agentDir.includes("\0")) throw new TypeError("Agent directory must not contain a null byte")
   return resolve(agentDir)
+}
+
+function validateAgentEnv(env: unknown): Record<string, string> | undefined {
+  if (env === undefined) return undefined
+  if (typeof env !== "object" || env === null || Array.isArray(env)) throw new TypeError("Agent environment must be a plain object")
+  const prototype = Object.getPrototypeOf(env)
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError("Agent environment must be a plain object")
+
+  const copy = Object.create(null) as Record<string, string>
+  for (const [key, value] of Object.entries(env)) {
+    if (!key) throw new TypeError("Agent environment variable names must not be empty")
+    if (key.includes("=") || key.includes("\0")) throw new TypeError("Agent environment variable names are invalid")
+    if (key === "PI_CODING_AGENT_DIR") throw new TypeError("PI_CODING_AGENT_DIR is configured with agentDir")
+    if (key === "PATH") throw new TypeError("PATH cannot be overridden")
+    if (typeof value !== "string") throw new TypeError("Agent environment variable values must be strings")
+    if (value.includes("\0")) throw new TypeError("Agent environment variable values must not contain a null byte")
+    Object.defineProperty(copy, key, { value, enumerable: true, writable: true, configurable: true })
+  }
+  return copy
 }
 
 function trackStream(stream: WorkerEventStream, streams: Set<WorkerEventStream>): AsyncIterable<AgentEvent> {

@@ -236,6 +236,7 @@ test("claims an unavailable ready runtime without changing durable agent data", 
     const initial = {
       ...record("researcher", "agent-1"),
       agentDir: "/profiles/researcher",
+      env: { PI_FLEET_ENV_TEST: "configured", EMPTY_OVERRIDE: "" },
       state: "idle",
       sessionPath: "/tmp/session-1.jsonl",
       sessionId: "session-1",
@@ -259,11 +260,19 @@ test("claims an unavailable ready runtime without changing durable agent data", 
     assert.equal(claim?.record.state, "idle")
     assert.equal(claim?.record.cwd, initial.cwd)
     assert.equal(claim?.record.agentDir, initial.agentDir)
+    assert.deepEqual(claim?.record.env, initial.env)
     assert.deepEqual(claim?.record.piArgs, initial.piArgs)
     assert.equal(claim?.record.sessionPath, initial.sessionPath)
     assert.equal(claim?.record.sessionId, initial.sessionId)
     assert.equal(claim?.record.lastEventSeq, 0)
     assert.equal(claim?.interrupted, false)
+    assert.equal(await store.markClaimReady("agent-1", "runtime-2", "claim-2", {
+      workerPid: 456,
+      endpoint: "ipc:///tmp/runtime-2.sock",
+      sessionPath: "/tmp/session-1.jsonl",
+      sessionId: "session-1",
+    }), true)
+    assert.deepEqual(store.getById("agent-1")?.env, initial.env)
   })
 })
 

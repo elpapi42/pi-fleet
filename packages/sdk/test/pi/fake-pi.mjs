@@ -19,6 +19,16 @@ if (process.env.PI_FLEET_FAKE_PI_AGENT_DIR_FILE) {
 if (process.env.PI_FLEET_FAKE_PI_AGENT_DIR_LOG_FILE) {
   await appendFile(process.env.PI_FLEET_FAKE_PI_AGENT_DIR_LOG_FILE, `${JSON.stringify(process.env.PI_CODING_AGENT_DIR ?? null)}\n`)
 }
+if (process.env.PI_FLEET_FAKE_PI_ENV_NAMES) {
+  const names = JSON.parse(process.env.PI_FLEET_FAKE_PI_ENV_NAMES)
+  const captured = Object.fromEntries(names.map((name) => [name, process.env[name] ?? null]))
+  if (process.env.PI_FLEET_FAKE_PI_ENV_FILE) {
+    await writeFile(process.env.PI_FLEET_FAKE_PI_ENV_FILE, JSON.stringify(captured))
+  }
+  if (process.env.PI_FLEET_FAKE_PI_ENV_LOG_FILE) {
+    await appendFile(process.env.PI_FLEET_FAKE_PI_ENV_LOG_FILE, `${JSON.stringify(captured)}\n`)
+  }
+}
 if (process.env.PI_FLEET_FAKE_PI_PID_FILE) {
   await writeFile(process.env.PI_FLEET_FAKE_PI_PID_FILE, String(process.pid))
 }

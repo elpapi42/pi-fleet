@@ -7,6 +7,7 @@ export type PiLaunch = {
   cwd: string
   piArgs: string[]
   agentDir?: string
+  env?: Record<string, string>
   sessionPath?: string
   sessionId?: string
 }
@@ -201,9 +202,13 @@ export async function startPi(launch: PiLaunch, timeoutMs = 10_000, onEvent?: Pi
     }
   }
 
-  const env = launch.agentDir === undefined
+  const env = launch.env === undefined && launch.agentDir === undefined
     ? process.env
-    : { ...process.env, PI_CODING_AGENT_DIR: launch.agentDir }
+    : {
+        ...process.env,
+        ...launch.env,
+        ...(launch.agentDir === undefined ? {} : { PI_CODING_AGENT_DIR: launch.agentDir }),
+      }
   const child = spawn(command, args, { cwd: launch.cwd, stdio: "pipe", env })
   let stderr = ""
   child.stderr.on("data", (chunk: Buffer) => {

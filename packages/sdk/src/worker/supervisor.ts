@@ -281,6 +281,7 @@ export class PiSupervisor {
         cwd: record.cwd,
         piArgs: record.piArgs,
         agentDir: record.agentDir,
+        env: record.env,
         sessionPath: record.sessionPath,
         sessionId: record.sessionId,
       },

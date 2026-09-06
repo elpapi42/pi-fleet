@@ -87,6 +87,10 @@ try {
     name: "researcher",
     cwd: "/home/user/project",
     agentDir: "/home/user/pi-profiles/researcher",
+    env: {
+      RESEARCH_MODE: "schema-review",
+      EMPTY_OVERRIDE: "",
+    },
     piArgs: ["--session", "/home/user/project/research.jsonl"],
   })
 
@@ -107,7 +111,7 @@ try {
 
 Use these public methods:
 
-- `client.create({ name, cwd, agentDir?, piArgs? })` creates a new durable agent.
+- `client.create({ name, cwd, agentDir?, env?, piArgs? })` creates a new durable agent.
 - `client.get(name)` gets a name-bound agent handle without checking its runtime.
 - `client.list()` returns durable inventory. It does not contact workers.
 - `agent.status()` contacts the worker and can lazily recover a missing worker.
@@ -117,6 +121,10 @@ Use these public methods:
 - `client.close()` closes this client and its streams. It does not stop agents.
 
 Always close the client in `finally`. Return from or abort a receive loop when the application no longer needs it.
+
+`env` is SDK-only immutable Pi child configuration. Pi-fleet persists a supplied `Record<string, string>` in plaintext LMDB and applies it at initial startup, Pi recovery, and worker recovery. It merges the inherited worker environment, then `env`, then `agentDir` for `PI_CODING_AGENT_DIR`. The map must be an ordinary or null-prototype object. Keys must be non-empty and contain no `=` or null byte. Values must be strings with no null byte. Empty strings override inherited values. `PATH` and `PI_CODING_AGENT_DIR` are reserved. There is no unset or update API, and `pif` has no environment option.
+
+Treat values as trusted local process configuration, not a sandbox or secret store. Pi and processes it starts can inherit them. Pi-fleet does not directly add environment configuration to status, list, or events, but Pi and tools can read values and include them in activity output. Do not print secret values or actual user-supplied values in validation errors, logs, or test output. Use only harmless placeholders in documentation examples. Destroy removes the logical record, but cannot securely erase old LMDB pages or backups.
 
 ## Receive and replay
 

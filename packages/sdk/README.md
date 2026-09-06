@@ -14,6 +14,10 @@ const agent = await client.create({
   name: "researcher",
   cwd: process.cwd(),
   agentDir: "/home/user/pi-profiles/researcher",
+  env: {
+    RESEARCH_MODE: "schema-review",
+    EMPTY_OVERRIDE: "",
+  },
 })
 
 await agent.send("Investigate the database schema")
@@ -34,6 +38,10 @@ await client.create({
 Pi owns session lookup, working-directory selection, prompts, and failures. Caller-owned Pi session selectors remain unchanged and authoritative. For fleet-owned sessions, pi-fleet restores an existing physical session by its exact path. If Pi reported a session path and ID but has not materialized the file, pi-fleet restarts with the persisted session ID and still requires Pi to report that exact ID.
 
 `agentDir` is optional immutable Pi profile configuration. It differs from the agent `cwd` and the pi-fleet `stateDir`. When supplied, the SDK resolves it from the creating process current directory, persists the absolute path, and supplies it as `PI_CODING_AGENT_DIR` to every Pi child during initial startup, Pi recovery, and worker recovery. When omitted, pi-fleet preserves today's inherited Pi environment behavior. Users own profile creation, contents, credentials, permissions, sharing, and errors. Pi determines credential precedence. The selected profile can provide credentials, and provider credentials inherited from the process environment remain available to Pi. Pi-fleet does not copy or delete profile data, alter trust, or treat it as a sandbox. Project `.pi` resources and project or ancestor `AGENTS.md` remain Pi-owned behavior.
+
+`env` is SDK-only immutable Pi child configuration. A supplied `Record<string, string>` persists in the private agent record and applies during initial startup, Pi recovery, and worker recovery. Pi-fleet merges the inherited worker environment, then `env`, then `agentDir` for `PI_CODING_AGENT_DIR`. The map must be an ordinary or null-prototype object. Keys must be non-empty and contain no `=` or null byte. Values must be strings with no null byte. Empty strings override inherited values. There is no unset or update operation. `PATH` and `PI_CODING_AGENT_DIR` are reserved and rejected from `env`.
+
+Treat `env` as trusted local process configuration, not a secret store or sandbox. Pi and processes it starts can inherit its values. Values are plaintext in LMDB and can remain in process environments and backups. Pi-fleet does not directly add environment configuration to status, list, or events, but Pi and tools can read values and include them in activity output. Do not print secret values or actual user-supplied values in validation errors, logs, or test output. Use only harmless placeholders in documentation examples. Destroy removes the logical agent record but does not securely erase old LMDB pages or backups.
 
 By default, pi-fleet stores its LMDB environment and worker IPC sockets in `~/.pi-fleet`. Pre-stable releases do not migrate state from earlier locations automatically. An explicit `stateDir` must leave room for the generated Unix IPC socket path. An overlong path throws `InvalidStateDirectoryError` before pi-fleet creates state. Pass `stateDir` to `connectPiFleet` only when you need an explicit location, such as an isolated test or an advanced local setup:
 

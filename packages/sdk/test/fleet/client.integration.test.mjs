@@ -257,6 +257,81 @@ test("creates a durable agent that another SDK client can discover and query", {
   })
 })
 
+test("persists a defensive copy of supplied Pi environment overrides", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const env = { PI_FLEET_ENV_TEST: "initial", EMPTY_OVERRIDE: "" }
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "environment", cwd: process.cwd(), env })
+      env.PI_FLEET_ENV_TEST = "mutated"
+      const store = await openStore(stateDir)
+      try {
+        assert.deepEqual(store.getById(agent.id)?.env, {
+          PI_FLEET_ENV_TEST: "initial",
+          EMPTY_OVERRIDE: "",
+        })
+      } finally {
+        await store.close()
+      }
+      await terminateWorker(stateDir, agent.id)
+    } finally {
+      await client.close()
+    }
+  })
+})
+
+test("validates durable Pi environment overrides without exposing values", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const client = await connectPiFleet({ stateDir })
+    const invalid = [
+      [null, "Agent environment must be a plain object"],
+      [[], "Agent environment must be a plain object"],
+      [Object.create({ inherited: "value" }), "Agent environment must be a plain object"],
+      [{ "": "value" }, "Agent environment variable names must not be empty"],
+      [{ "BAD=NAME": "value" }, "Agent environment variable names are invalid"],
+      [{ "BAD\0NAME": "value" }, "Agent environment variable names are invalid"],
+      [{ PI_CODING_AGENT_DIR: "profile" }, "PI_CODING_AGENT_DIR is configured with agentDir"],
+      [{ PATH: "/other" }, "PATH cannot be overridden"],
+      [{ VALUE: 1 }, "Agent environment variable values must be strings"],
+      [{ VALUE: "bad\0value" }, "Agent environment variable values must not contain a null byte"],
+    ]
+    try {
+      for (const [env, message] of invalid) {
+        await assert.rejects(
+          client.create({ name: `invalid-environment-${Math.random()}`, cwd: process.cwd(), env }),
+          new RegExp(message),
+        )
+      }
+      assert.deepEqual(await client.list(), [])
+    } finally {
+      await client.close()
+    }
+  })
+})
+
+test("accepts a null-prototype environment map and preserves __proto__ as data", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const env = Object.create(null)
+    Object.defineProperty(env, "__proto__", { value: "data", enumerable: true })
+    env.EMPTY_OVERRIDE = ""
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const agent = await client.create({ name: "null-prototype-environment", cwd: process.cwd(), env })
+      const store = await openStore(stateDir)
+      try {
+        const stored = store.getById(agent.id)?.env
+        assert.equal(stored?.__proto__, "data")
+        assert.equal(stored?.EMPTY_OVERRIDE, "")
+      } finally {
+        await store.close()
+      }
+      await terminateWorker(stateDir, agent.id)
+    } finally {
+      await client.close()
+    }
+  })
+})
+
 test("persists a supplied agentDir as an absolute launch setting", { concurrency: false }, async () => {
   await withState(async (stateDir) => {
     const client = await connectPiFleet({ stateDir })
@@ -366,6 +441,84 @@ test("keeps an explicit agentDir after replacement worker recovery from another 
       restoreEnv("PI_FLEET_FAKE_PI_AGENT_DIR_FILE", previousAgentDirFile)
       restoreEnv("PI_CODING_AGENT_DIR", previousAmbientAgentDir)
       await creator.close()
+    }
+  })
+})
+
+test("keeps durable Pi environment overrides after replacement worker recovery", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const environmentLog = join(stateDir, "pi-environment.log")
+    const sentinel = "PI_FLEET_ENV_REPLACEMENT_SENTINEL"
+    const previousLog = process.env.PI_FLEET_FAKE_PI_ENV_LOG_FILE
+    const previousNames = process.env.PI_FLEET_FAKE_PI_ENV_NAMES
+    const previousSentinel = process.env[sentinel]
+    process.env.PI_FLEET_FAKE_PI_ENV_LOG_FILE = environmentLog
+    process.env.PI_FLEET_FAKE_PI_ENV_NAMES = JSON.stringify([sentinel])
+    process.env[sentinel] = "creator-ambient"
+    const creator = await connectPiFleet({ stateDir })
+    try {
+      const agent = await creator.create({ name: "environment", cwd: process.cwd(), env: { [sentinel]: "durable" } })
+      await terminateWorker(stateDir, agent.id)
+      const sdkUrl = new URL("../../dist/index.js", import.meta.url).href
+      const script = `
+        import { connectPiFleet } from ${JSON.stringify(sdkUrl)};
+        const [stateDir, sentinel] = process.argv.slice(1);
+        const client = await connectPiFleet({ stateDir });
+        try {
+          const status = await (await client.get("environment")).status();
+          process.stdout.write(JSON.stringify({ status, ambient: process.env[sentinel] }));
+        } finally {
+          await client.close();
+        }
+      `
+      const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "--eval", script, stateDir, sentinel], {
+        env: { ...process.env, [sentinel]: "recovery-ambient" },
+        timeout: 65_000,
+      })
+      assert.deepEqual(JSON.parse(stdout), { status: { id: agent.id, name: "environment", state: "idle" }, ambient: "recovery-ambient" })
+      assert.deepEqual((await readFile(environmentLog, "utf8")).trim().split("\n").map(JSON.parse), [
+        { [sentinel]: "durable" },
+        { [sentinel]: "durable" },
+      ])
+      await terminateWorker(stateDir, agent.id)
+    } finally {
+      restoreEnv("PI_FLEET_FAKE_PI_ENV_LOG_FILE", previousLog)
+      restoreEnv("PI_FLEET_FAKE_PI_ENV_NAMES", previousNames)
+      restoreEnv(sentinel, previousSentinel)
+      await creator.close()
+    }
+  })
+})
+
+test("isolates durable Pi environment overrides and removes the record on destroy", { concurrency: false }, async () => {
+  await withState(async (stateDir) => {
+    const environmentLog = join(stateDir, "pi-environment.log")
+    const sentinel = "PI_FLEET_ENV_ISOLATION_SENTINEL"
+    const previousLog = process.env.PI_FLEET_FAKE_PI_ENV_LOG_FILE
+    const previousNames = process.env.PI_FLEET_FAKE_PI_ENV_NAMES
+    process.env.PI_FLEET_FAKE_PI_ENV_LOG_FILE = environmentLog
+    process.env.PI_FLEET_FAKE_PI_ENV_NAMES = JSON.stringify([sentinel])
+    const client = await connectPiFleet({ stateDir })
+    try {
+      const first = await client.create({ name: "first-environment", cwd: process.cwd(), env: { [sentinel]: "first" } })
+      const second = await client.create({ name: "second-environment", cwd: process.cwd(), env: { [sentinel]: "second" } })
+      assert.deepEqual((await readFile(environmentLog, "utf8")).trim().split("\n").map(JSON.parse), [
+        { [sentinel]: "first" },
+        { [sentinel]: "second" },
+      ])
+      await first.destroy()
+      const store = await openStore(stateDir)
+      try {
+        assert.equal(store.getById(first.id), undefined)
+        assert.deepEqual(store.getById(second.id)?.env, { [sentinel]: "second" })
+      } finally {
+        await store.close()
+      }
+      await second.destroy()
+    } finally {
+      restoreEnv("PI_FLEET_FAKE_PI_ENV_LOG_FILE", previousLog)
+      restoreEnv("PI_FLEET_FAKE_PI_ENV_NAMES", previousNames)
+      await client.close()
     }
   })
 })
